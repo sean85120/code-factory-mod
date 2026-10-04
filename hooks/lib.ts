@@ -1,6 +1,10 @@
 // Pure logic of the code factory: parsing, validation, guards and prompts.
 // No engine calls here, so tests can exercise it directly.
 
+import type { FactoryView, Mark, Stage, ViewRow } from '../types'
+
+export type { FactoryView, Mark, Stage, ViewRow }
+
 export type ItemType = 'feature' | 'bug' | 'chore' | 'docs'
 export type ItemStatus = 'proposed' | 'todo' | 'done'
 
@@ -901,4 +905,64 @@ export function releasePrompt(version: string, s: Settings): string {
 2. Confirm the latest CI run on ${s.baseBranch} succeeded (\`gh run list --branch ${s.baseBranch} --limit 1\`). If it did not, or it is a billing problem, stop and say so.
 3. \`gh release create v${version} --target ${s.baseBranch} --generate-notes --title "v${version}"\`.
 4. End your turn with one line naming the release. Do not change code.`
+}
+
+export const STAGES = ['build', 'review', 'PR', 'CI', 'merge'] as const satisfies readonly Stage[]
+export type LoopEvent = 'start' | 'commit' | 'review' | 'reviewed' | 'pr' | 'merge'
+
+const STAGE_AFTER: Record<LoopEvent, Stage> = {
+  start: 'build',
+  commit: 'build',
+  review: 'review',
+  reviewed: 'PR',
+  pr: 'CI',
+  merge: 'merge',
+}
+
+export const stageAfter = (ev: LoopEvent): Stage => STAGE_AFTER[ev]
+
+export function loopEventForBash(f: BashFacts): LoopEvent | null {
+  if (f.isPrMerge) return 'merge'
+  if (f.isPrCreate) return 'pr'
+  if (f.isCommit) return 'commit'
+  return null
+}
+
+export const VIEW_ROWS = 6
+export const VIEW_CHANGES = 3
+
+export function buildView(
+  items: readonly Item[],
+  state: FactoryState,
+  blocked: ReadonlySet<string>,
+  stopAfterVersion: string | null,
+  prev: FactoryView | null,
+): FactoryView {
+  const scoped = items.filter(i => inScope(i, stopAfterVersion))
+  const markOf = (i: Item): Mark => (blocked.has(i.id) ? 'blocked' : state.current === i.id && i.status !== 'proposed' ? 'doing' : i.status)
+  const all: ViewRow[] = scoped.map(i => ({ id: i.id, type: i.type, title: i.title, version: i.version, mark: markOf(i) }))
+  const marks: Record<string, Mark> = Object.fromEntries(all.map(r => [r.id, r.mark]))
+  const fresh: string[] = []
+  if (prev) {
+    for (const r of all) {
+      const was = prev.marks[r.id]
+      if (was === undefined) fresh.push(`${r.id} added (${r.mark})`)
+      else if (was !== r.mark) fresh.push(`${r.id} ${was} -> ${r.mark}`)
+    }
+  }
+  const open = all.filter(r => r.mark !== 'done')
+  const stage = state.current === null ? null : prev && prev.current === state.current ? prev.stage ?? 'build' : 'build'
+  return {
+    approved: state.approved,
+    running: state.autopilot,
+    pausedReason: state.pausedReason,
+    current: state.current,
+    stage,
+    summary: summarize(items as Item[], blocked),
+    doneCount: all.length - open.length,
+    rows: open.slice(0, VIEW_ROWS),
+    more: Math.max(0, open.length - VIEW_ROWS),
+    marks,
+    changes: [...(prev?.changes ?? []), ...fresh].slice(-VIEW_CHANGES),
+  }
 }
