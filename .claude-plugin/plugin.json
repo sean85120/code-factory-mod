@@ -1,1 +1,1 @@
-{ "name": "code-factory", "version": "0.1.0", "description": "Design-first autonomous code factory: interviews you for decisions, then implements the todo list branch by branch, PR by PR, until CI-green merges.", "author": { "name": "sean85120" } }
+{ "name": "code-factory", "version": "0.1.0", "description": "Design-first autonomous code factory: interviews you for decisions, then implements the todo list branch by branch, PR by PR, until CI-green merges.", "author": { "name": "sean85120" }, "types": "./types/index.d.ts" }

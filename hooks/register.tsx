@@ -1,3 +1,4 @@
+import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import {
@@ -9,11 +10,13 @@ import {
   FACTORY_DIR,
   LOCK_PATH,
   REVIEW_TAG,
+  STAGES,
   SETTINGS_PATH,
   STATE_PATH,
   TODO_PATH,
   agentText,
   branchFor,
+  buildView,
   checksVerdict,
   classifyBash,
   decisionsHash,
@@ -23,6 +26,7 @@ import {
   isBillingProblem,
   isLockedByOther,
   isReviewClean,
+  loopEventForBash,
   nudgePrompt,
   normalizePath,
   normalizeText,
@@ -34,13 +38,14 @@ import {
   promoteProposed,
   releasePrompt,
   reviewAgentPrompt,
+  stageAfter,
   summarize,
   testWeakening,
   todoHeadingProblems,
   validateItems,
   workPrompt,
 } from './lib'
-import type { FactoryState, Item, Settings } from './lib'
+import type { FactoryState, FactoryView, Item, LoopEvent, Mark, Settings } from './lib'
 
 type Dollar = EngineInterface
 
@@ -199,6 +204,7 @@ async function headSha($: Dollar): Promise<string> {
 }
 
 async function refreshStatus($: Dollar): Promise<void> {
+  await refreshView($)
   const snap = await load($)
   const { state, blocked } = snap
   if (!state.approved) {
@@ -276,6 +282,55 @@ async function resetContext($: Dollar, settings: Settings): Promise<void> {
   } catch {
     $.ui.toast(`factory: /${settings.contextReset} failed, continuing without it`)
   }
+}
+
+const view = atom({ plugin: 'code-factory', key: 'view' } as const, null)
+const GLYPH: Record<Mark, string> = { done: '✓', doing: '▶', todo: '○', blocked: '✗', proposed: '·' }
+const COLOR: Record<Mark, string | undefined> = { done: 'green', doing: 'yellow', todo: undefined, blocked: 'red', proposed: undefined }
+let viewTimer: Timer | null = null
+
+async function refreshOnce($: Dollar): Promise<void> {
+  try {
+    const snap = await load($)
+    const items = effectiveItems(snap)
+    const build = (prev: FactoryView | null): FactoryView => buildView(items, snap.state, snap.blocked, snap.settings.stopAfterVersion, prev)
+    const before = await read($, view)
+    if (JSON.stringify(before) === JSON.stringify(build(before))) return
+    await update($, view, prev => {
+      const next = build(prev)
+      return JSON.stringify(prev) === JSON.stringify(next) ? prev : next
+    })
+  } catch {
+    return
+  }
+}
+
+let viewJobs = 0
+let viewChain: Promise<void> = Promise.resolve()
+
+function refreshView($: Dollar): Promise<void> {
+  if (viewJobs >= 2) return viewChain
+  viewJobs++
+  viewChain = viewChain.then(() => refreshOnce($)).finally(() => {
+    viewJobs--
+  })
+  return viewChain
+}
+
+async function markStage($: Dollar, ev: LoopEvent): Promise<void> {
+  try {
+    await update($, view, v => (v && v.running && v.current ? { ...v, stage: stageAfter(ev) } : v))
+  } catch {
+    return
+  }
+}
+
+async function startView($: Dollar): Promise<void> {
+  viewTimer?.cancel()
+  viewTimer = $.clock.every(2000, () => {
+    void refreshView($)
+  })
+  await refreshView($)
 }
 
 // ---- the loop -----------------------------------------------------------------
@@ -485,6 +540,7 @@ export const register: Register = (on, _options) => {
     }
 
     startWatchdog($)
+    await startView($)
     // A new session resumes the loop by itself when the repo is approved and running.
     const snap = await load($)
     if (snap.state.approved && snap.state.autopilot && e.isInteractive) {
@@ -499,6 +555,8 @@ export const register: Register = (on, _options) => {
 
   on('session.end', async ($, e, next) => {
     if (e.reason !== 'clear') {
+      viewTimer?.cancel()
+      viewTimer = null
       watchTimer?.cancel()
       watchTimer = null
       isFactoryTurn = false
@@ -589,6 +647,7 @@ export const register: Register = (on, _options) => {
   })
 
   on('command.run', { command: 'factory-status' }, async $ => {
+    await refreshView($)
     const snap = await load($)
     const items = effectiveItems(snap)
     const rows = items.map(i => {
@@ -607,6 +666,7 @@ export const register: Register = (on, _options) => {
 
   on('turn.complete', async ($, e, next) => {
     const out = await next(e)
+    await refreshView($)
     if (e.agentId || !isFactoryTurn) return out
     isFactoryTurn = false
     const state = await readState($)
@@ -659,6 +719,7 @@ export const register: Register = (on, _options) => {
     if (snap.state.reviewRounds >= snap.settings.maxReviewRounds) {
       return { deny: `code-factory: ${snap.settings.maxReviewRounds} review rounds are used up for ${item.id}; write .factory/blocked/${item.id}.md and stop.` }
     }
+    await markStage($, 'review')
     const ran = await next(e)
     if (ran.deny !== undefined) return ran
     const text = agentText(ran.result) || (typeof ran.text === 'string' ? ran.text : '')
@@ -668,6 +729,7 @@ export const register: Register = (on, _options) => {
     }
     const mark = parseReviewMarker(text)
     if (!mark) return ran
+    await markStage($, mark.danger === 0 && mark.medium === 0 ? 'reviewed' : 'commit')
     const fresh = await readState($)
     const isClean = mark.danger === 0 && mark.medium === 0
     const rounds = isClean ? 0 : fresh.reviewRounds + 1
@@ -679,7 +741,13 @@ export const register: Register = (on, _options) => {
     return ran
   })
 
-  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+  on('tool.call', { tool: 'Bash' }, async ($, e, nextRaw) => {
+    const stageEvent = loopEventForBash(classifyBash(e.command, 'main'))
+    const next: typeof nextRaw = Object.assign(async (x: Parameters<typeof nextRaw>[0]) => {
+      const r = await nextRaw(x)
+      if (stageEvent && r.deny === undefined && !r.isError) await markStage($, stageEvent)
+      return r
+    }, nextRaw)
     const snap = await load($)
     const base = snap.settings.baseBranch
     const branch = await branchNow($)
@@ -776,11 +844,11 @@ export const register: Register = (on, _options) => {
       if (f.hasAdmin) return { deny: 'code-factory: --admin merges are not allowed.' }
       if (f.hasAuto) return { deny: 'code-factory: --auto merges skip the check this mod makes; wait for CI with `gh pr checks --watch`, then merge.' }
       const sel = f.prSelector ? [f.prSelector] : []
-      const view = await run($, ['gh', 'pr', 'view', ...sel, '--json', 'state,mergeable,headRefName,headRefOid,statusCheckRollup'])
-      if (view.exitCode !== 0) return { deny: `code-factory: could not read the PR (${view.stderr.trim().slice(0, 160)}).` }
+      const prView = await run($, ['gh', 'pr', 'view', ...sel, '--json', 'state,mergeable,headRefName,headRefOid,statusCheckRollup'])
+      if (prView.exitCode !== 0) return { deny: `code-factory: could not read the PR (${prView.stderr.trim().slice(0, 160)}).` }
       let pr: { state: string; mergeable: string; headRefName: string; headRefOid: string; statusCheckRollup: unknown[] }
       try {
-        pr = JSON.parse(view.stdout) as typeof pr
+        pr = JSON.parse(prView.stdout) as typeof pr
       } catch {
         return { deny: 'code-factory: could not parse the PR status.' }
       }
@@ -811,5 +879,50 @@ export const register: Register = (on, _options) => {
       }
     }
     return next(e)
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const v = await read($, view)
+    if (e.props.hasSurvey || !v || !v.approved) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const at = v.stage === null ? -1 : STAGES.indexOf(v.stage)
+
+    return (
+      <Box flexDirection="column" paddingX={1}>
+        <Box gap={1}>
+          <Text bold color={v.running ? 'green' : undefined} dimColor={!v.running}>
+            {v.running ? 'factory ▶' : `factory ⏸ ${v.pausedReason ?? 'stopped'}`}
+          </Text>
+          <Text dimColor>{v.summary}</Text>
+        </Box>
+        {v.running && (
+          <Box gap={1}>
+            {STAGES.map((s, i) => (
+              <Text key={s} bold={i === at} color={i < at ? 'green' : i === at ? 'yellow' : undefined} dimColor={i > at}>
+                {i < at ? '✓' : i === at ? '●' : '○'} {s}
+              </Text>
+            ))}
+          </Box>
+        )}
+        {v.rows.map(r => (
+          <Box key={r.id} gap={1}>
+            <Text color={COLOR[r.mark]} bold={r.mark === 'doing'} dimColor={r.mark === 'proposed'}>
+              {GLYPH[r.mark]} {r.id}
+            </Text>
+            <Text dimColor={r.mark !== 'doing'} wrap="truncate-end">
+              [{r.type}] {r.title}
+            </Text>
+          </Box>
+        ))}
+        {(v.doneCount > 0 || v.more > 0) && (
+          <Text dimColor>
+            {v.doneCount > 0 ? `✓ ${v.doneCount} done` : ''}
+            {v.doneCount > 0 && v.more > 0 ? ' · ' : ''}
+            {v.more > 0 ? `+${v.more} more` : ''}
+          </Text>
+        )}
+        {v.changes.length > 0 && <Text dimColor>Δ {v.changes.join(' · ')}</Text>}
+      </Box>
+    )
   })
 }

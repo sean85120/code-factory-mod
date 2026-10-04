@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`code-factory` is a Claude Code **plugin** (manifest: `.claude-plugin/plugin.json`) that ships a single TypeScript hook module (`hooks/hooks.json` → `./register.ts`). It implements a design-first autonomous build loop: the person is interviewed once (`/factory-design`), approves the result (`/factory-approve`), then `/factory-start` drives the model through every todo item, branch by branch and PR by PR, until CI-green merge.
+`code-factory` is a Claude Code **plugin** (manifest: `.claude-plugin/plugin.json`) that ships a single TypeScript hook module (`hooks/hooks.json` → `./register.tsx`). It implements a design-first autonomous build loop: the person is interviewed once (`/factory-design`), approves the result (`/factory-approve`), then `/factory-start` drives the model through every todo item, branch by branch and PR by PR, until CI-green merge.
 
 ## Commands
 
@@ -17,14 +17,19 @@ claude plugin validate .             # manifest + hooks/calls check
 
 ## Architecture
 
-Two source files, split on purpose:
+Source is split on purpose:
 
 - `hooks/lib.ts`: **pure logic only**, no engine calls. Parsing and validation of `.factory/todo.md` and `settings.json`, the decisions hash, Bash command classification (`classifyBash`), PR/CI/branch-protection verdicts, test-weakening detection, lock semantics, review-marker parsing, and every prompt string (`DESIGN_PROMPT`, `workPrompt`, `nudgePrompt`, `reviewAgentPrompt`, `releasePrompt`). Everything testable lives here.
-- `hooks/register.ts`: the engine glue (`$` = `EngineInterface`). Registers the `/factory-*` slash commands, the loop driver, and the guard hooks. Module-level flags (`isFactoryTurn`, `isArmed`, `isAdvancing`) are in-memory; a reload only costs one `/factory-start`.
+- `hooks/register.tsx`: the engine glue (`$` = `EngineInterface`). Registers the `/factory-*` slash commands, the loop driver, the guard hooks, and the live band. It must stay one file: a plugin has exactly one hooks module, `$` cannot be passed into functions imported from another file, and the same event cannot be registered twice without a matcher (fold new behavior into the existing handler). Module-level flags (`isFactoryTurn`, `isArmed`, `isAdvancing`) are in-memory; a reload only costs one `/factory-start`.
+- `types/index.d.ts`: the `$.state` contract (`code-factory.view`) and the view types. It must be self-contained (no imports); `lib.ts` imports its types from here.
 
-Tests in `tests/*.test.ts` import `claude-code/testing` and exercise `lib.ts` directly (`gates`, `guards`, `lib*`, `safety`). New logic should go into `lib.ts` so it stays testable.
+### Loop view (the band above the prompt)
 
-### The loop (register.ts)
+`buildView` (lib.ts) turns the effective items, state and blocked set into a `FactoryView`: the stage pipeline (`build → review → PR → CI → merge`), open todo rows (done ones collapse to a count), and the last three status changes. `refreshView` stores it in `$.state` every 2 s, on `turn.complete`, and from `/factory-status` and `refreshStatus`; the `ui.render` hook on `AbovePrompt` only reads it. The stage is advanced by `markStage` from the Bash hook (commit, `gh pr create`, `gh pr merge`, only when the guard did not deny) and the review Agent hook; it resets to `build` when `current` changes.
+
+Tests in `tests/*.test.ts` import `claude-code/testing` and exercise `lib.ts` directly (`gates`, `guards`, `lib*`, `safety`, `view`). New logic should go into `lib.ts` so it stays testable.
+
+### The loop (register.tsx)
 
 `advance()` is the single step function. It is triggered by `turn.complete` (after 800 ms), by `/factory-start`, by a session starting with autopilot on, and by a 5-minute watchdog. Each call: load state → take the lock → check integrity → inspect the current item (marked done in todo.md **and** a merged `factory/<id>-*` PR exists, else re-send a `nudgePrompt`, blocked after `maxAttempts`) → pick the next item (`pickNext`: status `todo`, not blocked, in version scope, dependencies done) → optionally reset context (`/clear` or `/compact`) → `submit()` the work prompt. When nothing is left it optionally has the model cut a release (`tagRelease`) and pauses.
 
