@@ -25,12 +25,17 @@ import {
   inScope,
   isBillingProblem,
   isLockedByOther,
+  decideReviewAnswer,
+  designFileSame,
   isReviewClean,
+  isReviewPending,
+  reviewWindow,
   loopEventForBash,
   nudgePrompt,
   normalizePath,
   normalizeText,
   parseLock,
+  agentLaunchId,
   parseReviewMarker,
   parseSettings,
   parseTodo,
@@ -45,7 +50,7 @@ import {
   validateItems,
   workPrompt,
 } from './lib'
-import type { FactoryState, FactoryView, Item, LoopEvent, Mark, Settings } from './lib'
+import type { FactoryState, FactoryView, Item, LoopEvent, Mark, ReviewMark, Settings } from './lib'
 
 type Dollar = EngineInterface
 
@@ -54,6 +59,9 @@ type Dollar = EngineInterface
 // A turn the factory started is running. The guards stay armed for it even if
 // the loop gets paused halfway, until the turn ends or the person takes over.
 let isFactoryTurn = false
+let factoryTurnAt = -1
+let reviewInFlight = false
+const FACTORY_TURN_TTL_MS = 3 * 3600000
 let isArmed = false
 let isAdvancing = false
 
@@ -223,10 +231,23 @@ async function pause($: Dollar, state: FactoryState, reason: string): Promise<vo
   await refreshStatus($)
 }
 
-function submit($: Dollar, text: string): void {
+type Instructions = { text: string; isDesign: boolean }
+let instructions: Instructions | null = null
+let launchedHere: string | null = null
+let expectReport = false
+
+const reviewWaiting = (state: FactoryState, settings: Settings, now: number): boolean =>
+  state.reviewAgentId !== null && state.reviewAgentId === launchedHere && isReviewPending(state, now, reviewWindow(state, settings))
+
+function submit($: Dollar, full: string, label?: string, isDesign = false): void {
   isFactoryTurn = true
-  isArmed = true
-  $.prompt.submit({ text }).catch(() => {
+  factoryTurnAt = -1
+  isArmed = !isDesign
+  expectReport = false
+  instructions = { text: full, isDesign }
+  const headline = (label ?? full.split('\n', 1)[0]!).slice(0, 200)
+  $.prompt.submit({ text: `${headline}\n(The full instructions are the "code-factory:instructions" section of your system prompt; follow them.)` }).catch(() => {
+    instructions = null
     isFactoryTurn = false
     isArmed = false
   })
@@ -337,8 +358,18 @@ async function startView($: Dollar): Promise<void> {
 
 // One step of the loop: look at where the current item stands and hand the
 // model the next prompt, or finish.
+async function turnBusy($: Dollar): Promise<boolean> {
+  if (!isFactoryTurn) return false
+  const now = await $.clock.now()
+  if (factoryTurnAt < 0) factoryTurnAt = now
+  if (now - factoryTurnAt < FACTORY_TURN_TTL_MS) return true
+  isFactoryTurn = false
+  return false
+}
+
 async function advance($: Dollar): Promise<void> {
   if (isAdvancing) return
+  if (await turnBusy($)) return
   isAdvancing = true
   try {
     const snap = await load($)
@@ -360,6 +391,13 @@ async function advance($: Dollar): Promise<void> {
     const base = settings.baseBranch
     let hasMerged = false
 
+    if (state.current && state.reviewAgentId) {
+      if (reviewWaiting(state, settings, await $.clock.now())) return
+      const isExpired = state.reviewAgentId === launchedHere
+      launchedHere = null
+      state = { ...state, reviewAgentId: null, reviewAgentAt: 0 }
+      if (isExpired) return await pause($, state, `the review agent did not report within ${Math.round(reviewWindow(state, settings) / 60000)} min; /factory-start retries`)
+    }
     if (state.current) {
       const item = snap.items.find(i => i.id === state.current)
       if (!item || blocked.has(item.id)) {
@@ -409,7 +447,7 @@ async function advance($: Dollar): Promise<void> {
           } else {
             await writeState($, { ...state, attempts })
             await refreshStatus($)
-            return submit($, nudgePrompt(item, settings, why))
+            return submit($, nudgePrompt(item, settings, why), `CODE FACTORY: ${item.id} retry: ${why}`)
           }
         }
       }
@@ -438,7 +476,7 @@ async function advance($: Dollar): Promise<void> {
           await writeState($, { ...state, current: null, releaseAttempts: state.releaseAttempts + 1 })
           await refreshStatus($)
           if (hasMerged) await resetContext($, settings)
-          return submit($, releasePrompt(version, settings))
+          return submit($, releasePrompt(version, settings), `CODE FACTORY: release v${version}`)
         }
       }
       await writeState($, { ...state, autopilot: false, current: null, pausedReason: finished })
@@ -462,8 +500,9 @@ async function advance($: Dollar): Promise<void> {
 function startWatchdog($: Dollar): void {
   if (watchTimer) return
   watchTimer = $.clock.every(300000, () => {
-    if (isFactoryTurn || isAdvancing) return
+    if (isAdvancing) return
     void (async () => {
+      if (await turnBusy($)) return
       const state = await readState($)
       if (state.autopilot) await advance($)
     })()
@@ -489,6 +528,30 @@ async function branchProtectionWarnings($: Dollar, base: string): Promise<string
     return [`could not read ${base}'s protection (${err.trim().slice(0, 100)}); a private repo on a free plan cannot have it.`]
   }
   return evaluateProtection(parse(prot), parse(rules), base)
+}
+
+async function missingOnBase($: Dollar, base: string): Promise<string[]> {
+  const fetched = await run($, ['git', 'fetch', '--', 'origin', base], 30000)
+  if (fetched.exitCode !== 0) return [`could not fetch origin/${base} (${fetched.stderr.trim().slice(0, 100)}); it is needed to check that the design files are pushed.`]
+  const missing: string[] = []
+  const changed: string[] = []
+  for (const path of [SETTINGS_PATH, TODO_PATH, DESIGN_PATH]) {
+    const there = await run($, ['git', 'show', `origin/${base}:./${path}`], 15000)
+    if (there.exitCode !== 0) {
+      missing.push(path)
+      continue
+    }
+    const local = (await readText($, path)) ?? ''
+    if (!designFileSame(there.stdout, local, path === TODO_PATH)) changed.push(path)
+  }
+  const out: string[] = []
+  if (missing.length > 0) {
+    out.push(`${missing.join(', ')} not on origin/${base}: commit and push the design files to ${base} (the loop returns to it between items and they would vanish), through a PR if direct pushes are not allowed.`)
+  }
+  if (changed.length > 0) {
+    out.push(`${changed.join(', ')} differ from origin/${base}: commit and push your latest edits to ${base} first.`)
+  }
+  return out
 }
 
 async function preflight($: Dollar): Promise<string[]> {
@@ -524,8 +587,67 @@ async function ensureGitignore($: Dollar): Promise<void> {
   }
 }
 
+const REVIEW_BUSY_DENY = 'code-factory: the review agent is still running; do not change the code until its verdict arrives (only the review agent may edit, commit or push now).'
 const FACTORY_FILE_DENY = { deny: 'code-factory: .factory/state.json and .factory/lock.json are controlled by the person through /factory-* commands.' }
 const isFactoryControlFile = (p: string): boolean => /(^|\/)\.factory\/(?:state|lock)\.json$/i.test(normalizePath(p))
+
+async function guardWrite($: Dollar, path: string, agentId: string | undefined): Promise<{ deny: string } | null> {
+  if (isFactoryControlFile(path)) return FACTORY_FILE_DENY
+  const state = await readState($)
+  const live = state.approved && (state.autopilot || isArmed) && !(await lockedByOther($))
+  if (!live) return null
+  if (/(^|\/)\.claude\/(?:(?:agents|commands|skills)\/|settings[^/]*\.json$)/i.test(normalizePath(path))) {
+    return { deny: 'code-factory: agent, command, skill and settings files under .claude cannot be changed while the factory loop is live.' }
+  }
+  if (state.reviewAgentId !== null && agentId !== state.reviewAgentId && !/(^|\/)\.factory\//.test(normalizePath(path))) {
+    const { settings } = await load($)
+    if (reviewWaiting(state, settings, await $.clock.now())) return { deny: REVIEW_BUSY_DENY }
+  }
+  return null
+}
+
+async function recordReview($: Dollar, itemId: string, mark: ReviewMark, maxRounds: number): Promise<void> {
+  const isClean = mark.danger === 0 && mark.medium === 0
+  await markStage($, isClean ? 'reviewed' : 'commit')
+  const fresh = await readState($)
+  const rounds = isClean ? 0 : fresh.reviewRounds + 1
+  await writeState($, { ...fresh, review: mark, reviewRounds: rounds, reviewAgentId: null, reviewAgentAt: 0 })
+  if (!isClean && rounds >= maxRounds) {
+    await $.fs.write(`${BLOCKED_DIR}/${itemId}.md`, `Review still found danger=${mark.danger} medium=${mark.medium} after ${rounds} rounds.\n`)
+    $.ui.toast(`factory: ${itemId} blocked, review never came back clean`, { timeoutMs: 8000 })
+  }
+}
+
+async function reviewerTurn($: Dollar, agentId: string, answer: string): Promise<void> {
+  try {
+    for (let i = 0; i < 25 && reviewInFlight; i++) await new Promise<void>(resolve => $.clock.after(200, () => resolve()))
+    if ((await readState($)).reviewAgentId !== agentId || launchedHere !== agentId) return
+    const snap = await load($)
+    if (!reviewWaiting(snap.state, snap.settings, await $.clock.now())) return
+    const item = snap.items.find(i => i.id === snap.state.current)
+    const act = decideReviewAnswer(answer, agentId, snap.state, item !== undefined)
+    if (act.action === 'ignore' || !item || (await lockedByOther($))) return
+    launchedHere = null
+    if (act.action === 'unavailable') {
+      expectReport = true
+      await pause($, { ...snap.state, reviewAgentId: null, reviewAgentAt: 0 }, `${snap.settings.reviewCommand} is not available to the review agent`)
+      return
+    }
+    if (act.action === 'record') await recordReview($, item.id, act.mark, snap.settings.maxReviewRounds)
+    else {
+      const fresh = await readState($)
+      const rounds = fresh.reviewRounds + 1
+      await writeState($, { ...fresh, reviewRounds: rounds, reviewAgentId: null, reviewAgentAt: 0 })
+      if (rounds >= snap.settings.maxReviewRounds) {
+        await $.fs.write(`${BLOCKED_DIR}/${item.id}.md`, `The review agent ended ${rounds} times without a verdict.\n`)
+        $.ui.toast(`factory: ${item.id} blocked, the review agent never gave a verdict`, { timeoutMs: 8000 })
+      }
+    }
+    expectReport = true
+  } catch {
+    return
+  }
+}
 
 export const register: Register = (on, _options) => {
   on('session.start', async ($, e, next) => {
@@ -554,7 +676,12 @@ export const register: Register = (on, _options) => {
   })
 
   on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear' && instructions?.isDesign) instructions = null
     if (e.reason !== 'clear') {
+      instructions = null
+      launchedHere = null
+      expectReport = false
+      reviewInFlight = false
       viewTimer?.cancel()
       viewTimer = null
       watchTimer?.cancel()
@@ -569,6 +696,8 @@ export const register: Register = (on, _options) => {
   // ---- commands --------------------------------------------------------
 
   on('command.run', { command: 'factory-design' }, async ($, e) => {
+    const running = await readState($)
+    if (running.autopilot) await pause($, running, 'design being amended; /factory-approve then /factory-start resumes')
     await ensureGitignore($)
     if ((await readText($, SETTINGS_PATH)) === null) {
       await $.fs.write(SETTINGS_PATH, `${JSON.stringify(DEFAULT_SETTINGS, null, 2)}\n`)
@@ -576,7 +705,7 @@ export const register: Register = (on, _options) => {
     if ((await readText($, TODO_PATH)) === null) await $.fs.write(TODO_PATH, SKELETON_TODO)
     if ((await readText($, DESIGN_PATH)) === null) await $.fs.write(DESIGN_PATH, '# Design\n\n## Decisions\n')
     const topic = e.args.trim()
-    $.clock.after(300, () => submit($, topic ? `${DESIGN_PROMPT}\n\nThe person wants to focus on: ${topic}` : DESIGN_PROMPT))
+    $.clock.after(300, () => submit($, topic ? `${DESIGN_PROMPT}\n\nThe person wants to focus on: ${topic}` : DESIGN_PROMPT, topic ? `Code factory: design interview (${topic})` : 'Code factory: design interview', true))
     return { text: 'Code factory: design interview starting. Answer the questions; run /factory-approve when the design is complete.' }
   })
 
@@ -592,6 +721,7 @@ export const register: Register = (on, _options) => {
       ...validateItems(snap.items, snap.settings.stopAfterVersion),
       ...(designText === null || !/^##\s+Decisions/im.test(designText) ? [`${DESIGN_PATH} needs a "## Decisions" section.`] : []),
       ...(await preflight($)),
+      ...(await missingOnBase($, snap.settings.baseBranch)),
     ]
     if (problems.length > 0) {
       return { text: `Not approved. Fix these first (/factory-design continues the interview):\n- ${problems.join('\n- ')}` }
@@ -611,6 +741,7 @@ export const register: Register = (on, _options) => {
       approvedDone: after.items.filter(i => i.status === 'done').map(i => i.id),
       pausedReason: after.state.autopilot ? null : 'approved, not started',
     })
+    if (instructions?.isDesign) instructions = null
     await refreshStatus($)
     const lines = after.items.filter(i => i.status === 'todo').map(i => `- ${i.id} [${i.type}] ${i.title}`)
     const warn = !snap.settings.requireBranchProtection && protection.length > 0
@@ -640,6 +771,7 @@ export const register: Register = (on, _options) => {
 
   on('command.run', { command: 'factory-stop' }, async $ => {
     const state = await readState($)
+    expectReport = false
     await writeState($, { ...state, autopilot: false, pausedReason: 'stopped by you' })
     await releaseLock($)
     await refreshStatus($)
@@ -665,9 +797,14 @@ export const register: Register = (on, _options) => {
   // ---- the loop --------------------------------------------------------
 
   on('turn.complete', async ($, e, next) => {
+    if (e.agentId && e.agentId === launchedHere) expectReport = true
     const out = await next(e)
     await refreshView($)
-    if (e.agentId || !isFactoryTurn) return out
+    if (e.agentId) {
+      await reviewerTurn($, e.agentId, e.reason === 'answer' ? e.answer : '')
+      return out
+    }
+    if (!isFactoryTurn) return out
     isFactoryTurn = false
     const state = await readState($)
     if (!state.autopilot) {
@@ -685,60 +822,104 @@ export const register: Register = (on, _options) => {
     return out
   })
 
+  on('prompt.compose', async ($, e, next) => {
+    const out = await next(e)
+    if (!instructions) return out
+    if (!instructions.isDesign) {
+      const state = await readState($)
+      if (!(state.approved && (state.autopilot || isArmed))) return out
+    }
+    const text = `These are the code factory loop's instructions for the main session. If you are a subagent (any task launched through the Agent tool, including one whose prompt starts with ${REVIEW_TAG}), ignore this whole section.\n\n${instructions.text}`
+    return { ...out, sections: [...out.sections, { id: 'code-factory:instructions', text, scope: 'session' as const }] }
+  })
+
   // The person taking the wheel pauses the loop and takes the guards off.
   on('prompt.submit', async ($, e, next) => {
+    if ((e.origin.kind === 'peer' || e.origin.kind === 'task-notification') && (expectReport || launchedHere !== null)) {
+      const state = await readState($)
+      if (expectReport || state.autopilot) {
+        expectReport = false
+        if (state.approved) {
+          isFactoryTurn = true
+          factoryTurnAt = -1
+          isArmed = true
+        }
+      }
+    }
     if (['composer', 'bridge', 'sdk'].includes(e.origin.kind) && !e.text.trimStart().startsWith('/')) {
       const state = await readState($)
       if (state.autopilot) await pause($, state, 'you sent a prompt; /factory-start resumes')
       isFactoryTurn = false
       isArmed = false
+      expectReport = false
     }
     return next(e)
   })
 
   // ---- guards ----------------------------------------------------------
 
-  on('tool.call', { tool: 'Edit' }, ($, e, next) => (isFactoryControlFile(e.file_path) ? FACTORY_FILE_DENY : next(e)))
-  on('tool.call', { tool: 'Write' }, ($, e, next) => (isFactoryControlFile(e.file_path) ? FACTORY_FILE_DENY : next(e)))
+  on('tool.call', { tool: 'Edit' }, async ($, e, next) => (await guardWrite($, e.file_path, e.agentId)) ?? next(e))
+  on('tool.call', { tool: 'Write' }, async ($, e, next) => (await guardWrite($, e.file_path, e.agentId)) ?? next(e))
+
+  on('tool.call', { tool: 'SendMessage' }, async ($, e, next) => {
+    if (e.agentId !== undefined && e.agentId === (await readState($)).reviewAgentId) return next(e)
+    const state = await readState($)
+    if ((state.reviewAgentId !== null || reviewInFlight) && state.approved && (state.autopilot || isArmed)) {
+      return { deny: 'code-factory: send no messages while the review agent runs; its report is read as it finishes.' }
+    }
+    return next(e)
+  })
 
   // The review agent's verdict is read from its answer and kept in the factory's
   // state, but only for the exact prompt the factory handed the model, spawned
   // by the main loop.
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     if (!e.prompt.includes(REVIEW_TAG)) return next(e)
-    const snap = await load($)
-    const isLive = snap.state.approved && !(await lockedByOther($)) && (snap.state.autopilot || isArmed)
-    if (!isLive) return next(e)
-    const item = snap.items.find(i => i.id === snap.state.current)
-    if (e.agentId !== undefined || !item) {
-      return { deny: 'code-factory: the review agent is started once, by the main loop, for the current item.' }
-    }
-    if (normalizeText(e.prompt) !== normalizeText(reviewAgentPrompt(snap.settings, branchFor(item)))) {
-      return { deny: 'code-factory: pass the review prompt from the work item exactly as written, without changes.' }
-    }
-    if (snap.state.reviewRounds >= snap.settings.maxReviewRounds) {
-      return { deny: `code-factory: ${snap.settings.maxReviewRounds} review rounds are used up for ${item.id}; write .factory/blocked/${item.id}.md and stop.` }
-    }
-    await markStage($, 'review')
-    const ran = await next(e)
-    if (ran.deny !== undefined) return ran
-    const text = agentText(ran.result) || (typeof ran.text === 'string' ? ran.text : '')
-    if (/FACTORY-REVIEW:\s*unavailable/i.test(text)) {
-      await pause($, await readState($), `${snap.settings.reviewCommand} is not available to the review agent`)
+    if (reviewInFlight) return { deny: 'code-factory: a review agent is already starting; wait for it.' }
+    reviewInFlight = true
+    try {
+      const snap = await load($)
+      const isLive = snap.state.approved && !(await lockedByOther($)) && (snap.state.autopilot || isArmed)
+      if (!isLive) return next(e)
+      const item = snap.items.find(i => i.id === snap.state.current)
+      if (e.agentId !== undefined || !item) {
+        return { deny: 'code-factory: the review agent is started once, by the main loop, for the current item.' }
+      }
+      if (normalizeText(e.prompt) !== normalizeText(reviewAgentPrompt(snap.settings, branchFor(item)))) {
+        return { deny: 'code-factory: pass the review prompt from the work item exactly as written, without changes.' }
+      }
+      if ((e.subagent_type !== undefined && e.subagent_type !== 'general-purpose') || e.model !== undefined || e.name !== undefined || e.isolation !== undefined || e.mode !== undefined || e.team_name !== undefined) {
+        return { deny: 'code-factory: start the review agent as a plain general-purpose agent, without a custom type, model, name, mode, team or isolation.' }
+      }
+      if (snap.state.reviewRounds >= snap.settings.maxReviewRounds) {
+        return { deny: `code-factory: ${snap.settings.maxReviewRounds} review rounds are used up for ${item.id}; write .factory/blocked/${item.id}.md and stop.` }
+      }
+      if (reviewWaiting(snap.state, snap.settings, await $.clock.now())) {
+        return { deny: `code-factory: the review agent for ${item.id} is still running; its verdict arrives as a hand-back message. End your turn and wait for it.` }
+      }
+      await markStage($, 'review')
+      const ran = await next(e)
+      if (ran.deny !== undefined) return ran
+      const text = agentText(ran.result) || (typeof ran.text === 'string' ? ran.text : '')
+      const agentId = agentLaunchId(ran.result, text)
+      if (agentId) {
+        const fresh = await readState($)
+        launchedHere = agentId
+        await writeState($, { ...fresh, reviewAgentId: agentId, reviewAgentAt: await $.clock.now(), reviewWaitMs: snap.settings.reviewTimeoutMs })
+        return ran
+      }
+      const mark = parseReviewMarker(text)
+      if (mark) {
+        await recordReview($, item.id, mark, snap.settings.maxReviewRounds)
+        return ran
+      }
+      if (/FACTORY-REVIEW:\s*unavailable/i.test(text)) {
+        await pause($, await readState($), `${snap.settings.reviewCommand} is not available to the review agent`)
+      }
       return ran
+    } finally {
+      reviewInFlight = false
     }
-    const mark = parseReviewMarker(text)
-    if (!mark) return ran
-    await markStage($, mark.danger === 0 && mark.medium === 0 ? 'reviewed' : 'commit')
-    const fresh = await readState($)
-    const isClean = mark.danger === 0 && mark.medium === 0
-    const rounds = isClean ? 0 : fresh.reviewRounds + 1
-    await writeState($, { ...fresh, review: mark, reviewRounds: rounds })
-    if (!isClean && rounds >= snap.settings.maxReviewRounds) {
-      await $.fs.write(`${BLOCKED_DIR}/${item.id}.md`, `Review still found danger=${mark.danger} medium=${mark.medium} after ${rounds} rounds.\n`)
-      $.ui.toast(`factory: ${item.id} blocked, review never came back clean`, { timeoutMs: 8000 })
-    }
-    return ran
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, nextRaw) => {
@@ -757,6 +938,10 @@ export const register: Register = (on, _options) => {
     }
     const isLive = snap.state.approved && !(await lockedByOther($)) && (snap.state.autopilot || isArmed)
     if (!isLive) return next(e)
+
+    if ((f.isCommit || f.isPush) && snap.state.reviewAgentId !== null && e.agentId !== snap.state.reviewAgentId) {
+      if (reviewWaiting(snap.state, snap.settings, await $.clock.now())) return { deny: REVIEW_BUSY_DENY }
+    }
 
     if (f.apiPrWrite) {
       return { deny: 'code-factory: do not change branches, PRs or contents through `gh api`; use git and `gh pr create` / `gh pr merge` so the checks run.' }

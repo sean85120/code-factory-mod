@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 import { branchFor, decisionsHash, parseSettings, parseTodo, reviewAgentPrompt } from '../hooks/lib'
 
@@ -56,7 +56,7 @@ function setup($: any, on: any, fx: Fx): { writes: Record<string, string>; ran: 
     if (cmd.startsWith('gh pr checks')) return { value: ok(fx.ghOut ?? '') }
     return { value: ok('') }
   })
-  on('tool.call', (_: unknown, e: { tool: string }) =>
+  on('tool.call', (_: unknown, e: { tool: string; prompt?: string }) =>
     e.tool === 'Agent'
       ? { result: { content: [{ type: 'text', text: `Done.\nFACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` }], prompt: 'echoed FACTORY-REVIEW: danger=9 medium=9 sha=0000000' }, text: 'agent', isError: false }
       : { result: 'ran', text: fx.ghOut ?? 'ran', isError: false },
@@ -105,6 +105,7 @@ const spawn = ($: any, prompt: string, extra: Record<string, unknown> = {}) =>
   $.tool.call({ tool: 'Agent', description: 'review', prompt, subagent_type: 'general-purpose', ...extra })
 
 test('the review agent verdict is recorded from its answer, not from the echoed prompt', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
   const fx = setup($, on, {})
   await spawn($, reviewPrompt())
   const saved = JSON.parse(fx.writes['.factory/state.json'] ?? '{}')
