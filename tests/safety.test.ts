@@ -112,6 +112,7 @@ function setup($: any, on: any, fx: Fx): Record<string, string> {
   })
   on('process.run', (_: unknown, e: { argv: readonly string[] }) => {
     const cmd = e.argv.join(' ')
+    if (cmd.startsWith('git show origin/')) return { value: ok(files[cmd.replace(/^.*:\.\//, '')] ?? '') }
     if (cmd.startsWith('git branch')) return { value: ok(`${fx.branch ?? 'factory/t-001-add-thing'}\n`) }
     if (cmd.startsWith('git rev-parse')) return { value: ok(`${SHA}\n`) }
     if (cmd.includes('git diff -U0')) return { value: ok(fx.fullDiff ?? '') }

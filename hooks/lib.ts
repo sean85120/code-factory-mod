@@ -41,6 +41,7 @@ export type Settings = {
   tagRelease: boolean
   requireBranchProtection: boolean
   allowTestRemoval: boolean
+  reviewTimeoutMs: number
 }
 
 export type ReviewMark = { sha: string; danger: number; medium: number }
@@ -55,6 +56,9 @@ export type FactoryState = {
   pausedReason: string | null
   review: ReviewMark | null
   reviewRounds: number
+  reviewAgentId: string | null
+  reviewAgentAt: number
+  reviewWaitMs: number
   releasedVersion: string | null
   releaseAttempts: number
   mergedIds: string[]
@@ -90,6 +94,7 @@ export const DEFAULT_SETTINGS: Settings = {
   tagRelease: false,
   requireBranchProtection: false,
   allowTestRemoval: false,
+  reviewTimeoutMs: 1800000,
 }
 
 export const DEFAULT_STATE: FactoryState = {
@@ -102,6 +107,9 @@ export const DEFAULT_STATE: FactoryState = {
   pausedReason: null,
   review: null,
   reviewRounds: 0,
+  reviewAgentId: null,
+  reviewAgentAt: 0,
+  reviewWaitMs: 0,
   releasedVersion: null,
   releaseAttempts: 0,
   mergedIds: [],
@@ -312,7 +320,7 @@ export function parseSettings(text: string | null): { settings: Settings; proble
   const problems: string[] = []
   let raw: Record<string, unknown> = {}
   if (text === null) {
-    problems.push(`${SETTINGS_PATH} is missing.`)
+    problems.push(`${SETTINGS_PATH} is missing. The design files must be committed to the base branch (they vanish when it is checked out while they exist only on a factory/* branch): restore them with \`git checkout <factory branch> -- .factory\`, commit and push to the base branch, or run /factory-design.`)
   } else {
     try {
       const parsed: unknown = JSON.parse(text)
@@ -356,6 +364,7 @@ export function parseSettings(text: string | null): { settings: Settings; proble
   if (typeof raw.tagRelease === 'boolean') s.tagRelease = raw.tagRelease
   if (typeof raw.requireBranchProtection === 'boolean') s.requireBranchProtection = raw.requireBranchProtection
   if (typeof raw.allowTestRemoval === 'boolean') s.allowTestRemoval = raw.allowTestRemoval
+  if (typeof raw.reviewTimeoutMs === 'number' && raw.reviewTimeoutMs >= 60000) s.reviewTimeoutMs = Math.min(Math.floor(raw.reviewTimeoutMs), 21600000)
   if (raw.stopAfterVersion !== undefined && raw.stopAfterVersion !== null) {
     const v = String(raw.stopAfterVersion).replace(/^v/i, '')
     if (parseVersion(v)) s.stopAfterVersion = v
@@ -382,7 +391,8 @@ export function decisionsHash(settings: Settings, items: Item[]): string {
   const frozen = items
     .filter(i => i.status !== 'proposed')
     .map(i => [i.id, i.type, i.title, i.how, i.accept, i.tests, i.depends.join(','), i.version].join('|'))
-  return fnv1a(JSON.stringify([settings, frozen]))
+  const { reviewTimeoutMs: _timeout, ...hashed } = settings
+  return fnv1a(JSON.stringify([hashed, frozen]))
 }
 
 export function inScope(item: Item, stopAfterVersion: string | null): boolean {
@@ -817,6 +827,53 @@ export function isReviewClean(mark: ReviewMark | null, headSha: string): boolean
   return head.length >= 7 && (head.startsWith(mark.sha) || mark.sha.startsWith(head))
 }
 
+export function parseAgentLaunch(text: string): string | null {
+  if (!/\bAsync agent launched\b/i.test(text)) return null
+  const m = /\bagentId:\s*([A-Za-z0-9_-]{6,})/.exec(text)
+  return m ? m[1]! : null
+}
+
+export function agentLaunchId(result: unknown, text: string): string | null {
+  const r = result as { status?: unknown; agentId?: unknown } | null | undefined
+  if (r && typeof r === 'object' && typeof r.status === 'string') {
+    return r.status === 'async_launched' && typeof r.agentId === 'string' && /^[A-Za-z0-9_-]{6,}$/.test(r.agentId) ? r.agentId : null
+  }
+  return parseAgentLaunch(text)
+}
+
+export const reviewWindow = (state: Pick<FactoryState, 'reviewWaitMs'>, settings: Pick<Settings, 'reviewTimeoutMs'>): number =>
+  state.reviewWaitMs > 0 ? state.reviewWaitMs : settings.reviewTimeoutMs
+
+export function isReviewPending(state: Pick<FactoryState, 'reviewAgentId' | 'reviewAgentAt'>, now: number, waitMs: number): boolean {
+  return state.reviewAgentId !== null && now - state.reviewAgentAt < waitMs
+}
+
+export type ReviewAction =
+  | { action: 'ignore' }
+  | { action: 'record'; mark: ReviewMark }
+  | { action: 'unavailable' }
+  | { action: 'clear' }
+
+export function designFileSame(onBase: string, local: string, isTodo: boolean): boolean {
+  const norm = (t: string) => t.replace(/\r\n/g, '\n')
+  const a = norm(onBase)
+  const b = norm(local)
+  return isTodo ? promoteProposed(a).text === promoteProposed(b).text : a === b
+}
+
+export function decideReviewAnswer(
+  answer: string,
+  agentId: string,
+  state: Pick<FactoryState, 'approved' | 'autopilot' | 'reviewAgentId'>,
+  hasItem: boolean,
+): ReviewAction {
+  if (!state.approved || !hasItem || state.reviewAgentId === null || agentId !== state.reviewAgentId) return { action: 'ignore' }
+  const mark = parseReviewMarker(answer)
+  if (mark) return { action: 'record', mark }
+  if (/FACTORY-REVIEW:\s*unavailable/i.test(answer)) return { action: 'unavailable' }
+  return { action: 'clear' }
+}
+
 export function reviewAgentPrompt(s: Settings, branch: string): string {
   return `${REVIEW_TAG} You are an independent code reviewer with a fresh context. You have not seen how this code was written.
 Repository branch: ${branch}, to be merged into ${s.baseBranch}. Read .factory/design.md and the item's acceptance criteria in .factory/todo.md for intent.
@@ -849,7 +906,7 @@ Do this:
    i. When the loop is blocked or a decision turns out infeasible: the default is to mark the item blocked and continue with the next one.
 3. Record everything as you go, so it survives the session:
    - .factory/design.md: overview, non-goals, architecture, version plan, and a "## Decisions" section (one entry per decision: question, options, choice, why).
-   - .factory/settings.json: {"baseBranch":"main","testCmd":["bash","-lc","<full test command>"],"buildCmd":["bash","-lc","<build command>"],"e2eCmd":["bash","-lc","<e2e command>"],"e2eFor":["feature","bug"],"testTimeoutMs":600000,"mergeMethod":"squash","maxAttempts":4,"maxItemsPerRun":0,"allowNoCI":false,"requireTestChanges":true,"requireReview":true,"reviewCommand":"/review-fix","maxReviewRounds":5,"contextReset":"clear","stopAfterVersion":"<e.g. 0.3.0>","tagRelease":false,"requireBranchProtection":false,"allowTestRemoval":false}   (omit buildCmd/e2eCmd only if the person says there is nothing to build or no UI; each command may run at most 10 minutes)
+   - .factory/settings.json: {"baseBranch":"main","testCmd":["bash","-lc","<full test command>"],"buildCmd":["bash","-lc","<build command>"],"e2eCmd":["bash","-lc","<e2e command>"],"e2eFor":["feature","bug"],"testTimeoutMs":600000,"mergeMethod":"squash","maxAttempts":4,"maxItemsPerRun":0,"allowNoCI":false,"requireTestChanges":true,"requireReview":true,"reviewCommand":"/review-fix","maxReviewRounds":5,"contextReset":"clear","stopAfterVersion":"<e.g. 0.3.0>","tagRelease":false,"requireBranchProtection":false,"allowTestRemoval":false,"reviewTimeoutMs":1800000}   (omit buildCmd/e2eCmd only if the person says there is nothing to build or no UI; each command may run at most 10 minutes)
    - .factory/todo.md in exactly this format, in priority order, one block per item:
        ## T-001 [feature] Short title      (type is feature, bug, chore or docs)
        - status: proposed
@@ -859,7 +916,8 @@ Do this:
        - tests: what unit and e2e tests will be written and what they assert
        - depends: T-000 (optional)
    - The factory creates .factory/.gitignore itself; do not edit it.
-4. When the person confirms the design is complete, read it back as a short summary, then tell them to run /factory-approve to validate it and unlock the build loop, and /factory-start to run it. Do not run those yourself and do not edit the factory's state file.`
+4. Before you finish, check .factory/settings.json exists and its testCmd is a non-empty argv array (the loop cannot start without it; /factory-approve rejects the design otherwise).
+5. When the person confirms the design is complete, read it back as a short summary. Then check out the base branch, and commit .factory/design.md, .factory/settings.json, .factory/todo.md and .factory/.gitignore to it and push it (git checkout <base> && git pull --ff-only && git add .factory/design.md .factory/settings.json .factory/todo.md .factory/.gitignore && git commit -m "Add code factory design" -- .factory/design.md .factory/settings.json .factory/todo.md .factory/.gitignore && git push origin <base>); the path list on the commit keeps anything else the person has staged out of it. The loop switches back to the base branch between items, so design files that exist only on another branch disappear and the loop stops. If the push is rejected because the base branch is protected, move the commit onto a branch and keep the local base clean (git switch -c factory-design && git push -u origin factory-design && git branch -f <base> origin/<base>), open a PR from it with gh pr create and tell the person to merge it first; /factory-approve checks that origin/<base> holds exactly these files. Finally tell them to run /factory-approve to validate it and unlock the build loop, and /factory-start to run it. Do not run those yourself and do not edit the factory's state files.`
 
 export function workPrompt(item: Item, s: Settings, resumeNote: string | null): string {
   const branch = branchFor(item)
@@ -886,7 +944,7 @@ Work autonomously with no questions to the person. Follow this loop exactly:
 -----
 ${reviewAgentPrompt(s, branch)}
 -----
-Wait for it. Its answer ends with a FACTORY-REVIEW line; the factory reads it and only lets the PR open when it shows danger=0 medium=0 for the current HEAD. If it shows findings you may spawn a new reviewer again (at most ${s.maxReviewRounds} rounds in total); if it is still not clean after that, write .factory/blocked/${item.id}.md and stop.
+If the Agent tool says the agent was launched in the background, end your turn and wait: its report arrives later as a message and the factory reads the FACTORY-REVIEW line from the reviewer's own final turn, so do not spawn a second reviewer. Its answer ends with a FACTORY-REVIEW line; the factory reads it and only lets the PR open when it shows danger=0 medium=0 for the current HEAD. If it shows findings you may spawn a new reviewer again (at most ${s.maxReviewRounds} rounds in total); if it is still not clean after that, write .factory/blocked/${item.id}.md and stop.
 7. Push the branch and open a PR: \`gh pr create --base ${s.baseBranch} --title "${item.id}: ${item.title}" --body "<what changed, decisions followed, tests, how you verified it locally>"\`. Before it opens, the factory itself runs${s.buildCmd.length > 0 ? ' the build,' : ''} the test suite${needsE2e ? ', the e2e tests' : ''}, checks that tests changed and that the review is clean for HEAD; fix what it reports and retry.
 8. Wait for CI (\`gh pr checks <n> --watch\`). If a check fails, read the logs (\`gh run view --log-failed\`), fix, push and wait again (after any new commit the review must be re-run). If the failure is a GitHub billing, payment or spending-limit problem (jobs never start), the factory stops the loop by itself; do not try to work around it. If you cannot get green after 5 fix rounds, write .factory/blocked/${item.id}.md, return to ${s.baseBranch} and stop.
 9. When CI is green: \`gh pr merge <n> --${s.mergeMethod} --delete-branch\`. The factory verifies the checks before it allows the merge.

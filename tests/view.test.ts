@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 import { DEFAULT_STATE, branchFor, buildView, classifyBash, decisionsHash, loopEventForBash, parseSettings, parseTodo, reviewAgentPrompt, stageAfter } from '../hooks/lib'
 
@@ -55,6 +55,7 @@ const SHA = 'abc1234def5678abc1234def5678abc1234def56'
 const ok = (stdout: string) => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 
 function fixture($: any, on: any, toolIsError = false, branch = 'factory/t-001-first', agentText = ''): void {
+  mock.clock(on, { now: 1_000_000 })
   const settings = JSON.stringify({ testCmd: ['unit'], baseBranch: 'main', requireReview: false, requireTestChanges: false, allowTestRemoval: true })
   const hash = decisionsHash(parseSettings(settings).settings, parseTodo(TODO))
   const files: Record<string, string> = {
@@ -73,7 +74,7 @@ function fixture($: any, on: any, toolIsError = false, branch = 'factory/t-001-f
     if (cmd.startsWith('git rev-parse')) return { value: ok(`${SHA}\n`) }
     return { value: ok('') }
   })
-  on('tool.call', (_: unknown, e: { tool: string }) =>
+  on('tool.call', (_: unknown, e: { tool: string; prompt?: string }) =>
     e.tool === 'Agent'
       ? { result: { content: [{ type: 'text', text: agentText }] }, text: 'agent', isError: false }
       : { result: 'ran', text: 'ran', isError: toolIsError },
