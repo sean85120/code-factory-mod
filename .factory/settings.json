@@ -1,0 +1,19 @@
+{
+  "baseBranch": "main",
+  "testCmd": ["bash", "-lc", "claude plugin test . && claude plugin validate ."],
+  "testTimeoutMs": 600000,
+  "mergeMethod": "squash",
+  "maxAttempts": 4,
+  "maxItemsPerRun": 0,
+  "allowNoCI": false,
+  "requireTestChanges": true,
+  "e2eFor": [],
+  "requireReview": true,
+  "reviewCommand": "/review-fix",
+  "maxReviewRounds": 5,
+  "contextReset": "clear",
+  "stopAfterVersion": "0.3.0",
+  "tagRelease": false,
+  "requireBranchProtection": false,
+  "allowTestRemoval": false
+}
