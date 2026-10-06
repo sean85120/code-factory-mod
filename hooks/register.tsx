@@ -32,6 +32,7 @@ import {
   deny,
   rebaseMark,
   roadmapExpired,
+  isSafeBranchName,
   isRoadmapDone,
   roadmapPrompt,
   sanitizeEvents,
@@ -107,6 +108,9 @@ let rearms = 0
 const MAX_REARMS = 3
 let roadmapPending = false
 let personSlash = false
+let slashTurnId: string | null = null
+let slashGen = 0
+const SLASH_TURN_WAIT_MS = 5000
 let unreadableToasted = false
 
 // One session runs the loop per repo. The lock lives in .factory/lock.json, is
@@ -510,6 +514,7 @@ const reviewWaiting = (state: FactoryState, settings: Settings, now: number): bo
 
 function submit($: Dollar, full: string, label?: string, isDesign = false, guarded = false, roadmapAt: number | null = null): void {
   personSlash = false
+  slashTurnId = null
   isFactoryTurn = true
   factoryTurnAt = -1
   isArmed = !isDesign || guarded
@@ -1112,6 +1117,7 @@ export const register: Register = (on, _options) => {
       isFactoryTurn = false
       isArmed = false
       personSlash = false
+      slashTurnId = null
       await releaseLock($)
     }
     return next(e)
@@ -1138,7 +1144,8 @@ export const register: Register = (on, _options) => {
     const snap = await load($)
     const raw = await readText($, TODO_PATH)
     const designText = await readText($, DESIGN_PATH)
-    const protection = await branchProtectionWarnings($, snap.settings.baseBranch)
+    const baseOk = isSafeBranchName(snap.settings.baseBranch)
+    const protection = baseOk ? await branchProtectionWarnings($, snap.settings.baseBranch) : []
     const problems = [
       ...snap.settingsProblems,
       ...(snap.settings.requireBranchProtection ? protection : []),
@@ -1146,7 +1153,7 @@ export const register: Register = (on, _options) => {
       ...validateItems(snap.items, snap.settings.stopAfterVersion),
       ...(designText === null || !/^##\s+Decisions/im.test(designText) ? [`${DESIGN_PATH} needs a "## Decisions" section.`] : []),
       ...(await preflight($)),
-      ...(await missingOnBase($, snap.settings.baseBranch)),
+      ...(baseOk ? await missingOnBase($, snap.settings.baseBranch) : [designPushSteps(snap.settings.baseBranch)]),
       ...(snap.state.unreadable ? [STATE_UNREADABLE] : []),
     ]
     if (problems.length > 0) return { text: safeLines(`Not approved. Fix these first (/factory-design continues the interview):\n- ${problems.join('\n- ')}`) }
@@ -1370,9 +1377,12 @@ export const register: Register = (on, _options) => {
         instructions.lastAt = await $.clock.now()
       }
     }
-    if (!e.agentId && !isFactoryTurn && personSlash) {
+    if (!e.agentId && personSlash && slashTurnId !== null && e.turnId !== slashTurnId && !isFactoryTurn && markOwner !== null) await settle($, true)
+    else if (!e.agentId && personSlash && (slashTurnId === null || e.turnId === slashTurnId)) {
+      const isSlashTurn = slashTurnId !== null && !isFactoryTurn
       personSlash = false
-      if (markOwner !== null) await rebaseOpenMark($)
+      slashTurnId = null
+      if (isSlashTurn && markOwner !== null) await rebaseOpenMark($)
     }
     await refreshView($)
     if (e.agentId) {
@@ -1420,6 +1430,7 @@ export const register: Register = (on, _options) => {
 
   // The person taking the wheel pauses the loop and takes the guards off.
   on('prompt.submit', async ($, e, next) => {
+    if (['composer', 'bridge', 'sdk'].includes(e.origin.kind) && instructions && instructions.roadmapAt !== null) instructions.lastAt = await $.clock.now()
     if ((e.origin.kind === 'peer' || e.origin.kind === 'task-notification') && (expectReport || launchedHere !== null)) {
       const state = await readState($)
       if (expectReport || state.autopilot) {
@@ -1442,7 +1453,19 @@ export const register: Register = (on, _options) => {
     if (['composer', 'bridge', 'sdk'].includes(e.origin.kind) && e.text.trimStart().startsWith('/') && !e.text.trimStart().startsWith('/factory-') && markOwner !== null) {
       await settle($, true)
       personSlash = true
+      slashTurnId = null
+      const gen = ++slashGen
+      $.clock.after(SLASH_TURN_WAIT_MS, () => {
+        if (gen === slashGen && slashTurnId === null) personSlash = false
+      })
+    } else if (!['composer', 'bridge', 'sdk'].includes(e.origin.kind) && personSlash && slashTurnId === null) {
+      personSlash = false
     }
+    return next(e)
+  })
+
+  on('turn.start', async ($, e, next) => {
+    if (personSlash && slashTurnId === null) slashTurnId = e.turnId
     return next(e)
   })
 

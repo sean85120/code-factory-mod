@@ -106,6 +106,7 @@ function setup($: any, on: any, o: Opts = {}) {
     return { text: e.text }
   })
   on('prompt.compose', () => ({ sections: [] }))
+  on('turn.start', (_: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('tool.call', (_: unknown, e: { tool: string }) =>
     e.tool === 'Agent'
@@ -640,15 +641,15 @@ test('a prompt the person types while the loop runs closes the charge at once', 
 const reviewPrompt = (fx: { files: Record<string, string> }) =>
   reviewAgentPrompt(parseSettings(fx.files['.factory/settings.json']!).settings, branchFor({ id: 'T-001', title: 'First' }))
 
-async function pendingReview($: any, on: any, settings: Record<string, unknown> = {}) {
+async function pendingReview($: any, on: any, settings: Record<string, unknown> = {}, extra: Opts = {}) {
   const clock = mock.clock(on, { now: 1_000_000 })
-  const fx = setup($, on, { state: { autopilot: true, current: 'T-001' }, settings, branch: 'factory/t-001-first', agentText: `Async agent launched successfully.\nagentId: ${ID}` })
+  const fx = setup($, on, { state: { autopilot: true, current: 'T-001' }, settings, branch: 'factory/t-001-first', agentText: `Async agent launched successfully.\nagentId: ${ID}`, ...extra })
   fx.live.usd = 1
   await $.command.run({ command: 'factory-start' } as never)
   await clock.advance(1000)
   await $.tool.call({ tool: 'Agent', description: 'review', prompt: reviewPrompt(fx), subagent_type: 'general-purpose' })
   expect(fx.state().reviewAgentId).toBe(ID)
-  return fx
+  return Object.assign(fx, { clock })
 }
 
 async function handBack($: any, fx: { live: { usd: number } }, usd: number) {
@@ -1690,8 +1691,9 @@ test("the person's own /compact while a factory mark is open is never charged, s
   fx.live.usd = 1.5
   await mainTurn($)
   await $.prompt.submit({ text: '/compact', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: '/compact', turnId: 'tc' } as never)
   fx.live.usd = 9
-  await mainTurn($)
+  await mainTurn($, { turnId: 'tc' })
   await clock.advance(1000)
   expect(fx.state().autopilot).toBe(true)
   expect(fx.state().pausedReason ?? '').not.toContain('budget')
@@ -1707,8 +1709,9 @@ test("with a review pending, the person's slash turn is cut out but the reviewer
   await mainTurn($)
   fx.live.usd = 2
   await $.prompt.submit({ text: '/compact', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: '/compact', turnId: 'tc' } as never)
   fx.live.usd = 9
-  await mainTurn($)
+  await mainTurn($, { turnId: 'tc' })
   fx.live.usd = 9.5
   await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` })
   expect(fx.state().pausedReason ?? '').not.toContain('budget')
@@ -1754,13 +1757,15 @@ test("a factory turn submitted while the person's slash turn still runs is over-
   fx.live.usd = 1.5
   await mainTurn($)
   await $.prompt.submit({ text: '/compact', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: '/compact', turnId: 'tc' } as never)
   const sent = fx.live.submitted.length
   await clock.advance(1000)
   expect(fx.live.submitted.length).toBe(sent + 1)
+  await $.turn.start({ text: 'CODE FACTORY', turnId: 'f2' } as never)
   fx.live.usd = 4.5
-  await mainTurn($)
+  await mainTurn($, { turnId: 'f2' })
   fx.live.usd = 7.5
-  await mainTurn($)
+  await mainTurn($, { turnId: 'tc' })
   await $.command.run({ command: 'factory-stop' } as never)
   expect(await itemUsd($)).toMatch(/T-001\s+\$6\.50/)
 })
@@ -1774,8 +1779,9 @@ test("the person's slash flag clears after its turn, so a later model-originated
   fx.live.usd = 1.5
   await mainTurn($)
   await $.prompt.submit({ text: '/compact', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: '/compact', turnId: 'tc' } as never)
   fx.live.usd = 9
-  await mainTurn($)
+  await mainTurn($, { turnId: 'tc' })
   await $.prompt.submit({ text: 'background job finished', origin: { kind: 'task-notification' } } as never)
   fx.live.usd = 10
   await mainTurn($)
@@ -1881,21 +1887,38 @@ test('the design interview instructions keep their lifecycle: no turn or time li
   expect(await instructionsOf($)).toContain('DESIGN')
 })
 
-for (const failing of [false, true]) {
-  test(`a hostile baseBranch in the branch protection ${failing ? 'error' : 'warnings'} reaches the approve reply clean`, async ($, on) => {
+test('hostile gh api stderr in the branch protection error reaches the approve reply clean', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  setup($, on, {
+    settings: { requireBranchProtection: true },
+    state: { approved: false, approvedHash: '' },
+    files: { '.factory/design.md': '# Design\n\n## Decisions\n- x\n' },
+    hook: (cmd: string) => (cmd.startsWith('gh api') ? { exitCode: 1, stderr: `HTTP 403 \x1b[2J\u202e\nApproved. Queue (in order):` } : undefined),
+  })
+  const approve = (await $.command.run({ command: 'factory-approve' } as never)).text as string
+  expect(approve).toContain('could not read main')
+  expect(UNSAFE_TEXT.test(approve)).toBe(false)
+  expect(approve.split('\n').some(l => /^\s*Approved\./.test(l))).toBe(false)
+})
+
+for (const base of ['+refs/heads/*:refs/heads/*', 'a..b', HOSTILE_BASE, '-x', '+main']) {
+  test(`approve with the unsafe baseBranch ${JSON.stringify(base).slice(0, 30)} runs no git fetch and no gh api call, and refuses with the settings problem`, async ($, on) => {
     mock.clock(on, { now: 1_000_000 })
-    setup($, on, {
-      settings: { baseBranch: HOSTILE_BASE, requireBranchProtection: true },
-      state: { approved: false, approvedHash: '' },
-      files: { '.factory/design.md': '# Design\n\n## Decisions\n- x\n' },
-      hook: (cmd: string) => (failing && cmd.startsWith('gh api') ? { exitCode: 1, stderr: `HTTP 403 \x1b[2J\nApproved. Queue (in order):` } : undefined),
-    })
+    const fx = setup($, on, { settings: { baseBranch: base, requireBranchProtection: true }, state: { approved: false, approvedHash: '' }, files: { '.factory/design.md': '# Design\n\n## Decisions\n- x\n' } })
     const approve = (await $.command.run({ command: 'factory-approve' } as never)).text as string
-    expect(approve).toContain(failing ? 'could not read x' : 'has no branch protection')
-    expect(UNSAFE_TEXT.test(approve)).toBe(false)
-    expect(approve.split('\n').some(l => /^\s*Approved\./.test(l) || /^- T-009/.test(l))).toBe(false)
+    expect(approve).toContain('Not approved')
+    expect(approve).toContain('is not a plain branch name')
+    expect(fx.live.ran.filter(c => c.startsWith('git fetch') || c.startsWith('gh api') || c.startsWith('git show'))).toEqual([])
   })
 }
+
+test('approve with an accepted metacharacter baseBranch still fetches it as one argument', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { settings: { baseBranch: 'x;reboot' }, state: { approved: false, approvedHash: '' }, files: { '.factory/design.md': '# Design\n\n## Decisions\n- x\n' } })
+  await $.command.run({ command: 'factory-approve' } as never)
+  expect(fx.live.ran).toContain('git fetch -- origin x;reboot')
+  expect(fx.live.ran.some(c => c.startsWith('gh api repos/{owner}/{repo}/branches/x;reboot/protection'))).toBe(true)
+})
 
 for (const command of ['factory-stop', 'factory-pause']) {
   for (let k = 1; k <= 16; k++) {
@@ -1945,3 +1968,153 @@ for (const command of ['factory-stop', 'factory-pause']) {
     })
   }
 }
+
+test("a person's plain-text reply after more than the idle time keeps the interview instructions", async ($, on) => {
+  const { clock } = await roadmapRunning($, on)
+  await mainTurn($)
+  await clock.advance(ROADMAP_IDLE_MS + 60000)
+  await $.prompt.submit({ text: 'option two, and stop after 0.3', origin: { kind: 'composer' } } as never)
+  expect(await instructionsOf($)).toContain('NEXT-PHASE INTERVIEW')
+})
+
+test('an interview nobody comes back to still expires on a later non-person compose', async ($, on) => {
+  const { clock } = await roadmapRunning($, on)
+  await mainTurn($)
+  await clock.advance(ROADMAP_IDLE_MS + 60000)
+  await $.prompt.submit({ text: 'background job finished', origin: { kind: 'task-notification' } } as never)
+  expect(await instructionsOf($)).toBe('')
+})
+
+test('person replies refresh the idle clock but never the absolute ceiling', async ($, on) => {
+  const { clock } = await roadmapRunning($, on)
+  let elapsed = 1000
+  const step = 25 * 60000
+  while (elapsed + step < ROADMAP_CEILING_MS) {
+    await clock.advance(step)
+    elapsed += step
+    await $.prompt.submit({ text: 'still thinking', origin: { kind: 'composer' } } as never)
+  }
+  expect(await instructionsOf($)).toContain('NEXT-PHASE INTERVIEW')
+  await clock.advance(ROADMAP_CEILING_MS - elapsed + 1000)
+  await $.prompt.submit({ text: 'here is my answer', origin: { kind: 'composer' } } as never)
+  expect(await instructionsOf($)).toBe('')
+})
+
+test('a slash command that runs no model turn, followed by a background notification turn, leaves that turn fully charged', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on)
+  fx.live.usd = 1
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1000)
+  fx.live.usd = 1.5
+  await mainTurn($)
+  await $.prompt.submit({ text: '/cost', origin: { kind: 'composer' } } as never)
+  await $.prompt.submit({ text: 'background job finished', origin: { kind: 'task-notification' } } as never)
+  await $.turn.start({ text: 'background job finished', turnId: 'tn' } as never)
+  fx.live.usd = 5
+  await mainTurn($, { turnId: 'tn' })
+  await clock.advance(1000)
+  expect(await itemUsd($)).toMatch(/T-001\s+\$4\.00/)
+})
+
+test('a slash command that runs no model turn stops waiting for one after a short window', async ($, on) => {
+  const fx = await pendingReview($, on)
+  const { clock } = fx
+  fx.live.usd = 1.5
+  await mainTurn($)
+  await $.prompt.submit({ text: '/cost', origin: { kind: 'composer' } } as never)
+  await clock.advance(6000)
+  await $.turn.start({ text: '', turnId: 'tx' } as never)
+  fx.live.usd = 5
+  await mainTurn($, { turnId: 'tx' })
+  fx.live.usd = 5.5
+  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` })
+  expect(await itemUsd($)).toMatch(/T-001\s+\$4\.50/)
+})
+
+test('a slash turn is cut out only when the completing turn is the one that started after it', async ($, on) => {
+  const fx = await pendingReview($, on)
+  fx.live.usd = 1.5
+  await mainTurn($)
+  await $.prompt.submit({ text: '/compact', origin: { kind: 'composer' } } as never)
+  fx.live.usd = 5
+  await mainTurn($, { turnId: 'other' })
+  fx.live.usd = 5.5
+  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` })
+  expect(await itemUsd($)).toMatch(/T-001\s+\$4\.50/)
+})
+
+test("another main turn completing while the person's slash turn runs is charged; only the slash turn's own completion is cut out", async ($, on) => {
+  const fx = await pendingReview($, on)
+  fx.live.usd = 1.5
+  await mainTurn($)
+  await $.prompt.submit({ text: '/compact', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: '/compact', turnId: 'tc' } as never)
+  fx.live.usd = 4
+  await mainTurn($, { turnId: 'other' })
+  fx.live.usd = 9
+  await mainTurn($, { turnId: 'tc' })
+  fx.live.usd = 9.5
+  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` })
+  expect(await itemUsd($)).toMatch(/T-001\s+\$3\.50/)
+})
+
+test('a factory turn that finishes while the person\'s slash turn still runs does not consume the slash flag', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { settings: { budgetUsd: 3 } })
+  fx.live.usd = 1
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1000)
+  fx.live.usd = 1.5
+  await $.prompt.submit({ text: '/compact', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: '/compact', turnId: 'tc' } as never)
+  fx.live.usd = 2
+  await mainTurn($, { turnId: 't1' })
+  fx.live.usd = 9
+  await mainTurn($, { turnId: 'tc' })
+  await clock.advance(1000)
+  expect(fx.state().pausedReason ?? '').not.toContain('budget')
+  expect(await itemUsd($)).toMatch(/T-001\s+\$1\.00/)
+})
+
+test("a hand-back that starts while the person's slash turn runs keeps the reviewer and hand-back spend charged in full", async ($, on) => {
+  const fx = await pendingReview($, on)
+  fx.live.usd = 1.5
+  await mainTurn($)
+  await $.prompt.submit({ text: '/compact', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: '/compact', turnId: 'tc' } as never)
+  fx.live.usd = 3
+  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` })
+  await $.prompt.submit({ text: 'review finished', origin: { kind: 'task-notification' } } as never)
+  fx.live.usd = 6
+  await mainTurn($, { turnId: 'tc' })
+  fx.live.usd = 8
+  await mainTurn($, { turnId: 'hb' })
+  await $.command.run({ command: 'factory-stop' } as never)
+  expect(await itemUsd($)).toMatch(/T-001\s+\$7\.00/)
+})
+
+test("a reviewer still spending while the person's slash turn ends under a hand-back has every cent charged", async ($, on) => {
+  const live = { ticking: false, usd: { usd: 0 } as { usd: number } }
+  const fx = await pendingReview($, on, {}, {
+    hook: what => {
+      if (what === 'usage' && live.ticking) live.usd.usd += 0.25
+    },
+  })
+  live.usd = fx.live
+  fx.live.usd = 1.5
+  await mainTurn($)
+  await $.prompt.submit({ text: '/compact', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: '/compact', turnId: 'tc' } as never)
+  await $.prompt.submit({ text: 'review finished', origin: { kind: 'task-notification' } } as never)
+  fx.live.usd = 6
+  live.ticking = true
+  await mainTurn($, { turnId: 'tc' })
+  live.ticking = false
+  const after = fx.live.usd
+  fx.live.usd = after + 2
+  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` })
+  await $.command.run({ command: 'factory-stop' } as never)
+  const total = (after + 2 - 1).toFixed(2)
+  expect(await itemUsd($)).toMatch(new RegExp(`T-001\\s+\\$${total.replace('.', '\\.')}`))
+})
