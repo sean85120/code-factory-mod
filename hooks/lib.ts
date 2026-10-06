@@ -42,6 +42,8 @@ export type Settings = {
   requireBranchProtection: boolean
   allowTestRemoval: boolean
   reviewTimeoutMs: number
+  budgetUsd: number
+  askNextPhase: boolean
 }
 
 export type ReviewMark = { sha: string; danger: number; medium: number }
@@ -63,6 +65,9 @@ export type FactoryState = {
   releaseAttempts: number
   mergedIds: string[]
   approvedDone: string[]
+  events: FactoryEvent[]
+  roadmapAsked: boolean
+  unreadable?: boolean
 }
 
 export const FACTORY_DIR = '.factory'
@@ -95,6 +100,8 @@ export const DEFAULT_SETTINGS: Settings = {
   requireBranchProtection: false,
   allowTestRemoval: false,
   reviewTimeoutMs: 1800000,
+  budgetUsd: 0,
+  askNextPhase: true,
 }
 
 export const DEFAULT_STATE: FactoryState = {
@@ -114,6 +121,8 @@ export const DEFAULT_STATE: FactoryState = {
   releaseAttempts: 0,
   mergedIds: [],
   approvedDone: [],
+  events: [],
+  roadmapAsked: false,
 }
 
 // ---------------------------------------------------------------- todo.md
@@ -332,6 +341,7 @@ export function parseSettings(text: string | null): { settings: Settings; proble
   }
   const s: Settings = { ...DEFAULT_SETTINGS }
   if (typeof raw.baseBranch === 'string' && raw.baseBranch.trim()) s.baseBranch = raw.baseBranch.trim()
+  if (!isSafeBranchName(s.baseBranch)) problems.push(`settings.json \`baseBranch\` "${cleanText(s.baseBranch).slice(0, 60)}" is not a plain branch name (no whitespace, control or invisible characters, quotes, backtick, backslash, $, ~ ^ : ? * [, .., @{ or //; not starting with - + . or /, not ending with / . or .lock).`)
   if (Array.isArray(raw.testCmd) && raw.testCmd.every(x => typeof x === 'string')) {
     s.testCmd = raw.testCmd as string[]
   }
@@ -372,6 +382,11 @@ export function parseSettings(text: string | null): { settings: Settings; proble
   }
   if (typeof raw.allowNoCI === 'boolean') s.allowNoCI = raw.allowNoCI
   if (typeof raw.requireTestChanges === 'boolean') s.requireTestChanges = raw.requireTestChanges
+  if (raw.budgetUsd !== undefined && raw.budgetUsd !== null) {
+    if (typeof raw.budgetUsd === 'number' && Number.isFinite(raw.budgetUsd) && raw.budgetUsd >= 0) s.budgetUsd = raw.budgetUsd
+    else problems.push('settings.json `budgetUsd` must be a number of US dollars, 0 for no budget.')
+  }
+  if (typeof raw.askNextPhase === 'boolean') s.askNextPhase = raw.askNextPhase
   return { settings: s, problems }
 }
 
@@ -391,8 +406,9 @@ export function decisionsHash(settings: Settings, items: Item[]): string {
   const frozen = items
     .filter(i => i.status !== 'proposed')
     .map(i => [i.id, i.type, i.title, i.how, i.accept, i.tests, i.depends.join(','), i.version].join('|'))
-  const { reviewTimeoutMs: _timeout, ...hashed } = settings
-  return fnv1a(JSON.stringify([hashed, frozen]))
+  const { reviewTimeoutMs: _timeout, budgetUsd, askNextPhase, ...hashed } = settings
+  const added = { ...(budgetUsd !== DEFAULT_SETTINGS.budgetUsd ? { budgetUsd } : {}), ...(askNextPhase !== DEFAULT_SETTINGS.askNextPhase ? { askNextPhase } : {}) }
+  return fnv1a(JSON.stringify(Object.keys(added).length > 0 ? [hashed, frozen, added] : [hashed, frozen]))
 }
 
 export function inScope(item: Item, stopAfterVersion: string | null): boolean {
@@ -813,6 +829,15 @@ export function agentText(result: unknown): string {
 
 export const normalizeText = (t: string): string => t.replace(/\s+/g, ' ').trim()
 
+export const stripControls = (t: string): string =>
+  t.replace(/[\t\n\v\f\r\u0085\u2028\u2029]/g, ' ').replace(/[\x00-\x1f\x7f-\x9f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g, '')
+
+export const cleanText = (t: string): string => normalizeText(stripControls(t))
+
+export const safeLines = (t: string): string => t.split('\n').map(stripControls).join('\n')
+
+export const deny = (t: string): { deny: string } => ({ deny: safeLines(t) })
+
 export const REVIEW_TAG = '[FACTORY-REVIEW-AGENT]'
 
 export function parseReviewMarker(text: string): ReviewMark | null {
@@ -904,9 +929,10 @@ Do this:
    g. Review: the loop reviews each branch with an independent agent running the slash command in settings.reviewCommand (default /review-fix) until no danger or medium findings remain. Confirm the command name.
    h. Git: base branch, merge method (squash/merge/rebase), anything protected. Context handling between items (clear, compact or none; default clear).
    i. When the loop is blocked or a decision turns out infeasible: the default is to mark the item blocked and continue with the next one.
+   j. Spend: an optional US-dollar budget per run (settings.budgetUsd, 0 for none; the loop pauses when one run reaches it) and whether the factory should interview them about the next phase once every item is done (settings.askNextPhase, default true).
 3. Record everything as you go, so it survives the session:
    - .factory/design.md: overview, non-goals, architecture, version plan, and a "## Decisions" section (one entry per decision: question, options, choice, why).
-   - .factory/settings.json: {"baseBranch":"main","testCmd":["bash","-lc","<full test command>"],"buildCmd":["bash","-lc","<build command>"],"e2eCmd":["bash","-lc","<e2e command>"],"e2eFor":["feature","bug"],"testTimeoutMs":600000,"mergeMethod":"squash","maxAttempts":4,"maxItemsPerRun":0,"allowNoCI":false,"requireTestChanges":true,"requireReview":true,"reviewCommand":"/review-fix","maxReviewRounds":5,"contextReset":"clear","stopAfterVersion":"<e.g. 0.3.0>","tagRelease":false,"requireBranchProtection":false,"allowTestRemoval":false,"reviewTimeoutMs":1800000}   (omit buildCmd/e2eCmd only if the person says there is nothing to build or no UI; each command may run at most 10 minutes)
+   - .factory/settings.json: {"baseBranch":"main","testCmd":["bash","-lc","<full test command>"],"buildCmd":["bash","-lc","<build command>"],"e2eCmd":["bash","-lc","<e2e command>"],"e2eFor":["feature","bug"],"testTimeoutMs":600000,"mergeMethod":"squash","maxAttempts":4,"maxItemsPerRun":0,"allowNoCI":false,"requireTestChanges":true,"requireReview":true,"reviewCommand":"/review-fix","maxReviewRounds":5,"contextReset":"clear","stopAfterVersion":"<e.g. 0.3.0>","tagRelease":false,"requireBranchProtection":false,"allowTestRemoval":false,"reviewTimeoutMs":1800000,"budgetUsd":0,"askNextPhase":true}   (omit buildCmd/e2eCmd only if the person says there is nothing to build or no UI; each command may run at most 10 minutes; budgetUsd pauses the loop once one run has spent that many US dollars, 0 means no budget; askNextPhase makes the factory interview the person about the next phase once every item is done)
    - .factory/todo.md in exactly this format, in priority order, one block per item:
        ## T-001 [feature] Short title      (type is feature, bug, chore or docs)
        - status: proposed
@@ -988,6 +1014,9 @@ export function loopEventForBash(f: BashFacts): LoopEvent | null {
 
 export const VIEW_ROWS = 6
 export const VIEW_CHANGES = 3
+export const VIEW_EVENTS = 3
+
+export type ViewSpend = { runUsd: number | null; itemUsd: number | null; budgetUsd: number }
 
 export function buildView(
   items: readonly Item[],
@@ -995,10 +1024,11 @@ export function buildView(
   blocked: ReadonlySet<string>,
   stopAfterVersion: string | null,
   prev: FactoryView | null,
+  spend: ViewSpend = { runUsd: null, itemUsd: null, budgetUsd: 0 },
 ): FactoryView {
   const scoped = items.filter(i => inScope(i, stopAfterVersion))
   const markOf = (i: Item): Mark => (blocked.has(i.id) ? 'blocked' : state.current === i.id && i.status !== 'proposed' ? 'doing' : i.status)
-  const all: ViewRow[] = scoped.map(i => ({ id: i.id, type: i.type, title: i.title, version: i.version, mark: markOf(i) }))
+  const all: ViewRow[] = scoped.map(i => ({ id: i.id, type: i.type, title: cleanText(i.title), version: cleanText(i.version), mark: markOf(i) }))
   const marks: Record<string, Mark> = Object.fromEntries(all.map(r => [r.id, r.mark]))
   const fresh: string[] = []
   if (prev) {
@@ -1012,8 +1042,8 @@ export function buildView(
   const stage = state.current === null ? null : prev && prev.current === state.current ? prev.stage ?? 'build' : 'build'
   return {
     approved: state.approved,
-    running: state.autopilot,
-    pausedReason: state.pausedReason,
+    running: state.autopilot && !state.unreadable,
+    pausedReason: state.pausedReason === null ? null : cleanText(state.pausedReason),
     current: state.current,
     stage,
     summary: summarize(items as Item[], blocked),
@@ -1022,5 +1052,646 @@ export function buildView(
     more: Math.max(0, open.length - VIEW_ROWS),
     marks,
     changes: [...(prev?.changes ?? []), ...fresh].slice(-VIEW_CHANGES),
+    runUsd: spend.runUsd,
+    itemUsd: state.current === null ? null : spend.itemUsd,
+    budgetUsd: spend.budgetUsd,
+    events: (state.events ?? []).slice(-VIEW_EVENTS).map(shortEvent),
   }
+}
+
+export type EventKind =
+  | 'started'
+  | 'commit'
+  | 'pr-opened'
+  | 'ci-passed'
+  | 'ci-failed'
+  | 'review-launched'
+  | 'review-verdict'
+  | 'nudge'
+  | 'blocked'
+  | 'merged'
+  | 'done'
+  | 'paused'
+  | 'resumed'
+  | 'skip'
+  | 'retry'
+  | 'release'
+  | 'roadmap'
+
+export type FactoryEvent = { ts: number; itemId: string | null; kind: EventKind; detail: string; pr?: number; url?: string }
+
+export const MAX_EVENTS = 200
+
+const EVENT_KINDS: ReadonlySet<string> = new Set<EventKind>(['started', 'commit', 'pr-opened', 'ci-passed', 'ci-failed', 'review-launched', 'review-verdict', 'nudge', 'blocked', 'merged', 'done', 'paused', 'resumed', 'skip', 'retry', 'release', 'roadmap'])
+
+export function sanitizeEvents(raw: unknown): FactoryEvent[] {
+  if (!Array.isArray(raw)) return []
+  const out: FactoryEvent[] = []
+  for (const r of raw) {
+    const e = obj(r)
+    if (!e || typeof e.ts !== 'number' || typeof e.kind !== 'string' || !EVENT_KINDS.has(e.kind)) continue
+    out.push({
+      ts: e.ts,
+      itemId: typeof e.itemId === 'string' ? stripControls(e.itemId) : null,
+      kind: e.kind as EventKind,
+      detail: typeof e.detail === 'string' ? stripControls(e.detail) : '',
+      ...(typeof e.pr === 'number' ? { pr: e.pr } : {}),
+      ...(typeof e.url === 'string' ? { url: stripControls(e.url) } : {}),
+    })
+  }
+  return out.slice(-MAX_EVENTS)
+}
+
+const eventKey = (e: FactoryEvent): string => `${e.ts}|${e.kind}|${e.itemId ?? ''}|${e.detail}`
+
+export function appendEvent(events: readonly FactoryEvent[], ev: FactoryEvent): FactoryEvent[] {
+  const e: FactoryEvent = { ...ev, detail: cleanText(ev.detail).slice(0, 160), ...(ev.url !== undefined ? { url: stripControls(ev.url) } : {}) }
+  const last = events[events.length - 1]
+  if (last && last.kind === e.kind && last.itemId === e.itemId && last.detail === e.detail) return [...events]
+  return [...events, e].slice(-MAX_EVENTS)
+}
+
+export function applyChanges(fresh: FactoryState, base: FactoryState, next: FactoryState): FactoryState {
+  const out: Record<string, unknown> = { ...fresh }
+  const b = base as unknown as Record<string, unknown>
+  for (const [k, v] of Object.entries(next as unknown as Record<string, unknown>)) {
+    if (k === 'events' || k === 'mergedIds' || k === 'approvedDone' || k === 'unreadable') continue
+    if (JSON.stringify(v) !== JSON.stringify(b[k])) out[k] = v
+  }
+  const result = out as unknown as FactoryState
+  return {
+    ...result,
+    events: mergeEvents(fresh.events ?? [], next.events ?? []),
+    mergedIds: [...new Set([...fresh.mergedIds, ...next.mergedIds])],
+    approvedDone: JSON.stringify(next.approvedDone) !== JSON.stringify(base.approvedDone) ? next.approvedDone : fresh.approvedDone,
+  }
+}
+
+export function mergeEvents(onDisk: readonly FactoryEvent[], mine: readonly FactoryEvent[]): FactoryEvent[] {
+  const seen = new Set<string>()
+  const out: FactoryEvent[] = []
+  for (const e of [...onDisk, ...mine]) {
+    const k = eventKey(e)
+    if (seen.has(k)) continue
+    seen.add(k)
+    out.push(e)
+  }
+  return out
+    .map((e, i) => [e, i] as const)
+    .sort((a, b) => a[0].ts - b[0].ts || a[1] - b[1])
+    .map(x => x[0])
+    .slice(-MAX_EVENTS)
+}
+
+export function shortEvent(e: FactoryEvent): string {
+  return stripControls(shortEventRaw(e))
+}
+
+function shortEventRaw(e: FactoryEvent): string {
+  const who = e.itemId ?? 'factory'
+  switch (e.kind) {
+    case 'pr-opened':
+      return `${who} PR${e.pr !== undefined ? ` #${e.pr}` : ''}`
+    case 'ci-passed':
+      return `${who} CI ✓`
+    case 'ci-failed':
+      return `${who} CI ✗`
+    case 'review-verdict':
+      return `${who} review ${e.detail.replace(/\s*sha=\S+/, '')}`.trim()
+    case 'review-launched':
+      return `${who} reviewing`
+    default:
+      return `${who} ${e.kind}`
+  }
+}
+
+export function formatDuration(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m${String(s % 60).padStart(2, '0')}s`
+  const h = Math.floor(m / 60)
+  if (h < 48) return `${h}h${String(m % 60).padStart(2, '0')}m`
+  return `${Math.floor(h / 24)}d${String(h % 24).padStart(2, '0')}h`
+}
+
+const clock = (ts: number): string => new Date(ts).toISOString().slice(0, 19).replace('T', ' ')
+
+export function formatLog(events: readonly FactoryEvent[], itemId: string | null): string {
+  const id = itemId ? itemId.toUpperCase() : null
+  const list = id ? events.filter(e => e.itemId === id) : [...events]
+  if (list.length === 0) return id ? `No events recorded for ${id}.` : 'No events recorded yet.'
+  const lines = list.map((e, i) => {
+    const gap = i === 0 ? '' : `+${formatDuration(e.ts - list[i - 1]!.ts)}`
+    const pr = e.kind === 'pr-opened' ? [e.pr !== undefined ? `#${e.pr}` : '', e.url ?? ''].filter(Boolean).join(' ') : ''
+    const detail = [pr, e.detail].filter(Boolean).join(' ')
+    return `${clock(e.ts)}Z ${gap.padStart(9)}  ${(e.itemId ?? '-').padEnd(7)} ${e.kind.padEnd(15)} ${detail}`.trimEnd()
+  })
+  const span = list.length > 1 ? `, ${formatDuration(list[list.length - 1]!.ts - list[0]!.ts)} from first to last` : ''
+  return safeLines(`Factory timeline${id ? ` for ${id}` : ''} (${list.length} event${list.length === 1 ? '' : 's'}${span}; times UTC, gaps since the previous event):\n${lines.join('\n')}`)
+}
+
+export function commitMessage(command: string): string {
+  for (const t of splitCommands(command).map(stripPrefix)) {
+    if (t[0] !== 'git' || !t.includes('commit')) continue
+    for (let i = 0; i < t.length; i++) {
+      if (t[i] === '-m' || t[i] === '--message') return cleanText((t[i + 1] ?? '').split('\n')[0]!).slice(0, 120)
+      if (t[i]!.startsWith('--message=')) return cleanText(t[i]!.slice(10).split('\n')[0]!).slice(0, 120)
+    }
+    return 'commit'
+  }
+  return 'commit'
+}
+
+export function parsePrUrl(text: string): { pr: number; url: string } | null {
+  const m = /https?:\/\/[^\s'"]+\/pull\/(\d+)/.exec(stripControls(text))
+  return m ? { pr: Number(m[1]), url: m[0] } : null
+}
+
+export function ciOutcome(raw: string): 'passed' | 'failed' | null {
+  const text = raw.replace(/\b0 (?:cancell?ed|failing|failed|pending|skipped|successful)\b/gi, '')
+  if (/\b(?:fail(?:ed|ing|ure)?|cancell?ed|startup_failure|action_required|timed[_ ]out)\b|✗/i.test(text)) return 'failed'
+  if (/\b(?:pending|queued|in_progress|in progress|waiting)\b/i.test(text)) return null
+  if (/all checks were successful|\bpass(?:ed)?\b|✓/i.test(text)) return 'passed'
+  return null
+}
+
+export function parseItemArg(args: string): { id: string | null; note: string } {
+  if (args.length > 2000) return { id: null, note: '' }
+  const m = /^\s*([A-Za-z]{1,10}-\d{1,6})(?:\s+([\s\S]*))?$/.exec(args)
+  return m ? { id: m[1]!.toUpperCase(), note: cleanText(m[2] ?? '').slice(0, 300) } : { id: null, note: '' }
+}
+
+export const DESIGN_PATHS_ARG = '.factory/design.md .factory/todo.md .factory/settings.json'
+
+export function unsafeBaseNote(): string {
+  return `The baseBranch in ${SETTINGS_PATH} is not a plain branch name, so no git commands are shown; set it to the real base branch name there first.`
+}
+
+export function designPushSteps(base: string, current: string | null = null): string {
+  if (!isSafeBranchName(base)) return `${unsafeBaseNote()} Then commit and push the three design files to it and run /factory-approve again.`
+  const onOther = current !== null && current !== '' && current !== base
+  const tail = `git add -- ${DESIGN_PATHS_ARG} && git commit -m "Code factory design" -- ${DESIGN_PATHS_ARG} && git push origin '${base}'`
+  const carry = !onOther
+    ? []
+    : isSafeBranchName(current)
+      ? [
+          `  # If you committed the design files on the feature branch you are on now, run only this line:`,
+          `  git checkout '${base}' && git checkout '${current}' -- ${DESIGN_PATHS_ARG} && ${tail}`,
+          `  # If they are uncommitted edits you carry over to the base branch instead, run only this line:`,
+        ]
+      : [`  # If you committed the design files on the branch you are on now, copy them over to the base branch by hand, because that branch name is not shown. If they are uncommitted edits, run this line:`]
+  return [
+    `  # Commit and push the three design files to the base branch yourself, from the repository root with nothing else staged.`,
+    `  # Each command line stops at its first failed step, so a failed checkout, add or commit never reaches the push.`,
+    ...carry,
+    `  git checkout '${base}' && ${tail}`,
+    `  # If the design files are already committed on the base branch but not pushed, run only this line:`,
+    `  git checkout '${base}' && git push origin '${base}'`,
+    `  # If the base branch is protected, push them on a branch and merge it through a PR instead.`,
+    `  # Then run /factory-approve again.`,
+  ].join('\n')
+}
+
+export function isSafeBranchName(name: string): boolean {
+  return (
+    name.length > 0 &&
+    name.length <= 200 &&
+    stripControls(name) === name &&
+    !/[\u{E0000}-\u{E007F}]/u.test(name) &&
+    !/[\s\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069'"`\\$~^:?*[]/.test(name) &&
+    !/^[-+/.]/.test(name) &&
+    !/[/.]$/.test(name) &&
+    !name.endsWith('.lock') &&
+    !name.includes('..') &&
+    !name.includes('@{') &&
+    name !== '@' &&
+    !name.includes('//') &&
+    !name.includes('/.') &&
+    name !== 'HEAD'
+  )
+}
+
+export type CostPhase = 'build' | 'review' | 'ci-fix' | 'design' | 'release' | 'roadmap'
+export const COST_PHASES: readonly CostPhase[] = ['build', 'review', 'ci-fix', 'design', 'release', 'roadmap']
+export type DriveKind = 'item' | 'design' | 'release' | 'roadmap'
+export type Drive = { key: string; kind: DriveKind; title: string }
+export type CostMark = Drive & { usd: number | null; at: number; tree: string }
+export type ItemCost = {
+  title: string
+  usd: number
+  models: Record<string, number[]>
+  phases: Partial<Record<CostPhase, number>>
+  attempts: number
+  ms: number
+  firstAt: number
+  lastAt: number
+  outcome: string
+}
+export type RunCost = { startedAt: number; lastAt: number; usd: number; items: number; tree: string }
+export type RepoCosts = { repo: string; usd: number; items: Record<string, ItemCost>; runs: RunCost[]; marks: Record<string, CostMark> }
+export type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number; model: string }
+
+export const COST_KEY_PREFIX = 'costs/'
+export const PLAN_KEY = '_plan'
+export const MAX_COST_ITEMS = 400
+export const MAX_RUNS = 20
+const MARK_TTL_MS = 2 * 86400000
+
+export function repoKey(remote: string, cwd: string): string {
+  const r = remote.trim().replace(/\/+$/, '').replace(/\.git$/, '')
+  const m = /[:/]([^/:\s]+)\/([^/:\s]+)$/.exec(r)
+  if (r && m) return `${m[1]}/${m[2]}`
+  return cwd.replace(/\/+$/, '').split('/').pop() || 'unknown'
+}
+
+const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+
+export function keptRuns(runs: RunCost[]): RunCost[] {
+  const lastOfTree = new Map(runs.map((r, i) => [r.tree, i] as const))
+  return runs.filter((r, i) => i >= runs.length - MAX_RUNS || (r.tree !== '' && lastOfTree.get(r.tree) === i))
+}
+
+export function emptyRepoCosts(repo: string): RepoCosts {
+  return { repo, usd: 0, items: {}, runs: [], marks: {} }
+}
+
+export function normalizeRepoCosts(raw: unknown, repo: string): RepoCosts {
+  const r = obj(raw)
+  if (!r) return emptyRepoCosts(repo)
+  const items: Record<string, ItemCost> = {}
+  for (const [k, v] of Object.entries(obj(r.items) ?? {})) {
+    const it = obj(v)
+    if (!it) continue
+    const models: Record<string, number[]> = {}
+    for (const [m, arr] of Object.entries(obj(it.models) ?? {})) {
+      if (Array.isArray(arr)) models[m] = [0, 1, 2, 3].map(i => num(arr[i]))
+    }
+    const phases: Partial<Record<CostPhase, number>> = {}
+    for (const p of COST_PHASES) if (num(obj(it.phases)?.[p]) > 0) phases[p] = num(obj(it.phases)?.[p])
+    items[k] = {
+      title: typeof it.title === 'string' ? it.title : '',
+      usd: num(it.usd),
+      models,
+      phases,
+      attempts: num(it.attempts),
+      ms: num(it.ms),
+      firstAt: num(it.firstAt),
+      lastAt: num(it.lastAt),
+      outcome: typeof it.outcome === 'string' ? it.outcome : '',
+    }
+  }
+  const runs = (Array.isArray(r.runs) ? r.runs : [])
+    .map(obj)
+    .filter((x): x is Json => x !== null)
+    .map(x => ({ startedAt: num(x.startedAt), lastAt: num(x.lastAt), usd: num(x.usd), items: num(x.items), tree: typeof x.tree === 'string' ? x.tree : '' }))
+  const marks: Record<string, CostMark> = {}
+  for (const [k, v] of Object.entries(obj(r.marks) ?? {})) {
+    const m = obj(v)
+    const kind = m?.kind
+    if (m && typeof m.key === 'string' && (kind === 'item' || kind === 'design' || kind === 'release' || kind === 'roadmap')) {
+      marks[k] = { key: m.key, kind, title: typeof m.title === 'string' ? m.title : '', usd: typeof m.usd === 'number' && Number.isFinite(m.usd) ? m.usd : null, at: num(m.at), tree: typeof m.tree === 'string' ? m.tree : '' }
+    }
+  }
+  return { repo: typeof r.repo === 'string' && r.repo ? r.repo : repo, usd: num(r.usd), items, runs: keptRuns(runs), marks }
+}
+
+export function costDelta(markUsd: number, nowUsd: number): number {
+  if (!Number.isFinite(nowUsd) || nowUsd < 0) return 0
+  return nowUsd >= markUsd ? nowUsd - markUsd : nowUsd
+}
+
+function clone(rc: RepoCosts): RepoCosts {
+  return JSON.parse(JSON.stringify(rc)) as RepoCosts
+}
+
+function itemIn(rc: RepoCosts, key: string, title: string, now: number): ItemCost {
+  const have = rc.items[key]
+  if (have) {
+    if (title && !have.title) have.title = cleanText(title)
+    return have
+  }
+  const fresh: ItemCost = { title: cleanText(title), usd: 0, models: {}, phases: {}, attempts: 0, ms: 0, firstAt: now, lastAt: now, outcome: '' }
+  rc.items[key] = fresh
+  return fresh
+}
+
+function prune(rc: RepoCosts, now: number): RepoCosts {
+  const keys = Object.keys(rc.items)
+  if (keys.length > MAX_COST_ITEMS) {
+    const keep = new Set(keys.sort((a, b) => rc.items[b]!.lastAt - rc.items[a]!.lastAt).slice(0, MAX_COST_ITEMS))
+    for (const k of keys) if (!keep.has(k)) delete rc.items[k]
+  }
+  for (const [k, m] of Object.entries(rc.marks)) if (now - m.at > MARK_TTL_MS) delete rc.marks[k]
+  rc.runs = keptRuns(rc.runs)
+  return rc
+}
+
+const countsInRun = (kind: DriveKind): boolean => kind === 'item' || kind === 'release'
+
+export type Settle = { from: string; to: string; tree: string; nowUsd: number | null; now: number; next: Drive | 'keep' | null }
+
+export function treeRun(rc: RepoCosts, tree: string): RunCost | undefined {
+  if (tree === '') return undefined
+  for (let i = rc.runs.length - 1; i >= 0; i--) if (rc.runs[i]!.tree === tree) return rc.runs[i]
+  return undefined
+}
+
+export function settleCost(input: RepoCosts, s: Settle): { costs: RepoCosts; delta: number } {
+  const rc = clone(input)
+  const mark = rc.marks[s.from]
+  if (s.nowUsd === null && mark && (s.next === 'keep' || mark.usd !== null)) return { costs: prune(rc, s.now), delta: 0 }
+  let delta = 0
+  if (mark) {
+    delta = s.nowUsd === null || mark.usd === null ? 0 : costDelta(mark.usd, s.nowUsd)
+    const it = itemIn(rc, mark.key, mark.title, s.now)
+    it.usd += delta
+    it.ms += Math.max(0, s.now - mark.at)
+    it.lastAt = s.now
+    rc.usd += delta
+    if (countsInRun(mark.kind)) {
+      const tree = mark.tree || s.tree
+      let run = treeRun(rc, tree)
+      if (!run) {
+        run = { startedAt: mark.at, lastAt: mark.at, usd: 0, items: 0, tree }
+        rc.runs.push(run)
+      }
+      run.usd += delta
+      run.lastAt = s.now
+    }
+    delete rc.marks[s.from]
+  }
+  const nextDrive = s.next === 'keep' ? (mark ? { key: mark.key, kind: mark.kind, title: mark.title } : null) : s.next
+  if (nextDrive) {
+    rc.marks[s.to] = { ...nextDrive, usd: s.nowUsd, at: s.now, tree: s.tree }
+    itemIn(rc, nextDrive.key, nextDrive.title, s.now)
+  }
+  return { costs: prune(rc, s.now), delta }
+}
+
+export function costPhase(kind: DriveKind, stage: Stage | null, isReviewer: boolean): CostPhase {
+  if (isReviewer) return 'review'
+  if (kind !== 'item') return kind
+  if (stage === 'CI' || stage === 'merge') return 'ci-fix'
+  return stage === 'review' ? 'review' : 'build'
+}
+
+export const usageTokens = (u: Usage): number => num(u.input_tokens) + num(u.output_tokens) + num(u.cache_read_input_tokens) + num(u.cache_creation_input_tokens)
+
+export function addTokens(input: RepoCosts, key: string, title: string, phase: CostPhase, usage: Usage, now: number): RepoCosts {
+  const rc = clone(input)
+  const it = itemIn(rc, key, title, now)
+  const model = (usage.model || 'unknown').slice(0, 80)
+  const row = it.models[model] ?? [0, 0, 0, 0]
+  it.models[model] = [row[0]! + num(usage.input_tokens), row[1]! + num(usage.output_tokens), row[2]! + num(usage.cache_read_input_tokens), row[3]! + num(usage.cache_creation_input_tokens)]
+  it.phases[phase] = (it.phases[phase] ?? 0) + usageTokens(usage)
+  it.lastAt = now
+  return prune(rc, now)
+}
+
+export function noteItem(input: RepoCosts, key: string, title: string, now: number, change: { attempt?: boolean; outcome?: string; runItemTree?: string }): RepoCosts {
+  const rc = clone(input)
+  const it = itemIn(rc, key, title, now)
+  if (change.attempt) it.attempts += 1
+  if (change.outcome !== undefined) it.outcome = change.outcome
+  it.lastAt = now
+  const run = change.runItemTree === undefined ? undefined : treeRun(rc, change.runItemTree)
+  if (run) run.items += 1
+  return prune(rc, now)
+}
+
+export function rebaseMark(input: RepoCosts, owner: string, nowUsd: number | null, now: number): RepoCosts {
+  const rc = clone(input)
+  const mark = rc.marks[owner]
+  if (mark && nowUsd !== null) mark.usd = nowUsd
+  return prune(rc, now)
+}
+
+export function startRun(input: RepoCosts, now: number, tree: string): RepoCosts {
+  const rc = clone(input)
+  rc.runs.push({ startedAt: now, lastAt: now, usd: 0, items: 0, tree })
+  return prune(rc, now)
+}
+
+export function liveSpend(rc: RepoCosts, owner: string, tree: string, nowUsd: number | null, currentKey: string | null): { runUsd: number; itemUsd: number } {
+  const mark = rc.marks[owner]
+  const pending = mark && nowUsd !== null && mark.usd !== null ? costDelta(mark.usd, nowUsd) : 0
+  const run = treeRun(rc, tree)
+  const runUsd = (run?.usd ?? 0) + (mark && countsInRun(mark.kind) ? pending : 0)
+  const itemUsd = currentKey === null ? 0 : (rc.items[currentKey]?.usd ?? 0) + (mark && mark.key === currentKey ? pending : 0)
+  return { runUsd, itemUsd }
+}
+
+export const budgetReached = (budgetUsd: number, runUsd: number): boolean => budgetUsd > 0 && runUsd >= budgetUsd
+
+export const budgetUnreadableReason = (budgetUsd: number): string =>
+  `budgetUsd is ${formatUsd(budgetUsd)} but this run's spend cannot be read (the session reports no cost, or the cost ledger could not be read or written), so the budget cannot be enforced; fix that or set budgetUsd to 0 and /factory-approve`
+
+export const budgetPauseReason = (budgetUsd: number, runUsd: number): string =>
+  `budget reached: this run spent ${formatUsd(runUsd)} of the ${formatUsd(budgetUsd)} budget (settings.budgetUsd); /factory-start begins a new run, or raise budgetUsd and /factory-approve`
+
+export const formatUsd = (usd: number): string => `$${usd >= 100 ? usd.toFixed(0) : usd.toFixed(2)}`
+
+export function formatTokens(n: number): string {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M`
+  if (n >= 1e3) return `${(n / 1e3).toFixed(n >= 1e4 ? 0 : 1)}k`
+  return String(Math.round(n))
+}
+
+const shortModel = (m: string): string => m.replace(/^claude-/, '').replace(/-\d{8}$/, '')
+const itemLabel = (key: string): string => (key === PLAN_KEY ? '(plan)' : key)
+const pct = (part: number, whole: number): string => (whole > 0 ? `${Math.round((part / whole) * 100)}%` : '-')
+
+function itemTokens(it: ItemCost): number {
+  return Object.values(it.models).reduce((a, r) => a + r.reduce((x, y) => x + y, 0), 0)
+}
+
+function itemTable(rc: RepoCosts): string[] {
+  const rows = Object.entries(rc.items).sort((a, b) => b[1].usd - a[1].usd || a[0].localeCompare(b[0]))
+  if (rows.length === 0) return ['  (no items recorded)']
+  const head = `  ${'item'.padEnd(8)} ${'usd'.padStart(8)} ${'share'.padStart(5)} ${'tries'.padStart(5)} ${'time'.padStart(7)}  ${'outcome'.padEnd(8)} tokens by model / phase split`
+  const lines = rows.map(([k, it]) => {
+    const models = Object.entries(it.models)
+      .sort((a, b) => b[1].reduce((x, y) => x + y, 0) - a[1].reduce((x, y) => x + y, 0))
+      .map(([m, r]) => `${shortModel(m)} ${formatTokens(r.reduce((x, y) => x + y, 0))} (out ${formatTokens(r[1]!)})`)
+      .join(', ')
+    const total = Object.values(it.phases).reduce((a, b) => a + (b ?? 0), 0)
+    const phases = COST_PHASES.filter(p => (it.phases[p] ?? 0) > 0)
+      .map(p => `${p} ${pct(it.phases[p]!, total)}`)
+      .join(' ')
+    const detail = [models || 'no tokens', phases].filter(Boolean).join(' / ')
+    return `  ${itemLabel(k).padEnd(8)} ${formatUsd(it.usd).padStart(8)} ${pct(it.usd, rc.usd).padStart(5)} ${String(it.attempts).padStart(5)} ${formatDuration(it.ms).padStart(7)}  ${(it.outcome || '-').padEnd(8)} ${detail}`
+  })
+  return [head, ...lines]
+}
+
+function repoBlock(rc: RepoCosts, isCurrent: boolean): string[] {
+  const run = rc.runs[rc.runs.length - 1]
+  const tokens = Object.values(rc.items).reduce((a, it) => a + itemTokens(it), 0)
+  const head = `${rc.repo}${isCurrent ? ' (this repo)' : ''}: ${formatUsd(rc.usd)} over ${Object.keys(rc.items).length} item(s), ${formatTokens(tokens)} tokens, ${rc.runs.length} run(s)`
+  const runLine = run ? `  last run: ${formatUsd(run.usd)}, ${run.items} item(s) merged, started ${clock(run.startedAt)}Z, last spend ${clock(run.lastAt)}Z` : '  no runs recorded'
+  const top = Object.entries(rc.items)
+    .filter(([, it]) => it.usd > 0)
+    .sort((a, b) => b[1].usd - a[1].usd)
+    .slice(0, 3)
+    .map(([k, it]) => `${itemLabel(k)} ${formatUsd(it.usd)} (${pct(it.usd, rc.usd)})${it.title ? ` ${it.title.slice(0, 40)}` : ''}`)
+  return [head, runLine, ...itemTable(rc), ...(top.length > 0 ? [`  most expensive: ${top.join('; ')}`] : [])]
+}
+
+export function parseCostsArgs(args: string): { reset: string | null; filter: string } {
+  const t = args.trim()
+  const m = /^reset(?:\s+(\S+))?\s*$/i.exec(t)
+  if (m) return { reset: m[1] ?? '', filter: '' }
+  return { reset: null, filter: t }
+}
+
+export function costsReport(all: readonly RepoCosts[], filter: string, currentRepo: string | null): string {
+  if (all.length === 0) return 'No factory costs recorded yet. Spend is recorded while the factory drives a turn (/factory-start, /factory-design, the next-phase interview).'
+  const sorted = [...all].sort((a, b) => b.usd - a.usd || a.repo.localeCompare(b.repo))
+  const grand = sorted.reduce((a, r) => a + r.usd, 0)
+  const width = Math.max(...sorted.map(r => r.repo.length))
+  const lines = [
+    `Code factory spend, all repos: ${formatUsd(grand)} (US dollars as the session cost counter reports them; the person's own turns are not counted; advisory only, the ledger file is not protected from the model)`,
+    ...sorted.map(r => `  ${r.repo.padEnd(width)} ${formatUsd(r.usd).padStart(9)} ${pct(r.usd, grand).padStart(5)}${r.repo === currentRepo ? '  <- this repo' : ''}`),
+    '',
+  ]
+  const f = filter.trim().toLowerCase()
+  const picked = f === 'all' ? sorted : f ? sorted.filter(r => r.repo.toLowerCase().includes(f)) : sorted.filter(r => r.repo === currentRepo)
+  if (picked.length === 0) {
+    lines.push(f ? `No recorded repo matches "${filter.trim()}".` : `Nothing recorded for this repo${currentRepo ? ` (${currentRepo})` : ''}; /factory-costs all lists every repo.`)
+    return safeLines(lines.join('\n'))
+  }
+  for (const rc of picked) lines.push(...repoBlock(rc, rc.repo === currentRepo), '')
+  return safeLines(lines.join('\n').trimEnd())
+}
+
+export function costSummaryForPrompt(rc: RepoCosts | null): string {
+  if (!rc || Object.keys(rc.items).length === 0) return 'No spend was recorded for this repo.'
+  const rows = Object.entries(rc.items)
+    .sort((a, b) => b[1].usd - a[1].usd)
+    .slice(0, 40)
+    .map(([k, it]) => `- ${itemLabel(k)}${it.title ? ` ${it.title}` : ''}: ${formatUsd(it.usd)}, ${it.attempts} attempt(s), ${formatDuration(it.ms)}${it.outcome ? `, ${it.outcome}` : ''}`)
+  return `Total recorded for ${rc.repo}: ${formatUsd(rc.usd)}.\n${rows.join('\n')}`
+}
+
+export type StatusInput = {
+  state: FactoryState
+  settings: Settings
+  items: readonly Item[]
+  blocked: ReadonlyMap<string, string>
+  stage: Stage | null
+  now: number
+  runUsd: number | null
+  itemUsd: number | null
+}
+
+export function statusReport(x: StatusInput): string {
+  const { state: s, settings } = x
+  const blockedSet = new Set(x.blocked.keys())
+  const head = `Factory: ${s.approved ? (s.autopilot && !s.unreadable ? 'running' : `paused (${s.pausedReason ?? 'stopped'})`) : 'design not approved'}${settings.stopAfterVersion ? `; stops after version ${settings.stopAfterVersion}` : ''}`
+  const lines = [head, summarize(x.items as Item[], blockedSet)]
+  const cur = s.current ? x.items.find(i => i.id === s.current) : undefined
+  if (s.current) {
+    const evs = s.events.filter(e => e.itemId === s.current)
+    const started = [...evs].reverse().find(e => e.kind === 'started')
+    const pr = [...evs].reverse().find(e => e.kind === 'pr-opened')
+    const parts = [
+      `stage ${x.stage ?? 'build'}`,
+      `attempt ${s.attempts + 1}/${settings.maxAttempts + 1}`,
+      `review round ${s.reviewRounds}/${settings.maxReviewRounds}`,
+      pr ? `PR${pr.pr !== undefined ? ` #${pr.pr}` : ''}${pr.url ? ` ${pr.url}` : ''}` : 'no PR yet',
+      started ? `${formatDuration(x.now - started.ts)} elapsed` : null,
+      x.itemUsd !== null ? `${formatUsd(x.itemUsd)} spent` : null,
+      s.reviewAgentId ? `review agent ${s.reviewAgentId} pending` : null,
+    ].filter(Boolean)
+    lines.push(`Current: ${s.current}${cur ? ` [${cur.type}] ${cur.title}` : ''}: ${parts.join(', ')}`)
+  }
+  if (x.runUsd === null && settings.budgetUsd > 0) {
+    lines.push(`This run: spend cannot be read (the session reports no cost or the ledger is unavailable), so the ${formatUsd(settings.budgetUsd)} budget cannot be enforced and the loop pauses instead of running unmetered`)
+  }
+  if (x.runUsd !== null) {
+    lines.push(`This run: ${formatUsd(x.runUsd)}${settings.budgetUsd > 0 ? ` of the ${formatUsd(settings.budgetUsd)} budget` : ' (no budget set)'}, ${s.doneThisRun} item(s) merged`)
+  }
+  const queue = x.items.filter(i => i.status === 'todo' && !blockedSet.has(i.id) && i.id !== s.current && inScope(i, settings.stopAfterVersion))
+  lines.push(`Queue: ${queue.length > 0 ? queue.map(i => i.id).join(', ') : '(empty)'}`)
+  if (x.blocked.size > 0) {
+    lines.push('Blocked:')
+    for (const [id, why] of x.blocked) lines.push(`- ${id}: ${cleanText(why).slice(0, 160) || '(no reason given)'}`)
+    lines.push(`Notes are in ${BLOCKED_DIR}/; /factory-retry <ID> makes one eligible again.`)
+  }
+  const last = s.events.slice(-5)
+  if (last.length > 0) lines.push(`Recent: ${last.map(shortEvent).join(' · ')} (/factory-log for the timeline)`)
+  lines.push('Items:')
+  for (const i of x.items) {
+    const tag = blockedSet.has(i.id) ? 'blocked' : i.status
+    const v = i.version ? ` v${i.version}` : ''
+    const out = inScope(i, settings.stopAfterVersion) ? '' : ' (after stop version)'
+    lines.push(`- ${i.id} [${i.type}]${v} ${tag}${s.current === i.id ? ' (current)' : ''}${out}: ${i.title}`)
+  }
+  return safeLines(lines.join('\n'))
+}
+
+export function planComplete(items: readonly Item[]): boolean {
+  return items.length > 0 && items.every(i => i.status === 'done')
+}
+
+export function shouldAskRoadmap(settings: Pick<Settings, 'askNextPhase'>, state: Pick<FactoryState, 'approved' | 'roadmapAsked'>, items: readonly Item[]): boolean {
+  return settings.askNextPhase && state.approved && !state.roadmapAsked && planComplete(items)
+}
+
+export function nextItemId(items: readonly Item[]): string {
+  let prefix = 'T'
+  let max = 0
+  let width = 3
+  for (const i of items) {
+    const m = /^([A-Z]+)-(\d+)$/.exec(i.id)
+    if (!m) continue
+    const n = Number(m[2])
+    if (n >= max) {
+      max = n
+      prefix = m[1]!
+      width = Math.max(3, m[2]!.length)
+    }
+  }
+  return `${prefix}-${String(max + 1).padStart(width, '0')}`
+}
+
+export const ROADMAP_IDLE_MS = 1800000
+export const ROADMAP_MAX_TURNS = 40
+export const ROADMAP_CEILING_MS = 4 * 3600000
+export const ROADMAP_DONE = 'ROADMAP-DONE'
+
+export const roadmapExpired = (startedAt: number, lastAt: number, turns: number, now: number): boolean =>
+  now - lastAt >= ROADMAP_IDLE_MS || turns >= ROADMAP_MAX_TURNS || now - startedAt >= ROADMAP_CEILING_MS
+
+export const isRoadmapDone = (answer: string): boolean => /(?:^|\n)[ \t]*ROADMAP-DONE[ \t]*$/.test(answer.trimEnd())
+
+export function roadmapPrompt(items: readonly Item[], mergedIds: readonly string[], costSummary: string, s: Settings): string {
+  const done = items.filter(i => i.status === 'done')
+  const shipped = done.length > 0 ? done.map(i => `- ${i.id} [${i.type}]${i.version ? ` v${i.version}` : ''} ${i.title}${mergedIds.includes(i.id) ? ' (PR merged by the factory)' : ''}`).join('\n') : '- (nothing recorded as done)'
+  return `CODE FACTORY: NEXT-PHASE INTERVIEW. Every item in .factory/todo.md is done. Nothing is built in this phase: do not start implementing, do not create factory/* branches, do not open PRs.
+
+What shipped (from .factory/todo.md and the factory state):
+${shipped}
+
+What it cost (from the factory's spend ledger, US dollars):
+${costSummary}
+
+Do this:
+1. Read .factory/design.md, .factory/todo.md and \`gh pr list --state merged --limit 30\`, then give the person a short summary of what shipped and what it cost (use the figures above; name the most expensive items).
+2. Interview the person with the AskUserQuestion tool about the NEXT phase, in short rounds (1-4 questions each), offering 2-4 concrete options with your recommendation first:
+   a. Goals of the next phase, and what is explicitly out of scope.
+   b. Versions: the next version milestone(s), what each contains, and WHICH VERSION THE LOOP MUST STOP AFTER (settings.stopAfterVersion), and whether to cut a release.
+   c. The concrete items (features, bug fixes, chores, docs) in priority order.
+   d. For each item, the HOW decision (tool, library, algorithm or workaround, the rejected alternatives and why), the acceptance criteria, and the tests that verify it. The build loop cannot ask later, so settle every decision now.
+   Always offer "nothing more, stop here" as an option. If the person chooses it, write nothing, change no files, and end by saying the work is complete.
+3. Otherwise record the agreed phase:
+   - Append the new items to .factory/todo.md in the existing format, with "- status: proposed", ids continuing the numbering (the next id is ${nextItemId(items)}), and every field filled (version, how, accept, tests, depends). Do not change existing items.
+   - Update .factory/design.md: the new goals, the version plan, and one "## Decisions" entry per new decision.
+   - Update .factory/settings.json only where the person decided so (for example stopAfterVersion).
+4. Read the new items back as a short summary and ask the person to confirm; change the files until they do.
+5. Do not commit, push, stage, branch or open a PR: leave the edits in the working tree (the factory refuses commits and pushes to the base branch during this turn). Finish by telling the person to commit and push the three design files to the base branch themselves, giving them exactly these lines (they are for the person):
+${designPushSteps(s.baseBranch)}
+   and then to run /factory-start after /factory-approve passes. These commands are for the person: do not run any of them yourself, do not start building, and do not edit the factory's state files.
+6. End the FINAL message of this interview with a last line containing only ${ROADMAP_DONE}: after the person confirmed the recorded items, or after they chose "nothing more, stop here". Never put that line in an earlier message.`
 }

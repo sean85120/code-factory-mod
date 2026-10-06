@@ -156,3 +156,14 @@ test('a commit after the PR moves the band back to build', async ($, on) => {
   await $.tool.call({ tool: 'Bash', command: 'git commit -m again' })
   expect(await stageIs($, 'build')).toBe(true)
 })
+
+test('a view saved by the previous version, without spend or events, still renders', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  on('ui.render', ($$: any, e: any) => $$.ui.resolve(e).Text({ children: 'base' }))
+  const old = { approved: true, running: false, pausedReason: 'old version', current: 'T-001', stage: null, summary: 'old summary', doneCount: 0, rows: [], more: 0, marks: {}, changes: [] }
+  on('state.get', () => ({ value: { value: old, version: 1 } }))
+  const ui = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false } } as never)
+  expect(await ui.find({ type: 'Text', text: /old summary/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /run/ })).toBeUndefined()
+  await ui.unmount()
+})
