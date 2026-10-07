@@ -1631,7 +1631,7 @@ export const register: Register = (on, _options) => {
       const item = snap.items.find(i => i.id === snap.state.current)
       return deny(`code-factory: do not commit on ${base}. Create the branch first${item ? `: git checkout -b ${branchFor(item)}` : ''}.`)
     }
-    if ((f.isPrCreate || f.isPrMerge) && /(?:^|\s)(?:-R|--repo)(?:\s|=)/.test(e.command)) {
+    if ((f.isPrCreate || f.isPrMerge) && /(?:^|\s)(?:-R|--repo)/.test(e.command)) {
       return deny('code-factory: do not target another repository with -R/--repo.')
     }
 

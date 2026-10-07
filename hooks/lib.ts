@@ -758,15 +758,18 @@ export function classifyBash(command: string, base: string, branch = ''): BashFa
           const x = args[j]!
           if (x === '-X' || x === '--method') method = (args[++j] ?? '').toUpperCase()
           else if (x.startsWith('--method=')) method = x.slice(9).toUpperCase()
+          else if (/^-X./.test(x)) method = x.slice(2).toUpperCase()
           else if (x === '-f' || x === '-F' || x === '--field' || x === '--raw-field' || x === '--input') {
             hasBody = true
             j++
-          } else if (x.startsWith('-')) {
+          } else if (/^-[fF]./.test(x) || /^--(?:field|raw-field|input)=/.test(x)) hasBody = true
+          else if (x.startsWith('-')) {
             if (API_VALUE_FLAGS.has(x)) j++
           } else if (!endpoint) endpoint = x
         }
         const writes = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method || (hasBody ? 'POST' : 'GET'))
-        if (writes && /\/pulls(?:\/\d+\/(?:merge|update-branch))?\/?$|\/git\/(?:refs|commits)|\/contents\/|\/merges$/.test(endpoint)) {
+        const path = endpoint.replace(/[?#].*$/, '')
+        if (writes && /\/pulls(?:\/\d+\/(?:merge|update-branch))?\/?$|\/git\/(?:refs|commits)|\/contents\/|\/merges$/.test(path)) {
           facts.apiPrWrite = true
         }
       }

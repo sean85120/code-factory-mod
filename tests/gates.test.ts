@@ -83,6 +83,13 @@ test('a CI look-up joined to a gated command does not skip its gates', async ($,
   expect(text(await $.tool.call({ tool: 'Bash', command: 'gh run list | head; git push -f origin main' }))).toContain('force-push')
 })
 
+test('a glued -R or --repo value is refused for PR create and merge', async ($, on) => {
+  setup($, on, { review: CLEAN })
+  expect(text(await $.tool.call({ tool: 'Bash', command: 'gh pr merge 3 -Rother/repo --squash' }))).toContain('another repository')
+  expect(text(await $.tool.call({ tool: 'Bash', command: 'gh pr create -Rfoo/bar --title x' }))).toContain('another repository')
+  expect(text(await $.tool.call({ tool: 'Bash', command: 'gh pr merge 3 --repo=other/repo' }))).toContain('another repository')
+})
+
 test('a stale or dirty review does not count', async ($, on) => {
   setup($, on, { review: { sha: SHA, danger: 0, medium: 2 } })
   expect(text(await $.tool.call({ tool: 'Bash', command: 'gh pr create --title x' }))).toContain('no clean independent review')

@@ -178,6 +178,16 @@ test('quoted substitutions nested several levels deep are still classified', () 
   expect(facts('echo "$(echo "$(echo "$(echo "$(echo "$(echo "$(echo "$(git push origin main)")")")")")")"').pushNamesBase).toBe(true)
 })
 
+test('gh api writes are seen through a query string and glued flags', () => {
+  expect(classifyBash("gh api -X PUT 'repos/o/r/pulls/3/merge?merge_method=squash'", 'main').apiPrWrite).toBe(true)
+  expect(classifyBash("gh api -X PUT 'repos/o/r/merges?x=1'", 'main').apiPrWrite).toBe(true)
+  expect(classifyBash('gh api -XPUT repos/o/r/pulls/3/merge', 'main').apiPrWrite).toBe(true)
+  expect(classifyBash('gh api repos/o/r/pulls/3/merge -fmerge_method=squash', 'main').apiPrWrite).toBe(true)
+  expect(classifyBash('gh api repos/o/r/pulls/3/merge --field=merge_method=squash', 'main').apiPrWrite).toBe(true)
+  expect(classifyBash('gh api repos/o/r/pulls/3', 'main').apiPrWrite).toBe(false)
+  expect(classifyBash("gh api 'repos/o/r/pulls?state=open'", 'main').apiPrWrite).toBe(false)
+})
+
 test('several gh pr merge commands or selectors in one command leave no single checked PR', () => {
   expect(classifyBash('gh pr merge 5 --squash; gh pr merge 6 --squash', 'main').prSelector).not.toBe('5')
   expect(classifyBash('gh pr merge 5 6 --squash', 'main').prSelector).not.toBe('5')
