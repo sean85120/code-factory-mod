@@ -1040,6 +1040,55 @@ test('a lock whose loop another session paused is released by the next heartbeat
   expect(lockOwner(fx)).toBeNull()
 })
 
+const heartbeatOf = (fx: { files: Record<string, string> }) => JSON.parse(fx.files['.factory/lock.json'] ?? '{"heartbeat":0}').heartbeat as number
+
+test('a running loop keeps its lock and renews the heartbeat', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on)
+  fx.live.usd = 1
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1000)
+  const first = heartbeatOf(fx)
+  await clock.advance(100000)
+  expect(fx.state().autopilot).toBe(true)
+  expect(lockOwner(fx)).not.toBeNull()
+  expect(heartbeatOf(fx)).toBeGreaterThan(first)
+})
+
+test('a prompt the person types pauses the running loop', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on)
+  fx.live.usd = 1
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1000)
+  expect(fx.state().autopilot).toBe(true)
+  await $.prompt.submit({ text: 'wait, do this instead', origin: { kind: 'composer' } } as never)
+  expect(fx.state().autopilot).toBe(false)
+  expect(fx.state().pausedReason).toBeTruthy()
+})
+
+test('an interrupted factory turn pauses the loop', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on)
+  fx.live.usd = 1
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1000)
+  await mainTurn($, { reason: 'aborted', isAborted: true })
+  expect(fx.state().autopilot).toBe(false)
+  expect(fx.state().pausedReason).toBe('you interrupted it')
+})
+
+test('a factory turn that ends in an error pauses the loop with that reason', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on)
+  fx.live.usd = 1
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1000)
+  await mainTurn($, { reason: 'error' })
+  expect(fx.state().autopilot).toBe(false)
+  expect(fx.state().pausedReason).toBe('turn ended with error')
+})
+
 function midStep($: any, command: string, when: (f: any) => boolean, done: (f: any) => boolean) {
   const t = { armed: false, fired: 0, fx: null as any }
   const hook = async (what: string) => {
