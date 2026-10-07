@@ -1363,7 +1363,12 @@ export const register: Register = (on, _options) => {
       return { text: `The plan still has runnable work (${summarize(items, snap.blocked)}${snap.state.current ? `, ${snap.state.current} in progress` : ''}). /factory-start runs it; /factory-design amends the plan.` }
     }
     roadmapPending = true
-    if (snap.state.autopilot) await pause($, snap.state, 'next phase being planned; /factory-approve then /factory-start resumes')
+    try {
+      if (snap.state.autopilot) await pause($, snap.state, 'next phase being planned; /factory-approve then /factory-start resumes')
+    } catch (err) {
+      roadmapPending = false
+      throw err
+    }
     const roadmapEpoch = loopEpoch
     $.clock.after(300, () => {
       void startRoadmap($, items, snap.state.mergedIds, snap.settings, roadmapEpoch).finally(() => {
