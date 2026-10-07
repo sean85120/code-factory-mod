@@ -106,6 +106,20 @@ test('an unterminated quote falls back to line-by-line reading so later gated co
   expect(facts(lines('echo "never closed', 'git push origin main')).pushNamesBase).toBe(true)
 })
 
+test('${#var}, brace words and arithmetic shifts do not hide the commands after them', () => {
+  expect(facts('echo ${#x}; git push origin main').pushNamesBase).toBe(true)
+  expect(facts('n=${#files} && git push origin main').pushNamesBase).toBe(true)
+  expect(facts('echo {#; git push origin main').pushNamesBase).toBe(true)
+  expect(facts(lines('x=$((1<<2))', 'git push origin main')).pushNamesBase).toBe(true)
+  expect(facts(lines('x=$((a<<b))', 'git push origin main')).pushNamesBase).toBe(true)
+  expect(facts('ls ;# note\ngit push origin main').pushNamesBase).toBe(true)
+  expect(facts('git status # git push origin main').isPush).toBe(false)
+})
+
+test('a heredoc that never terminates is read again without skipping so gated commands are still seen', () => {
+  expect(facts(lines('cat <<EOF', 'body', 'git push origin main')).pushNamesBase).toBe(true)
+})
+
 test('several gh pr merge commands or selectors in one command leave no single checked PR', () => {
   expect(classifyBash('gh pr merge 5 --squash; gh pr merge 6 --squash', 'main').prSelector).not.toBe('5')
   expect(classifyBash('gh pr merge 5 6 --squash', 'main').prSelector).not.toBe('5')

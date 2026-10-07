@@ -485,7 +485,10 @@ const unquote = (t: string): string => t.replace(/^['"]+|['"]+$/g, '')
 // ... EOF\n)" message); if a quote is still open at the end the carry has
 // desynchronised, so the lines are read one by one instead. Best effort, not a
 // parser.
-function scanCommands(command: string, carry: boolean): { commands: string[][]; open: boolean } {
+const HEREDOC_START = /^<<-?\s*(?:'([^']+)'|"([^"]+)"|\\?([A-Za-z_][^\s;|&()<>'"]*))/
+const IN_ARITHMETIC = /\(\([^)]*$/
+
+function scanCommands(command: string, carry: boolean, heredocOn = true): { commands: string[][]; open: boolean; pending: boolean } {
   const commands: string[][] = []
   const heredocs: string[] = []
   let cur: string[] = []
@@ -522,9 +525,9 @@ function scanCommands(command: string, carry: boolean): { commands: string[][]; 
           continue
         }
         if (quote === '"' && (c === '`' || (c === '$' && line[i + 1] === '('))) subst = true
-        if (quote === '"' && subst && c === '<' && line[i + 1] === '<' && line[i + 2] !== '<') {
-          const m = /^<<-?\s*(?:'([^']+)'|"([^"]+)"|\\?([^\s;|&()<>'"]+))/.exec(line.slice(i))
-          if (m) heredocs.push(m[1] ?? m[2] ?? m[3]!)
+        if (heredocOn && quote === '"' && subst && c === '<' && line[i + 1] === '<' && line[i + 2] !== '<') {
+          const m = HEREDOC_START.exec(line.slice(i))
+          if (m && !IN_ARITHMETIC.test(line.slice(0, i))) heredocs.push(m[1] ?? m[2] ?? m[3]!)
         }
         tok += c
         if (c === quote) {
@@ -540,14 +543,14 @@ function scanCommands(command: string, carry: boolean): { commands: string[][]; 
       } else if (c === '\\' && i + 1 < line.length) {
         tok += line[i + 1]!
         i++
-      } else if (c === '#' && tok === '') break
+      } else if (c === '#' && tok === '' && (i === 0 || /[\s;|&()]/.test(line[i - 1]!))) break
       else if (c === '<' && line[i + 1] === '<') {
         if (line[i + 2] === '<') {
           tok += '<<<'
           i += 2
         } else {
-          const m = /^<<-?\s*(?:'([^']+)'|"([^"]+)"|\\?([^\s;|&()<>'"]+))/.exec(line.slice(i))
-          if (m) heredocs.push(m[1] ?? m[2] ?? m[3]!)
+          const m = heredocOn ? HEREDOC_START.exec(line.slice(i)) : null
+          if (m && !IN_ARITHMETIC.test(line.slice(0, i))) heredocs.push(m[1] ?? m[2] ?? m[3]!)
           tok += '<<'
           i++
         }
@@ -560,12 +563,14 @@ function scanCommands(command: string, carry: boolean): { commands: string[][]; 
     else pushCmd()
   }
   pushCmd()
-  return { commands, open: quote !== '' }
+  return { commands, open: quote !== '', pending: heredocs.length > 0 }
 }
 
 export function splitCommands(command: string): string[][] {
-  const carried = scanCommands(command, true)
-  return carried.open ? scanCommands(command, false).commands : carried.commands
+  let r = scanCommands(command, true)
+  if (r.open || r.pending) r = scanCommands(command, false)
+  if (r.pending) r = scanCommands(command, false, false)
+  return r.commands
 }
 
 const PREFIXES = new Set(['sudo', 'command', 'env', 'nohup', 'time', 'exec', 'builtin'])
