@@ -105,6 +105,7 @@ const FACTORY_TURN_TTL_MS = 3 * 3600000
 let isArmed = false
 let costFailed = false
 let isAdvancing = false
+let handsOff = false
 let rearms = 0
 const MAX_REARMS = 3
 let roadmapPending = false
@@ -657,7 +658,7 @@ async function turnBusy($: Dollar): Promise<boolean> {
 }
 
 async function advance($: Dollar): Promise<void> {
-  if (isAdvancing) return
+  if (isAdvancing || handsOff) return
   if (await turnBusy($)) return
   isAdvancing = true
   let aborted = false
@@ -1161,6 +1162,7 @@ export const register: Register = (on, _options) => {
   })
 
   on('command.run', { command: 'factory-approve' }, async $ => {
+    await ensureGitignore($)
     const snap = await load($)
     const raw = await readText($, TODO_PATH)
     const designText = await readText($, DESIGN_PATH)
@@ -1207,6 +1209,8 @@ export const register: Register = (on, _options) => {
 
   on('command.run', { command: 'factory-start' }, async $ => {
     dropRoadmap()
+    handsOff = false
+    await ensureGitignore($)
     const snap = await load($)
     const problem = await integrityProblem(snap)
     if (problem) return { text: safeLines(`Cannot start: ${problem}.`) }
@@ -1471,7 +1475,10 @@ export const register: Register = (on, _options) => {
     }
     if (['composer', 'bridge', 'sdk'].includes(e.origin.kind) && !e.text.trimStart().startsWith('/')) {
       const state = await readState($)
-      if (state.autopilot && !(await lockedByOther($))) await pause($, state, 'you sent a prompt; /factory-start resumes', true)
+      if (state.autopilot && (await lockedByOther($))) {
+        handsOff = true
+        await settle($, false)
+      } else if (state.autopilot) await pause($, state, 'you sent a prompt; /factory-start resumes', true)
       else await settle($, false)
       isFactoryTurn = false
       isArmed = false

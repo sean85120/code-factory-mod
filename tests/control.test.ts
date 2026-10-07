@@ -1124,6 +1124,43 @@ test('a prompt typed in a session that does not hold the lock leaves the other s
   expect(lockOwner(fx)).toBe('other-session')
 })
 
+test('after a prompt typed beside another session\'s loop, this session does not take the loop over when that lock goes stale', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { lockedBy: 'other-session', state: { autopilot: true, current: 'T-001' } })
+  fx.live.usd = 1
+  on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: '/work/widget', surface: 'terminal', isInteractive: false })
+  await $.prompt.submit({ text: 'something unrelated', origin: { kind: 'composer' } } as never)
+  fx.files['.factory/lock.json'] = JSON.stringify({ owner: 'other-session', heartbeat: 0 })
+  await clock.advance(310000)
+  expect(prompts(fx)).toEqual([])
+  expect(lockOwner(fx)).toBe('other-session')
+  expect(fx.state().autopilot).toBe(true)
+})
+
+test('/factory-start after such a prompt takes the loop over again', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { lockedBy: 'other-session', state: { autopilot: true, current: 'T-001' } })
+  fx.live.usd = 1
+  await $.prompt.submit({ text: 'something unrelated', origin: { kind: 'composer' } } as never)
+  fx.files['.factory/lock.json'] = JSON.stringify({ owner: 'other-session', heartbeat: 0 })
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(2000)
+  expect(prompts(fx).length).toBeGreaterThan(0)
+})
+
+for (const command of ['factory-start', 'factory-approve']) {
+  test(`/${command} makes sure .factory/.gitignore hides the runtime files`, async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const fx = setup($, on)
+    expect(fx.files['.factory/.gitignore']).toBeUndefined()
+    await $.command.run({ command } as never)
+    expect(fx.files['.factory/.gitignore']).toContain('state.json')
+    expect(fx.files['.factory/.gitignore']).toContain('lock.json')
+  })
+}
+
 function midStep($: any, command: string, when: (f: any) => boolean, done: (f: any) => boolean) {
   const t = { armed: false, fired: 0, fx: null as any }
   const hook = async (what: string) => {
