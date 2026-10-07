@@ -145,6 +145,16 @@ test('command substitutions in double quotes and backticks are classified, singl
   expect(facts('git commit -m "fix $(git rev-parse HEAD)"').isPush).toBe(false)
 })
 
+test('escaped backticks and \$( in a double-quoted message are literal text, nested substitutions are scanned whole', () => {
+  expect(facts('git commit -m "use \\`git push origin main\\` carefully"').isPush).toBe(false)
+  expect(facts('gh pr create --title t --body "run \\`gh pr merge 5\\` after"').isPrMerge).toBe(false)
+  expect(facts('git commit -m "literal \\$(git push origin main) text"').isPush).toBe(false)
+  expect(facts('out="$(git -C "$(git rev-parse --show-toplevel)" push origin main)"').pushNamesBase).toBe(true)
+  expect(facts('out="$(cd "$(mktemp -d)" && git push origin main)"').pushNamesBase).toBe(true)
+  expect(facts('echo "$(git push origin main; (cd x))"').pushNamesBase).toBe(true)
+  expect(facts('echo "$(git push origin main || echo \'fail (x)\')"').pushNamesBase).toBe(true)
+})
+
 test('several gh pr merge commands or selectors in one command leave no single checked PR', () => {
   expect(classifyBash('gh pr merge 5 --squash; gh pr merge 6 --squash', 'main').prSelector).not.toBe('5')
   expect(classifyBash('gh pr merge 5 6 --squash', 'main').prSelector).not.toBe('5')

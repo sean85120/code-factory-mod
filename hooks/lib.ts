@@ -497,6 +497,8 @@ function scanCommands(command: string, carry: boolean, heredocOn = true): { comm
   const substs: string[] = []
   let quote = ''
   let inSubst = false
+  let substDepth = 0
+  let innerQ = ''
   const pushTok = () => {
     if (tok !== '') cur.push(unquote(tok))
     if (plain.includes('$(') || plain.includes('`')) substs.push(plain)
@@ -521,6 +523,8 @@ function scanCommands(command: string, carry: boolean, heredocOn = true): { comm
       plain = ''
       quote = ''
       inSubst = false
+      substDepth = 0
+      innerQ = ''
     }
     for (let i = 0; i < line.length; i++) {
       const c = line[i]!
@@ -528,7 +532,7 @@ function scanCommands(command: string, carry: boolean, heredocOn = true): { comm
         if (c === '\\' && quote === '"') {
           if (i + 1 < line.length) {
             tok += c + line[i + 1]!
-            plain += c + line[i + 1]!
+            plain += line[i + 1] === '`' || line[i + 1] === '$' ? '  ' : c + line[i + 1]!
             i++
           } else if (li + 1 < raw.length) {
             line = line.slice(0, i) + raw[++li]!
@@ -540,6 +544,25 @@ function scanCommands(command: string, carry: boolean, heredocOn = true): { comm
         if (heredocOn && quote === '"' && inSubst && c === '<' && line[i + 1] === '<' && line[i + 2] !== '<') {
           const m = HEREDOC_START.exec(line.slice(i))
           if (m && !IN_ARITHMETIC.test(line.slice(0, i))) heredocs.push(m[1] ?? m[2] ?? m[3]!)
+        }
+        if (quote === '"') {
+          if (substDepth > 0) {
+            if (innerQ) {
+              if (c === innerQ) innerQ = ''
+            } else if (c === '"' || c === "'") innerQ = c
+            else if (c === '(') substDepth++
+            else if (c === ')') substDepth--
+            tok += c
+            plain += c
+            continue
+          }
+          if (c === '$' && line[i + 1] === '(') {
+            substDepth = 1
+            tok += '$('
+            plain += '$('
+            i++
+            continue
+          }
         }
         tok += c
         if (quote === '"') plain += c
@@ -592,7 +615,27 @@ function scanCommands(command: string, carry: boolean, heredocOn = true): { comm
   return { commands, open: quote !== '', pending: heredocs.length > 0, substs }
 }
 
-const SUBSTITUTION = /\$\(([^()]*)\)|`([^`]*)`/g
+function substitutionBodies(text: string): string[] {
+  const out: string[] = []
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '$' && text[i + 1] === '(') {
+      let depth = 1
+      let j = i + 2
+      for (; j < text.length && depth > 0; j++) {
+        if (text[j] === '(') depth++
+        else if (text[j] === ')') depth--
+      }
+      out.push(text.slice(i + 2, depth === 0 ? j - 1 : j))
+      i += 1
+    } else if (text[i] === '`') {
+      const end = text.indexOf('`', i + 1)
+      out.push(text.slice(i + 1, end === -1 ? text.length : end))
+      if (end === -1) break
+      i = end
+    }
+  }
+  return out
+}
 
 function splitCommandsAt(command: string, depth: number): string[][] {
   let r = scanCommands(command, true)
@@ -601,7 +644,7 @@ function splitCommandsAt(command: string, depth: number): string[][] {
   if (depth >= 3) return r.commands
   const inner: string[][] = []
   for (const t of r.substs) {
-    for (const m of t.matchAll(SUBSTITUTION)) inner.push(...splitCommandsAt(m[1] ?? m[2] ?? '', depth + 1))
+    for (const body of substitutionBodies(t)) inner.push(...splitCommandsAt(body, depth + 1))
   }
   return [...r.commands, ...inner]
 }
