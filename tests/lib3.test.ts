@@ -160,6 +160,19 @@ test('a backslash inside single quotes within a double-quoted $( ) is literal', 
   expect(facts('x="$(echo \'a\\\' \'b\')" ; git push origin main').pushNamesBase).toBe(true)
 })
 
+test('a comment with an apostrophe inside a multi-line double-quoted $( ) does not hide what follows', () => {
+  expect(facts(lines('echo "$(echo a # it\'s', ')" && git push origin main')).pushNamesBase).toBe(true)
+})
+
+test('deeply nested substitutions stay cheap', () => {
+  const n = 300
+  const open = 'git commit -m "' + '$(echo "'.repeat(n)
+  const start = Date.now()
+  splitCommands(open)
+  splitCommands(open + 'x' + '")'.repeat(n) + '"')
+  expect(Date.now() - start).toBeLessThan(2000)
+})
+
 test('several gh pr merge commands or selectors in one command leave no single checked PR', () => {
   expect(classifyBash('gh pr merge 5 --squash; gh pr merge 6 --squash', 'main').prSelector).not.toBe('5')
   expect(classifyBash('gh pr merge 5 6 --squash', 'main').prSelector).not.toBe('5')

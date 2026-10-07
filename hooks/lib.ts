@@ -549,6 +549,11 @@ function scanCommands(command: string, carry: boolean, heredocOn = true): { comm
           if (substDepth > 0) {
             if (innerQ) {
               if (c === innerQ) innerQ = ''
+            } else if (c === '#' && (i === 0 || /[\s;|&(]/.test(line[i - 1]!))) {
+              tok += line.slice(i)
+              plain += line.slice(i)
+              i = line.length
+              continue
             } else if (c === '"' || c === "'") innerQ = c
             else if (c === '(') substDepth++
             else if (c === ')') substDepth--
@@ -626,7 +631,7 @@ function substitutionBodies(text: string): string[] {
         else if (text[j] === ')') depth--
       }
       out.push(text.slice(i + 2, depth === 0 ? j - 1 : j))
-      i += 1
+      i = j - 1
     } else if (text[i] === '`') {
       const end = text.indexOf('`', i + 1)
       out.push(text.slice(i + 1, end === -1 ? text.length : end))
