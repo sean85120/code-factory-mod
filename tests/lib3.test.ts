@@ -223,6 +223,13 @@ test('repoFlag ignores the values of other flags', () => {
   expect(repo('gh pr create --title x -R o/r')).toBe(true)
 })
 
+test('--admin=true and --auto=true count as --admin and --auto', () => {
+  expect(classifyBash('gh pr merge 5 --admin=true', 'main').hasAdmin).toBe(true)
+  expect(classifyBash('gh pr merge --admin=1 5', 'main').hasAdmin).toBe(true)
+  expect(classifyBash('gh pr merge 5 --auto=true', 'main').hasAuto).toBe(true)
+  expect(classifyBash('gh pr merge 5 --squash', 'main').hasAdmin).toBe(false)
+})
+
 test('several gh pr merge commands or selectors in one command leave no single checked PR', () => {
   expect(classifyBash('gh pr merge 5 --squash; gh pr merge 6 --squash', 'main').prSelector).not.toBe('5')
   expect(classifyBash('gh pr merge 5 6 --squash', 'main').prSelector).not.toBe('5')

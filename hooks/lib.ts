@@ -775,8 +775,8 @@ export function classifyBash(command: string, base: string, branch = ''): BashFa
         let j = 0
         while (j < rest.length) {
           const x = rest[j]!
-          if (x === '--admin') facts.hasAdmin = true
-          else if (x === '--auto') facts.hasAuto = true
+          if (/^--admin(?:=|$)/.test(x)) facts.hasAdmin = true
+          else if (/^--auto(?:=|$)/.test(x)) facts.hasAuto = true
           if (x.startsWith('-')) j += MERGE_VALUE_FLAGS.has(x) ? 2 : 1
           else {
             facts.prSelector = facts.prSelector === null ? x : SEVERAL_MERGES
