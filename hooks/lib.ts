@@ -476,11 +476,40 @@ export type BashFacts = {
   repoFlag: boolean
 }
 
-const isRepoFlag = (tok: string): boolean => tok === '--repo' || tok.startsWith('--repo=') || (!tok.startsWith('--') && /^-[A-Za-z]*R/.test(tok))
+const REPO_FLAG_VALUE_FLAGS = new Set(['--title', '--body', '--body-file', '--base', '--head', '--label', '--assignee', '--reviewer', '--milestone', '--project', '--template', '--subject', '--author-email', '--match-head-commit', '-t', '-b', '-F', '-B', '-H', '-l', '-a', '-p', '-T', '-A'])
+
+function isRepoFlag(tok: string): boolean {
+  if (tok === '--repo' || tok.startsWith('--repo=')) return true
+  if (tok.startsWith('--') || !/^-[A-Za-z]/.test(tok)) return false
+  for (const ch of tok.slice(1)) {
+    if (ch === 'R') return true
+    if ('tbFBHlapTA'.includes(ch)) return false
+  }
+  return false
+}
+
+function hasRepoFlag(t: string[]): boolean {
+  for (let k = 0; k < t.length; k++) {
+    if (REPO_FLAG_VALUE_FLAGS.has(t[k]!)) k++
+    else if (isRepoFlag(t[k]!)) return true
+  }
+  return false
+}
 
 const SEVERAL_MERGES = '<several merges in one command>'
 
-const unquote = (t: string): string => t.replace(/^['"]+|['"]+$/g, '')
+const unquote = (t: string): string => {
+  let out = ''
+  let q = ''
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i]!
+    if (!q && (c === '"' || c === "'")) q = c
+    else if (c === q) q = ''
+    else if (q === '"' && c === '\\' && i + 1 < t.length && '"\\$`'.includes(t[i + 1]!)) out += t[++i]!
+    else out += c
+  }
+  return out
+}
 
 // Splits a shell line into simple commands of tokens: on ; && || | & and
 // newlines outside quotes, skipping heredoc bodies and # comments, joining
@@ -734,9 +763,11 @@ export function classifyBash(command: string, base: string, branch = ''): BashFa
       let i = 1
       while (i < t.length && t[i]!.startsWith('-')) i += t[i] === '-R' || t[i] === '--repo' ? 2 : 1
       const sub = t[i]
-      const action = t[i + 1]
-      if (t.some(isRepoFlag)) facts.repoFlag = true
-      const rest = t.slice(i + 2)
+      if (hasRepoFlag(t)) facts.repoFlag = true
+      let ai = i + 1
+      while (ai < t.length && t[ai]!.startsWith('-')) ai += t[ai] === '-R' || t[ai] === '--repo' ? 2 : 1
+      const action = t[ai]
+      const rest = t.slice(ai + 1)
       if (sub === 'pr' && action === 'create') facts.isPrCreate = true
       else if (sub === 'pr' && action === 'merge') {
         if (facts.isPrMerge) facts.prSelector = SEVERAL_MERGES

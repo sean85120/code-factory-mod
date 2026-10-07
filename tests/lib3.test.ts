@@ -202,6 +202,27 @@ test('the repository flag is read from tokens, glued or clustered, not from pros
   for (const c of ['gh pr create --title x --body "use --reporter flag"', 'gh pr create --title "Add -Recursive"', 'gh pr merge 3 --squash', 'gh pr create --fill']) expect(repo(c)).toBe(false)
 })
 
+test('gh persistent flags between pr and the action do not hide the command', () => {
+  expect(classifyBash('gh pr -R o/r merge 5 --admin', 'main').hasAdmin).toBe(true)
+  expect(classifyBash('gh pr -R o/r merge 5', 'main').isPrMerge).toBe(true)
+  expect(classifyBash('gh pr --repo o/r create', 'main').isPrCreate).toBe(true)
+  expect(classifyBash('gh pr --repo o/r create', 'main').repoFlag).toBe(true)
+})
+
+test('quote-split and mid-token quoted flag values are unquoted', () => {
+  for (const c of ['gh api repos/o/r/pulls/5/merge -X"PUT"', 'gh api repos/o/r/pulls/5/merge -iX"PUT"', "gh api repos/o/r/pulls/5/merge -X PU'T'", 'gh api repos/o/r/pulls/5/merge -X "P""UT"']) {
+    expect(classifyBash(c, 'main').apiPrWrite).toBe(true)
+  }
+  expect(splitCommands('git commit -m "a && b" -s')).toEqual([['git', 'commit', '-m', 'a && b', '-s']])
+  expect(splitCommands('echo a"b c"d')).toEqual([['echo', 'ab cd']])
+})
+
+test('repoFlag ignores the values of other flags', () => {
+  const repo = (c: string) => classifyBash(c, 'main').repoFlag
+  for (const c of ['gh pr create --title "-Revert foo"', 'gh pr create --body "-Rx"', 'gh pr create --title -Rfoo', 'gh pr create -tRefactor', 'gh pr create -lRelease', 'gh pr merge 5 --subject "-R x"']) expect(repo(c)).toBe(false)
+  expect(repo('gh pr create --title x -R o/r')).toBe(true)
+})
+
 test('several gh pr merge commands or selectors in one command leave no single checked PR', () => {
   expect(classifyBash('gh pr merge 5 --squash; gh pr merge 6 --squash', 'main').prSelector).not.toBe('5')
   expect(classifyBash('gh pr merge 5 6 --squash', 'main').prSelector).not.toBe('5')
