@@ -987,6 +987,25 @@ test('another session taking the lock mid-advance: the stale advance writes and 
   expect(lockOwner(fx)).toBe('other-session')
 })
 
+test('an item out of attempts whose blocked note cannot be written pauses the loop instead of retrying it forever', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, {
+    todo: MERGED_TODO,
+    settings: { maxAttempts: 1 },
+    state: { autopilot: true, current: 'T-001', attempts: 1 },
+    hook: async what => {
+      if (what.startsWith('prewrite:') && what.endsWith('blocked/T-001.md')) throw new Error('read-only')
+      return undefined
+    },
+  })
+  fx.live.usd = 1
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(3000)
+  expect(fx.state().autopilot).toBe(false)
+  expect(fx.state().pausedReason).toContain('could not be written')
+  expect(prompts(fx).filter(x => x.includes('T-001')).length).toBe(0)
+})
+
 function midStep($: any, command: string, when: (f: any) => boolean, done: (f: any) => boolean) {
   const t = { armed: false, fired: 0, fx: null as any }
   const hook = async (what: string) => {

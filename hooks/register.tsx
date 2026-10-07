@@ -771,10 +771,16 @@ async function advance($: Dollar): Promise<void> {
           if (attempts > settings.maxAttempts) {
             state = { ...withEvent(state, now, { itemId: item.id, kind: 'blocked', detail: `after ${settings.maxAttempts} attempts: ${why}` }), current: null, attempts: 0 }
             if (!(await write(state))) return
-            await $.fs.write(`${BLOCKED_DIR}/${item.id}.md`, `Blocked by the factory after ${settings.maxAttempts} attempts. Last problem: ${why}\n`)
+            let noted = true
+            try {
+              await $.fs.write(`${BLOCKED_DIR}/${item.id}.md`, `Blocked by the factory after ${settings.maxAttempts} attempts. Last problem: ${why}\n`)
+            } catch {
+              noted = false
+            }
             toast($, `factory: ${item.id} blocked after ${settings.maxAttempts} attempts`, { timeoutMs: 8000 })
             await settle($, true, (rc, t) => noteItem(rc, item.id, item.title, t, { outcome: 'blocked' }))
             blocked.add(item.id)
+            if (!noted) return await halt(`${item.id} ran out of attempts but .factory/blocked/${item.id}.md could not be written; fix that folder, then /factory-skip ${item.id} or /factory-start`)
           } else {
             if (!(await write({ ...withEvent(state, now, { itemId: item.id, kind: 'nudge', detail: why }), attempts }))) return
             await refreshStatus($)
@@ -820,7 +826,7 @@ async function advance($: Dollar): Promise<void> {
         roadmapAsked: state.roadmapAsked || ask,
       })
       if (!wrote) return
-      const epoch = loopEpoch
+      const epoch = guard.epoch
       await settle($, false)
       await releaseLock($)
       toast($, `factory finished: ${finished} (${summarize(items, blocked)})`, { timeoutMs: 10000 })
