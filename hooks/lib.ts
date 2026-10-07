@@ -529,7 +529,7 @@ function scanCommands(command: string, carry: boolean, heredocOn = true): { comm
     for (let i = 0; i < line.length; i++) {
       const c = line[i]!
       if (quote) {
-        if (c === '\\' && quote === '"') {
+        if (c === '\\' && quote === '"' && !(substDepth > 0 && innerQ === "'")) {
           if (i + 1 < line.length) {
             tok += c + line[i + 1]!
             plain += line[i + 1] === '`' || line[i + 1] === '$' ? '  ' : c + line[i + 1]!

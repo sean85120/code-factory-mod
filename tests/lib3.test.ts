@@ -155,6 +155,11 @@ test('escaped backticks and \$( in a double-quoted message are literal text, nes
   expect(facts('echo "$(git push origin main || echo \'fail (x)\')"').pushNamesBase).toBe(true)
 })
 
+test('a backslash inside single quotes within a double-quoted $( ) is literal', () => {
+  expect(facts('out="$(echo \'a\\\' ; git push origin main)"').pushNamesBase).toBe(true)
+  expect(facts(lines('out="$(echo \'a\\\'', 'git push origin main)"')).pushNamesBase).toBe(true)
+})
+
 test('several gh pr merge commands or selectors in one command leave no single checked PR', () => {
   expect(classifyBash('gh pr merge 5 --squash; gh pr merge 6 --squash', 'main').prSelector).not.toBe('5')
   expect(classifyBash('gh pr merge 5 6 --squash', 'main').prSelector).not.toBe('5')
