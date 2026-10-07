@@ -362,9 +362,14 @@ export function parseSettings(text: string | null): { settings: Settings; proble
     Array.isArray(v) && v.every(x => typeof x === 'string') ? (v as string[]) : null
   s.buildCmd = argv(raw.buildCmd) ?? []
   s.e2eCmd = argv(raw.e2eCmd) ?? []
-  if (Array.isArray(raw.e2eFor)) {
-    s.e2eFor = raw.e2eFor.filter((x): x is ItemType => ['feature', 'bug', 'chore', 'docs'].includes(String(x)))
+  for (const k of ['buildCmd', 'e2eCmd'] as const) {
+    if (raw[k] !== undefined && raw[k] !== null && argv(raw[k]) === null) problems.push(`settings.json \`${k}\` must be an argv array of strings, e.g. ["npm","run","build"], or empty.`)
   }
+  const itemTypes = ['feature', 'bug', 'chore', 'docs']
+  if (Array.isArray(raw.e2eFor)) {
+    s.e2eFor = raw.e2eFor.filter((x): x is ItemType => itemTypes.includes(String(x)))
+    if (s.e2eFor.length !== raw.e2eFor.length) problems.push('settings.json `e2eFor` may only list feature, bug, chore or docs.')
+  } else if (raw.e2eFor !== undefined && raw.e2eFor !== null) problems.push('settings.json `e2eFor` must be an array of feature, bug, chore or docs.')
   if (typeof raw.requireReview === 'boolean') s.requireReview = raw.requireReview
   if (typeof raw.reviewCommand === 'string' && raw.reviewCommand.trim()) s.reviewCommand = raw.reviewCommand.trim()
   if (typeof raw.maxReviewRounds === 'number' && raw.maxReviewRounds >= 1) s.maxReviewRounds = Math.floor(raw.maxReviewRounds)
@@ -470,6 +475,8 @@ export type BashFacts = {
   touchesFactoryState: boolean
 }
 
+const SEVERAL_MERGES = '<several merges in one command>'
+
 const unquote = (t: string): string => t.replace(/^['"]+|['"]+$/g, '')
 
 // Splits a shell line into simple commands of tokens: on ; && || | & and
@@ -477,24 +484,24 @@ const unquote = (t: string): string => t.replace(/^['"]+|['"]+$/g, '')
 export function splitCommands(command: string): string[][] {
   const commands: string[][] = []
   let heredoc: string | null = null
+  let cur: string[] = []
+  let tok = ''
+  let quote = ''
+  const pushTok = () => {
+    if (tok !== '') cur.push(unquote(tok))
+    tok = ''
+  }
+  const pushCmd = () => {
+    pushTok()
+    if (cur.length > 0) commands.push(cur)
+    cur = []
+  }
   for (const line of command.split(/\r?\n/)) {
     if (heredoc !== null) {
       if (line.trim() === heredoc) heredoc = null
       continue
     }
     const h = /<<-?\s*['"]?([A-Za-z_][\w]*)['"]?/.exec(line)
-    let cur: string[] = []
-    let tok = ''
-    let quote = ''
-    const pushTok = () => {
-      if (tok !== '') cur.push(unquote(tok))
-      tok = ''
-    }
-    const pushCmd = () => {
-      pushTok()
-      if (cur.length > 0) commands.push(cur)
-      cur = []
-    }
     for (let i = 0; i < line.length; i++) {
       const c = line[i]!
       if (quote) {
@@ -513,9 +520,11 @@ export function splitCommands(command: string): string[][] {
       } else if (c === ' ' || c === '\t') pushTok()
       else tok += c
     }
-    pushCmd()
+    if (quote) tok += '\n'
+    else pushCmd()
     if (h) heredoc = h[1]!
   }
+  pushCmd()
   return commands
 }
 
@@ -595,6 +604,7 @@ export function classifyBash(command: string, base: string, branch = ''): BashFa
       const rest = t.slice(i + 2)
       if (sub === 'pr' && action === 'create') facts.isPrCreate = true
       else if (sub === 'pr' && action === 'merge') {
+        if (facts.isPrMerge) facts.prSelector = SEVERAL_MERGES
         facts.isPrMerge = true
         let j = 0
         while (j < rest.length) {
@@ -603,7 +613,7 @@ export function classifyBash(command: string, base: string, branch = ''): BashFa
           else if (x === '--auto') facts.hasAuto = true
           if (x.startsWith('-')) j += MERGE_VALUE_FLAGS.has(x) ? 2 : 1
           else {
-            if (facts.prSelector === null) facts.prSelector = x
+            facts.prSelector = facts.prSelector === null ? x : SEVERAL_MERGES
             j++
           }
         }

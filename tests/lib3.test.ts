@@ -59,6 +59,25 @@ test('shell splitting follows quotes and heredocs', () => {
   expect(heredoc.map(c => c[0])).toEqual(['cat', 'ls'])
 })
 
+test('a double-quoted heredoc commit message does not hide the commands after it', () => {
+  const cmd = ['git add -A && git commit -m "$(cat <<\'EOF\'', 'T-001: msg', 'EOF', ')" && git push -u origin HEAD && gh pr create --base main --title "x" --body "y"'].join('\n')
+  const f = classifyBash(cmd, 'main', 'factory/t-001-x')
+  expect(f.isCommit).toBe(true)
+  expect(f.isPush).toBe(true)
+  expect(f.isPrCreate).toBe(true)
+  const merge = classifyBash(['echo "a', 'b" && gh pr merge 5 --admin --squash'].join('\n'), 'main', 'factory/t-001-x')
+  expect(merge.isPrMerge).toBe(true)
+  expect(merge.hasAdmin).toBe(true)
+  expect(classifyBash(['git commit -m "$(cat <<\'EOF\'', 'x', 'EOF', ')" && git push origin HEAD:main'].join('\n'), 'main', 'factory/t-001-x').pushNamesBase).toBe(true)
+})
+
+test('several gh pr merge commands or selectors in one command leave no single checked PR', () => {
+  expect(classifyBash('gh pr merge 5 --squash; gh pr merge 6 --squash', 'main').prSelector).not.toBe('5')
+  expect(classifyBash('gh pr merge 5 6 --squash', 'main').prSelector).not.toBe('5')
+  expect(classifyBash('gh pr merge --squash && gh pr merge 6', 'main').prSelector).not.toBeNull()
+  expect(classifyBash('gh pr merge 5 --squash', 'main').prSelector).toBe('5')
+})
+
 test('classifyBash sees through -C, env prefixes, branch switches and -R', () => {
   expect(classifyBash('git -C sub commit -m x', 'main', 'main').commitsOnBase).toBe(true)
   expect(classifyBash('FOO=1 sudo git push origin HEAD', 'main', 'main').pushesBase).toBe(true)

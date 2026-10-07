@@ -67,6 +67,16 @@ test('settings carry the new fields and reject a bad stop version', () => {
   expect(parseSettings('{"testCmd":["t"],"stopAfterVersion":"later"}').problems.length).toBe(1)
 })
 
+test('a present but malformed buildCmd, e2eCmd or e2eFor is a settings problem, not a silently dropped gate', () => {
+  const bad = (extra: string) => parseSettings(`{"testCmd":["t"],${extra}}`).problems.join(' ')
+  expect(bad('"buildCmd":"npm run build"')).toContain('buildCmd')
+  expect(bad('"e2eCmd":"npx playwright test"')).toContain('e2eCmd')
+  expect(bad('"e2eCmd":["a",1]')).toContain('e2eCmd')
+  expect(bad('"e2eFor":["features"]')).toContain('e2eFor')
+  expect(bad('"e2eFor":"feature"')).toContain('e2eFor')
+  expect(bad('"buildCmd":[],"e2eCmd":null,"e2eFor":["feature","bug"]')).toBe('')
+})
+
 test('billing failures are recognised, ordinary failures are not', () => {
   expect(isBillingProblem('The job was not started because recent account payments have failed or your spending limit needs to be increased.')).toBe(true)
   expect(isBillingProblem("Please check the 'Billing & plans' section in your settings")).toBe(true)
