@@ -188,6 +188,20 @@ test('gh api writes are seen through a query string and glued flags', () => {
   expect(classifyBash("gh api 'repos/o/r/pulls?state=open'", 'main').apiPrWrite).toBe(false)
 })
 
+test('gh api short-flag clusters and -X=PUT hide neither the method nor the body flag', () => {
+  for (const c of ['gh api -X=PUT repos/o/r/pulls/3/merge', 'gh api -iXPUT repos/o/r/pulls/3/merge', 'gh api -iX PUT repos/o/r/pulls/3/merge', 'gh api -if k=v repos/o/r/pulls/3/merge -X PUT', 'gh api -ifk=v repos/o/r/pulls']) {
+    expect(classifyBash(c, 'main').apiPrWrite).toBe(true)
+  }
+  expect(classifyBash('gh api -i repos/o/r/pulls/3', 'main').apiPrWrite).toBe(false)
+  expect(classifyBash('gh api -H Accept:x repos/o/r/pulls', 'main').apiPrWrite).toBe(false)
+})
+
+test('the repository flag is read from tokens, glued or clustered, not from prose', () => {
+  const repo = (c: string) => classifyBash(c, 'main').repoFlag
+  for (const c of ['gh pr merge 3 -Rother/repo', 'gh pr merge 3 -sRo/r', 'gh pr create -dRo/r', 'gh pr merge 3 "-R" o/r', 'gh pr merge 3 --repo=o/r', 'gh -R o/r pr merge 3']) expect(repo(c)).toBe(true)
+  for (const c of ['gh pr create --title x --body "use --reporter flag"', 'gh pr create --title "Add -Recursive"', 'gh pr merge 3 --squash', 'gh pr create --fill']) expect(repo(c)).toBe(false)
+})
+
 test('several gh pr merge commands or selectors in one command leave no single checked PR', () => {
   expect(classifyBash('gh pr merge 5 --squash; gh pr merge 6 --squash', 'main').prSelector).not.toBe('5')
   expect(classifyBash('gh pr merge 5 6 --squash', 'main').prSelector).not.toBe('5')

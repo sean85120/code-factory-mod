@@ -473,7 +473,10 @@ export type BashFacts = {
   apiPrWrite: boolean
   isCiLookup: boolean
   touchesFactoryState: boolean
+  repoFlag: boolean
 }
+
+const isRepoFlag = (tok: string): boolean => tok === '--repo' || tok.startsWith('--repo=') || (!tok.startsWith('--') && /^-[A-Za-z]*R/.test(tok))
 
 const SEVERAL_MERGES = '<several merges in one command>'
 
@@ -697,6 +700,7 @@ export function classifyBash(command: string, base: string, branch = ''): BashFa
     apiPrWrite: false,
     isCiLookup: false,
     touchesFactoryState: false,
+    repoFlag: false,
   }
   let vb = branch // the branch as the command line goes on
 
@@ -731,6 +735,7 @@ export function classifyBash(command: string, base: string, branch = ''): BashFa
       while (i < t.length && t[i]!.startsWith('-')) i += t[i] === '-R' || t[i] === '--repo' ? 2 : 1
       const sub = t[i]
       const action = t[i + 1]
+      if (t.some(isRepoFlag)) facts.repoFlag = true
       const rest = t.slice(i + 2)
       if (sub === 'pr' && action === 'create') facts.isPrCreate = true
       else if (sub === 'pr' && action === 'merge') {
@@ -756,15 +761,24 @@ export function classifyBash(command: string, base: string, branch = ''): BashFa
         let endpoint = ''
         for (let j = 0; j < args.length; j++) {
           const x = args[j]!
-          if (x === '-X' || x === '--method') method = (args[++j] ?? '').toUpperCase()
-          else if (x.startsWith('--method=')) method = x.slice(9).toUpperCase()
-          else if (/^-X./.test(x)) method = x.slice(2).toUpperCase()
-          else if (x === '-f' || x === '-F' || x === '--field' || x === '--raw-field' || x === '--input') {
-            hasBody = true
-            j++
-          } else if (/^-[fF]./.test(x) || /^--(?:field|raw-field|input)=/.test(x)) hasBody = true
-          else if (x.startsWith('-')) {
-            if (API_VALUE_FLAGS.has(x)) j++
+          if (x.startsWith('--')) {
+            if (x === '--method') method = (args[++j] ?? '').toUpperCase()
+            else if (x.startsWith('--method=')) method = x.slice(9).toUpperCase()
+            else if (x === '--field' || x === '--raw-field' || x === '--input') {
+              hasBody = true
+              j++
+            } else if (/^--(?:field|raw-field|input)=/.test(x)) hasBody = true
+            else if (API_VALUE_FLAGS.has(x)) j++
+          } else if (x.startsWith('-') && x.length > 1) {
+            for (let k = 1; k < x.length; k++) {
+              const ch = x[k]!
+              if (!'XfFHqtp'.includes(ch)) continue
+              const glued = x.slice(k + 1)
+              const v = glued === '' ? (args[++j] ?? '') : glued.replace(/^=/, '')
+              if (ch === 'X') method = v.toUpperCase()
+              else if (ch === 'f' || ch === 'F') hasBody = true
+              break
+            }
           } else if (!endpoint) endpoint = x
         }
         const writes = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method || (hasBody ? 'POST' : 'GET'))
