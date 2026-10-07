@@ -1139,6 +1139,47 @@ test('after a prompt typed beside another session\'s loop, this session does not
   expect(fx.state().autopilot).toBe(true)
 })
 
+test('the person is told when a typed prompt leaves this session out of another session\'s loop', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const toasts: string[] = []
+  setup($, on, { lockedBy: 'other-session', state: { autopilot: true, current: 'T-001' } })
+  on('ui.toast', (_: unknown, e: { text: string }) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.prompt.submit({ text: 'something unrelated', origin: { kind: 'composer' } } as never)
+  expect(toasts.some(t => t.includes('/factory-start takes it over'))).toBe(true)
+})
+
+test('a refused /factory-start keeps this session out of the loop', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { lockedBy: 'other-session', state: { autopilot: true, current: 'T-001' } })
+  fx.live.usd = 1
+  on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: '/work/widget', surface: 'terminal', isInteractive: false })
+  await $.prompt.submit({ text: 'something unrelated', origin: { kind: 'composer' } } as never)
+  expect((await $.command.run({ command: 'factory-start' } as never)).text).toContain('another session is running')
+  fx.files['.factory/lock.json'] = JSON.stringify({ owner: 'other-session', heartbeat: 0 })
+  await clock.advance(310000)
+  expect(prompts(fx)).toEqual([])
+})
+
+test('a .factory/.gitignore that cannot be written does not break /factory-start', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, {
+    hook: what => {
+      if (what.startsWith('prewrite:') && what.endsWith('.gitignore')) throw new Error('read-only')
+      return undefined
+    },
+  })
+  fx.live.usd = 1
+  const reply = (await $.command.run({ command: 'factory-start' } as never)).text
+  await clock.advance(1000)
+  expect(reply).not.toContain('Cannot')
+  expect(fx.state().autopilot).toBe(true)
+})
+
 test('/factory-start after such a prompt takes the loop over again', async ($, on) => {
   const clock = mock.clock(on, { now: 1_000_000 })
   const fx = setup($, on, { lockedBy: 'other-session', state: { autopilot: true, current: 'T-001' } })

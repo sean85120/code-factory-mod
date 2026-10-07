@@ -962,6 +962,12 @@ const SKELETON_TODO = `# Todo
 const IGNORED = ['state.json', 'lock.json', 'blocked/', 'evidence/']
 
 async function ensureGitignore($: Dollar): Promise<void> {
+  try {
+    await writeGitignore($)
+  } catch {}
+}
+
+async function writeGitignore($: Dollar): Promise<void> {
   const path = `${FACTORY_DIR}/.gitignore`
   const have = (await readText($, path)) ?? ''
   const lines = have.split(/\r?\n/).map(l => l.trim())
@@ -1209,8 +1215,6 @@ export const register: Register = (on, _options) => {
 
   on('command.run', { command: 'factory-start' }, async $ => {
     dropRoadmap()
-    handsOff = false
-    await ensureGitignore($)
     const snap = await load($)
     const problem = await integrityProblem(snap)
     if (problem) return { text: safeLines(`Cannot start: ${problem}.`) }
@@ -1220,6 +1224,8 @@ export const register: Register = (on, _options) => {
     }
     loopEpoch++
     if (!(await acquireLock($))) return { text: 'Cannot start: another session is running the factory in this repo (its lock was refreshed in the last two minutes).' }
+    handsOff = false
+    await ensureGitignore($)
     const startedAt = await stamp($)
     await editCosts($, (rc, c) => ({ costs: startRun(rc, startedAt, c.tree), value: null }))
     const detail = snap.settings.budgetUsd > 0 ? `new run, budget ${formatUsd(snap.settings.budgetUsd)}` : 'new run'
@@ -1477,6 +1483,7 @@ export const register: Register = (on, _options) => {
       const state = await readState($)
       if (state.autopilot && (await lockedByOther($))) {
         handsOff = true
+        toast($, 'factory: another session holds this repo\'s loop; this session stays out of it (/factory-start takes it over)', { timeoutMs: 8000 })
         await settle($, false)
       } else if (state.autopilot) await pause($, state, 'you sent a prompt; /factory-start resumes', true)
       else await settle($, false)
