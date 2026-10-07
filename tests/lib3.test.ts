@@ -120,6 +120,31 @@ test('a heredoc that never terminates is read again without skipping so gated co
   expect(facts(lines('cat <<EOF', 'body', 'git push origin main')).pushNamesBase).toBe(true)
 })
 
+test('a comment ending in a backslash does not join the next line', () => {
+  expect(facts(lines('# note: run it \\', 'git push origin main')).pushNamesBase).toBe(true)
+  expect(facts(lines('echo hi # c:\\', 'git push origin main')).pushNamesBase).toBe(true)
+  expect(facts(lines('echo a', '# x \\', '# y \\', 'git push origin main')).pushNamesBase).toBe(true)
+  expect(facts(lines('git push origin ma\\', 'in')).pushNamesBase).toBe(true)
+})
+
+test('control keywords before a gated command do not hide it', () => {
+  for (const c of ['if git push origin main; then echo ok; fi', 'if true; then git push origin main; fi', 'for x in a b; do git push origin main; done', 'until git push origin main; do sleep 1; done', 'while ! git push origin main; do sleep 1; done', '! git push origin main']) {
+    expect(facts(c).pushNamesBase).toBe(true)
+  }
+  expect(facts('if true; then gh pr merge 5 --admin; fi').hasAdmin).toBe(true)
+})
+
+test('command substitutions in double quotes and backticks are classified, single-quoted ones are not', () => {
+  expect(facts('out="$(git push origin main 2>&1)"').pushNamesBase).toBe(true)
+  expect(facts('echo "$(git commit -m x)"').isCommit).toBe(true)
+  expect(facts('x="$(gh pr merge 5 --auto)"').hasAuto).toBe(true)
+  expect(facts('out=`git push origin main`').pushNamesBase).toBe(true)
+  expect(facts('echo `gh pr merge 5 --admin`').hasAdmin).toBe(true)
+  expect(facts("git commit -m 'Fix `git push origin main` handling'").isPush).toBe(false)
+  expect(facts("gh pr create --body 'runs $(git push origin main)'").isPush).toBe(false)
+  expect(facts('git commit -m "fix $(git rev-parse HEAD)"').isPush).toBe(false)
+})
+
 test('several gh pr merge commands or selectors in one command leave no single checked PR', () => {
   expect(classifyBash('gh pr merge 5 --squash; gh pr merge 6 --squash', 'main').prSelector).not.toBe('5')
   expect(classifyBash('gh pr merge 5 6 --squash', 'main').prSelector).not.toBe('5')

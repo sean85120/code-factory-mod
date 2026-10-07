@@ -488,24 +488,29 @@ const unquote = (t: string): string => t.replace(/^['"]+|['"]+$/g, '')
 const HEREDOC_START = /^<<-?\s*(?:'([^']+)'|"([^"]+)"|\\?([A-Za-z_][^\s;|&()<>'"]*))/
 const IN_ARITHMETIC = /\(\([^)]*$/
 
-function scanCommands(command: string, carry: boolean, heredocOn = true): { commands: string[][]; open: boolean; pending: boolean } {
+function scanCommands(command: string, carry: boolean, heredocOn = true): { commands: string[][]; open: boolean; pending: boolean; substs: string[] } {
   const commands: string[][] = []
   const heredocs: string[] = []
   let cur: string[] = []
   let tok = ''
+  let plain = ''
+  const substs: string[] = []
   let quote = ''
-  let subst = false
+  let inSubst = false
   const pushTok = () => {
     if (tok !== '') cur.push(unquote(tok))
+    if (plain.includes('$(') || plain.includes('`')) substs.push(plain)
     tok = ''
+    plain = ''
   }
   const pushCmd = () => {
     pushTok()
     if (cur.length > 0) commands.push(cur)
     cur = []
   }
-  const joined = command.replace(/(?<!\\)((?:\\\\)*)\\\r?\n/g, '$1 ')
-  for (const line of joined.split(/\r?\n/)) {
+  const raw = command.split(/\r?\n/)
+  for (let li = 0; li < raw.length; li++) {
+    let line = raw[li]!
     if (heredocs.length > 0) {
       if (line.trim() === heredocs[0]) heredocs.shift()
       continue
@@ -513,36 +518,51 @@ function scanCommands(command: string, carry: boolean, heredocOn = true): { comm
     if (!carry) {
       cur = []
       tok = ''
+      plain = ''
       quote = ''
-      subst = false
+      inSubst = false
     }
     for (let i = 0; i < line.length; i++) {
       const c = line[i]!
       if (quote) {
-        if (c === '\\' && quote === '"' && i + 1 < line.length) {
-          tok += c + line[i + 1]!
-          i++
+        if (c === '\\' && quote === '"') {
+          if (i + 1 < line.length) {
+            tok += c + line[i + 1]!
+            plain += c + line[i + 1]!
+            i++
+          } else if (li + 1 < raw.length) {
+            line = line.slice(0, i) + raw[++li]!
+            i--
+          }
           continue
         }
-        if (quote === '"' && (c === '`' || (c === '$' && line[i + 1] === '('))) subst = true
-        if (heredocOn && quote === '"' && subst && c === '<' && line[i + 1] === '<' && line[i + 2] !== '<') {
+        if (quote === '"' && (c === '`' || (c === '$' && line[i + 1] === '('))) inSubst = true
+        if (heredocOn && quote === '"' && inSubst && c === '<' && line[i + 1] === '<' && line[i + 2] !== '<') {
           const m = HEREDOC_START.exec(line.slice(i))
           if (m && !IN_ARITHMETIC.test(line.slice(0, i))) heredocs.push(m[1] ?? m[2] ?? m[3]!)
         }
         tok += c
+        if (quote === '"') plain += c
         if (c === quote) {
           quote = ''
-          subst = false
+          inSubst = false
         }
         continue
       }
       if (c === '"' || c === "'") {
         quote = c
-        subst = false
+        inSubst = false
         tok += c
-      } else if (c === '\\' && i + 1 < line.length) {
-        tok += line[i + 1]!
-        i++
+        if (c === '"') plain += c
+      } else if (c === '\\') {
+        if (i + 1 < line.length) {
+          tok += line[i + 1]!
+          plain += line[i + 1]!
+          i++
+        } else if (li + 1 < raw.length) {
+          line = line.slice(0, i) + raw[++li]!
+          i--
+        }
       } else if (c === '#' && tok === '' && (i === 0 || /[\s;|&()]/.test(line[i - 1]!))) break
       else if (c === '<' && line[i + 1] === '<') {
         if (line[i + 2] === '<') {
@@ -554,26 +574,43 @@ function scanCommands(command: string, carry: boolean, heredocOn = true): { comm
           tok += '<<'
           i++
         }
-      } else if (c === ';' || c === '|' || c === '&' || c === '(' || c === ')' || c === '{' || c === '}') {
+      } else if (c === ';' || c === '|' || c === '&' || c === '(' || c === ')' || c === '{' || c === '}' || c === '`') {
         pushCmd()
       } else if (c === ' ' || c === '\t') pushTok()
-      else tok += c
+      else {
+        tok += c
+        plain += c
+      }
     }
-    if (quote && carry) tok += '\n'
+    if (quote && carry) {
+      tok += '\n'
+      if (quote === '"') plain += '\n'
+    }
     else pushCmd()
   }
   pushCmd()
-  return { commands, open: quote !== '', pending: heredocs.length > 0 }
+  return { commands, open: quote !== '', pending: heredocs.length > 0, substs }
 }
 
-export function splitCommands(command: string): string[][] {
+const SUBSTITUTION = /\$\(([^()]*)\)|`([^`]*)`/g
+
+function splitCommandsAt(command: string, depth: number): string[][] {
   let r = scanCommands(command, true)
   if (r.open || r.pending) r = scanCommands(command, false)
   if (r.pending) r = scanCommands(command, false, false)
-  return r.commands
+  if (depth >= 3) return r.commands
+  const inner: string[][] = []
+  for (const t of r.substs) {
+    for (const m of t.matchAll(SUBSTITUTION)) inner.push(...splitCommandsAt(m[1] ?? m[2] ?? '', depth + 1))
+  }
+  return [...r.commands, ...inner]
 }
 
-const PREFIXES = new Set(['sudo', 'command', 'env', 'nohup', 'time', 'exec', 'builtin'])
+export function splitCommands(command: string): string[][] {
+  return splitCommandsAt(command, 0)
+}
+
+const PREFIXES = new Set(['sudo', 'command', 'env', 'nohup', 'time', 'exec', 'builtin', 'if', 'then', 'else', 'elif', 'do', 'while', 'until', '!'])
 
 function stripPrefix(tokens: string[]): string[] {
   let i = 0
