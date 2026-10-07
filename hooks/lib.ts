@@ -480,13 +480,18 @@ const SEVERAL_MERGES = '<several merges in one command>'
 const unquote = (t: string): string => t.replace(/^['"]+|['"]+$/g, '')
 
 // Splits a shell line into simple commands of tokens: on ; && || | & and
-// newlines outside quotes, skipping heredoc bodies. Best effort, not a parser.
-export function splitCommands(command: string): string[][] {
+// newlines outside quotes, skipping heredoc bodies and # comments, joining
+// backslash-newline continuations. Quotes carry across lines (a "$(cat <<'EOF'
+// ... EOF\n)" message); if a quote is still open at the end the carry has
+// desynchronised, so the lines are read one by one instead. Best effort, not a
+// parser.
+function scanCommands(command: string, carry: boolean): { commands: string[][]; open: boolean } {
   const commands: string[][] = []
-  let heredoc: string | null = null
+  const heredocs: string[] = []
   let cur: string[] = []
   let tok = ''
   let quote = ''
+  let subst = false
   const pushTok = () => {
     if (tok !== '') cur.push(unquote(tok))
     tok = ''
@@ -496,36 +501,71 @@ export function splitCommands(command: string): string[][] {
     if (cur.length > 0) commands.push(cur)
     cur = []
   }
-  for (const line of command.split(/\r?\n/)) {
-    if (heredoc !== null) {
-      if (line.trim() === heredoc) heredoc = null
+  const joined = command.replace(/(?<!\\)((?:\\\\)*)\\\r?\n/g, '$1 ')
+  for (const line of joined.split(/\r?\n/)) {
+    if (heredocs.length > 0) {
+      if (line.trim() === heredocs[0]) heredocs.shift()
       continue
     }
-    const h = /<<-?\s*['"]?([A-Za-z_][\w]*)['"]?/.exec(line)
+    if (!carry) {
+      cur = []
+      tok = ''
+      quote = ''
+      subst = false
+    }
     for (let i = 0; i < line.length; i++) {
       const c = line[i]!
       if (quote) {
+        if (c === '\\' && quote === '"' && i + 1 < line.length) {
+          tok += c + line[i + 1]!
+          i++
+          continue
+        }
+        if (quote === '"' && (c === '`' || (c === '$' && line[i + 1] === '('))) subst = true
+        if (quote === '"' && subst && c === '<' && line[i + 1] === '<' && line[i + 2] !== '<') {
+          const m = /^<<-?\s*(?:'([^']+)'|"([^"]+)"|\\?([^\s;|&()<>'"]+))/.exec(line.slice(i))
+          if (m) heredocs.push(m[1] ?? m[2] ?? m[3]!)
+        }
         tok += c
-        if (c === quote) quote = ''
+        if (c === quote) {
+          quote = ''
+          subst = false
+        }
         continue
       }
       if (c === '"' || c === "'") {
         quote = c
+        subst = false
         tok += c
       } else if (c === '\\' && i + 1 < line.length) {
         tok += line[i + 1]!
         i++
+      } else if (c === '#' && tok === '') break
+      else if (c === '<' && line[i + 1] === '<') {
+        if (line[i + 2] === '<') {
+          tok += '<<<'
+          i += 2
+        } else {
+          const m = /^<<-?\s*(?:'([^']+)'|"([^"]+)"|\\?([^\s;|&()<>'"]+))/.exec(line.slice(i))
+          if (m) heredocs.push(m[1] ?? m[2] ?? m[3]!)
+          tok += '<<'
+          i++
+        }
       } else if (c === ';' || c === '|' || c === '&' || c === '(' || c === ')' || c === '{' || c === '}') {
         pushCmd()
       } else if (c === ' ' || c === '\t') pushTok()
       else tok += c
     }
-    if (quote) tok += '\n'
+    if (quote && carry) tok += '\n'
     else pushCmd()
-    if (h) heredoc = h[1]!
   }
   pushCmd()
-  return commands
+  return { commands, open: quote !== '' }
+}
+
+export function splitCommands(command: string): string[][] {
+  const carried = scanCommands(command, true)
+  return carried.open ? scanCommands(command, false).commands : carried.commands
 }
 
 const PREFIXES = new Set(['sudo', 'command', 'env', 'nohup', 'time', 'exec', 'builtin'])

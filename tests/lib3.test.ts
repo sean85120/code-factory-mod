@@ -71,6 +71,41 @@ test('a double-quoted heredoc commit message does not hide the commands after it
   expect(classifyBash(['git commit -m "$(cat <<\'EOF\'', 'x', 'EOF', ')" && git push origin HEAD:main'].join('\n'), 'main', 'factory/t-001-x').pushNamesBase).toBe(true)
 })
 
+const lines = (...l: string[]) => l.join('\n')
+const facts = (cmd: string) => classifyBash(cmd, 'main', 'factory/t-001-x')
+
+test('an apostrophe or quote in a comment line does not swallow the commands after it', () => {
+  expect(facts(lines("# Let's commit", 'git commit -m x', 'git push origin main')).pushNamesBase).toBe(true)
+  expect(facts(lines("# don't forget", 'gh pr create --fill')).isPrCreate).toBe(true)
+  expect(facts(lines('# say "hi', 'git push origin main')).pushNamesBase).toBe(true)
+  expect(facts('git push origin main # it\'s fine').pushNamesBase).toBe(true)
+  expect(splitCommands('echo a#b')).toEqual([['echo', 'a#b']])
+})
+
+test('escaped quotes inside a double-quoted message do not desynchronise the next lines', () => {
+  expect(facts(lines('git commit -m "Rename \\"foo\\" to \\"bar\\""', 'git push origin main')).pushNamesBase).toBe(true)
+  expect(facts(lines('git commit -m "say \\"hi\\""', 'gh pr create --fill')).isPrCreate).toBe(true)
+  expect(facts('git commit -m "say \\"hi\\"" && git push origin main').pushNamesBase).toBe(true)
+})
+
+test('backslash-newline joins the continuation line into one command', () => {
+  expect(facts(lines('git push origin \\', '+main')).isForcePush).toBe(true)
+  expect(facts(lines('git push \\', 'origin main')).pushNamesBase).toBe(true)
+  expect(facts(lines('gh pr merge 5 \\', '--admin')).hasAdmin).toBe(true)
+})
+
+test('heredoc detection ignores << in quoted text and here-strings, and reads the whole delimiter', () => {
+  expect(facts(lines('git commit -m "shift x << y"', 'git push origin main')).pushNamesBase).toBe(true)
+  expect(facts(lines('cat <<< EOF', 'git push origin main')).pushNamesBase).toBe(true)
+  expect(facts(lines('cat <<END-OF', 'body', 'END-OF', 'git push origin main')).pushNamesBase).toBe(true)
+  expect(facts(lines('cat <<\\EOF', "it's body", 'EOF', 'git push origin main')).pushNamesBase).toBe(true)
+  expect(splitCommands(lines('cat <<A <<B', 'one', 'A', 'two', 'B', 'ls')).map(c => c[0])).toEqual(['cat', 'ls'])
+})
+
+test('an unterminated quote falls back to line-by-line reading so later gated commands are still seen', () => {
+  expect(facts(lines('echo "never closed', 'git push origin main')).pushNamesBase).toBe(true)
+})
+
 test('several gh pr merge commands or selectors in one command leave no single checked PR', () => {
   expect(classifyBash('gh pr merge 5 --squash; gh pr merge 6 --squash', 'main').prSelector).not.toBe('5')
   expect(classifyBash('gh pr merge 5 6 --squash', 'main').prSelector).not.toBe('5')
