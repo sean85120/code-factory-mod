@@ -428,6 +428,11 @@ async function acquireLock($: Dollar): Promise<boolean> {
           beatTimer = null
           return
         }
+        const running = await readState($)
+        if (!running.unreadable && !running.autopilot) {
+          await releaseLock($)
+          return
+        }
         await $.fs.write(LOCK_PATH, JSON.stringify({ owner: ME, heartbeat: await $.clock.now() }))
       })()
     })

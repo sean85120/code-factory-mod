@@ -44,7 +44,7 @@ Any prompt the person types themselves, or an aborted/non-`answer` turn, pauses 
 - `decisionsHash` (settings + every non-`proposed` item's id/type/title/how/accept/tests/depends/version, **not** status) is stored at `/factory-approve`. If it changes, the loop pauses until re-approved. This is what stops the model editing its own decisions.
 - `done` in todo.md is only trusted if the person approved it as done (`approvedDone`) or the factory verified a merged PR (`mergedIds`); `effectiveItems` demotes anything else back to `todo`.
 - Items the model discovers are appended as `status: proposed`; `/factory-approve` promotes them.
-- One session per repo runs the loop: `lock.json` with a 30 s heartbeat and 2 min TTL.
+- One session per repo runs the loop: `lock.json` with a 30 s heartbeat and 2 min TTL. The heartbeat releases the lock instead of renewing it when `state.json` is readable and `autopilot` is off (a loop paused or stopped from another session), so a stale owner cannot block `/factory-start`, skip, retry or roadmap elsewhere.
 - `<!-- -->` comments and fenced code in todo.md are blanked by `stripNoise` (line count preserved) so template examples aren't parsed as items. Item headings must match `## T-001 [feature|bug|chore|docs] Title`; other `##` lines are reported by `todoHeadingProblems`.
 
 ### Guards (the `tool.call` hooks)

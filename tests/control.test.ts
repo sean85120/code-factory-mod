@@ -412,6 +412,28 @@ test('/factory-retry refuses a done item, a changed plan, and another session ho
   expect(done.files['.factory/blocked/T-001.md']).toBe('x\n')
 })
 
+test('/factory-skip refuses a done item', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { todo: TODO.replace('status: todo', 'status: done'), state: { approvedDone: ['T-001'] } })
+  expect((await $.command.run({ command: 'factory-skip', args: 'T-001' } as never)).text).toContain('already done')
+  expect(fx.files['.factory/blocked/T-001.md']).toBeUndefined()
+})
+
+test('/factory-skip refuses an already blocked item and keeps its note', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { files: { '.factory/blocked/T-001.md': 'Blocked by the factory after 3 attempts.\n' } })
+  expect((await $.command.run({ command: 'factory-skip', args: 'T-001 new reason' } as never)).text).toContain('already blocked')
+  expect(fx.files['.factory/blocked/T-001.md']).toBe('Blocked by the factory after 3 attempts.\n')
+})
+
+test('/factory-retry refuses a proposed item and an over-long argument is refused', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { todo: TODO.replace('status: todo', 'status: proposed') })
+  expect((await $.command.run({ command: 'factory-retry', args: 'T-001' } as never)).text).toContain('still proposed')
+  expect((await $.command.run({ command: 'factory-skip', args: `T-001 ${'x'.repeat(2500)}` } as never)).text).toContain('Usage')
+  expect(fx.files['.factory/blocked/T-001.md']).toBeUndefined()
+})
+
 test('skip and retry refuse while another session runs the loop', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   setup($, on, { lockedBy: 'someone-else' })
@@ -1004,6 +1026,18 @@ test('an item out of attempts whose blocked note cannot be written pauses the lo
   expect(fx.state().autopilot).toBe(false)
   expect(fx.state().pausedReason).toContain('could not be written')
   expect(prompts(fx).filter(x => x.includes('T-001')).length).toBe(0)
+})
+
+test('a lock whose loop another session paused is released by the next heartbeat', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { todo: MERGED_TODO, state: { autopilot: true, current: 'T-001', attempts: 0 } })
+  fx.live.usd = 1
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1000)
+  expect(lockOwner(fx)).not.toBeNull()
+  fx.files['.factory/state.json'] = JSON.stringify({ ...fx.state(), autopilot: false, pausedReason: 'paused elsewhere' })
+  await clock.advance(31000)
+  expect(lockOwner(fx)).toBeNull()
 })
 
 function midStep($: any, command: string, when: (f: any) => boolean, done: (f: any) => boolean) {
