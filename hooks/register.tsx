@@ -827,7 +827,7 @@ async function advance($: Dollar): Promise<void> {
       await refreshStatus($)
       if (ask && epoch === loopEpoch && !(await lockedByOther($))) {
         if (hasMerged) await resetContext($, settings)
-        await startRoadmap($, items, state.mergedIds, settings)
+        await startRoadmap($, items, state.mergedIds, settings, epoch)
       }
       return
     }
@@ -852,12 +852,20 @@ async function advance($: Dollar): Promise<void> {
   }
 }
 
-async function startRoadmap($: Dollar, items: readonly Item[], mergedIds: readonly string[], settings: Settings): Promise<void> {
+async function startRoadmap($: Dollar, items: readonly Item[], mergedIds: readonly string[], settings: Settings, epoch: number): Promise<void> {
+  if (epoch !== loopEpoch) return
   const costs = await readCosts($)
-  await logEvent($, { itemId: null, kind: 'roadmap', detail: 'next-phase interview' })
+  if (epoch !== loopEpoch) return
   await patchState($, s => ({ ...s, roadmapAsked: true }))
+  if (epoch !== loopEpoch) return
   await drive($, { key: PLAN_KEY, kind: 'roadmap', title: 'next-phase interview' })
-  submit($, roadmapPrompt(items, mergedIds, costSummaryForPrompt(costs?.rc ?? null), settings), 'Code factory: the plan is done; next-phase interview', true, true, await $.clock.now())
+  const at = await $.clock.now()
+  if (epoch !== loopEpoch) {
+    await settle($, false)
+    return
+  }
+  submit($, roadmapPrompt(items, mergedIds, costSummaryForPrompt(costs?.rc ?? null), settings), 'Code factory: the plan is done; next-phase interview', true, true, at)
+  void logEvent($, { itemId: null, kind: 'roadmap', detail: 'next-phase interview' })
 }
 
 // If a turn-complete never arrived (a failed advance, a swallowed error) the
@@ -1356,8 +1364,9 @@ export const register: Register = (on, _options) => {
     }
     roadmapPending = true
     if (snap.state.autopilot) await pause($, snap.state, 'next phase being planned; /factory-approve then /factory-start resumes')
+    const roadmapEpoch = loopEpoch
     $.clock.after(300, () => {
-      void startRoadmap($, items, snap.state.mergedIds, snap.settings).finally(() => {
+      void startRoadmap($, items, snap.state.mergedIds, snap.settings, roadmapEpoch).finally(() => {
         roadmapPending = false
       })
     })

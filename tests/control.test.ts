@@ -1087,6 +1087,19 @@ test('/factory-stop between the finished write and the next-phase launch stops t
   expect(fx.live.submitted.some(x => x.includes('next-phase interview'))).toBe(false)
 })
 
+test('/factory-stop during the /clear before the next-phase interview stops the interview from starting', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { todo: DONE_TODO, merged: ['T-002'], settings: { contextReset: 'clear' }, state: { autopilot: true, current: 'T-002', approvedDone: ['T-001'] } })
+  on('command.run', async (_: unknown, e: { command: string }) => {
+    if (e.command === 'clear') await $.command.run({ command: 'factory-stop' } as never)
+    return { text: '' }
+  })
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(2000)
+  expect(fx.state().pausedReason).toBe('stopped by you')
+  expect(fx.live.submitted.some(x => x.includes('next-phase interview'))).toBe(false)
+})
+
 for (const [content, label] of [['[]', 'an array'], ['null', 'null'], ['0', 'a number'], ['"x"', 'a string']] as const) {
   test(`a state.json holding ${label} is unreadable: guards deny, start refuses, the file is untouched`, async ($, on) => {
     mock.clock(on, { now: 1_000_000 })
