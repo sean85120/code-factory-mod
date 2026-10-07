@@ -75,6 +75,14 @@ test('a PR cannot open without a clean review for HEAD', async ($, on) => {
   expect(text(await $.tool.call({ tool: 'Bash', command: 'gh pr create --title x' }))).toContain('no clean independent review')
 })
 
+test('a CI look-up joined to a gated command does not skip its gates', async ($, on) => {
+  setup($, on, { review: null })
+  expect(text(await $.tool.call({ tool: 'Bash', command: 'gh pr checks 1 --watch && gh pr create --title x' }))).toContain('no clean independent review')
+  expect(text(await $.tool.call({ tool: 'Bash', command: 'gh pr checks 1 --watch && gh pr merge 1 --squash --admin' }))).toContain('deny')
+  expect(text(await $.tool.call({ tool: 'Bash', command: 'gh pr checks 1; git push origin main' }))).toContain('never push to')
+  expect(text(await $.tool.call({ tool: 'Bash', command: 'gh run list | head; git push -f origin main' }))).toContain('force-push')
+})
+
 test('a stale or dirty review does not count', async ($, on) => {
   setup($, on, { review: { sha: SHA, danger: 0, medium: 2 } })
   expect(text(await $.tool.call({ tool: 'Bash', command: 'gh pr create --title x' }))).toContain('no clean independent review')

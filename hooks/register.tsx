@@ -1597,7 +1597,7 @@ export const register: Register = (on, _options) => {
     }
 
     // CI look-ups: a billing failure stops the whole loop.
-    if (f.isCiLookup) {
+    if (f.isCiLookup && !(f.isPush || f.isCommit || f.isPrCreate || f.isPrMerge)) {
       const ran = await next(e)
       if (ran.deny !== undefined) return ran
       const out = typeof ran.text === 'string' ? ran.text : JSON.stringify(ran.result ?? '')

@@ -646,7 +646,7 @@ function splitCommandsAt(command: string, depth: number): string[][] {
   let r = scanCommands(command, true)
   if (r.open || r.pending) r = scanCommands(command, false)
   if (r.pending) r = scanCommands(command, false, false)
-  if (depth >= 3) return r.commands
+  if (depth >= 8) return r.commands
   const inner: string[][] = []
   for (const t of r.substs) {
     for (const body of substitutionBodies(t)) inner.push(...splitCommandsAt(body, depth + 1))

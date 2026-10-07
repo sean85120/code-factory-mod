@@ -173,6 +173,11 @@ test('deeply nested substitutions stay cheap', () => {
   expect(Date.now() - start).toBeLessThan(2000)
 })
 
+test('quoted substitutions nested several levels deep are still classified', () => {
+  expect(facts('echo "$(echo "$(echo "$(echo "$(git push origin main)")")")"').pushNamesBase).toBe(true)
+  expect(facts('echo "$(echo "$(echo "$(echo "$(echo "$(echo "$(echo "$(git push origin main)")")")")")")"').pushNamesBase).toBe(true)
+})
+
 test('several gh pr merge commands or selectors in one command leave no single checked PR', () => {
   expect(classifyBash('gh pr merge 5 --squash; gh pr merge 6 --squash', 'main').prSelector).not.toBe('5')
   expect(classifyBash('gh pr merge 5 6 --squash', 'main').prSelector).not.toBe('5')
