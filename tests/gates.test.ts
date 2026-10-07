@@ -11,6 +11,7 @@ const TODO = `## T-001 [feature] Add thing
 const SHA = 'abc1234def5678abc1234def5678abc1234def56'
 
 type Fx = {
+  prDiff?: string
   settings?: Record<string, unknown>
   review?: { sha: string; danger: number; medium: number } | null
   branch?: string
@@ -53,6 +54,7 @@ function setup($: any, on: any, fx: Fx): { writes: Record<string, string>; ran: 
     if (fx.prView && cmd.startsWith('gh pr view')) return { value: { ...fx.prView, isStdoutTruncated: false, isStderrTruncated: false } }
     if (cmd.startsWith('git branch')) return { value: ok(`${fx.branch ?? 'factory/t-001-add-thing'}\n`) }
     if (cmd.startsWith('git rev-parse')) return { value: ok(`${SHA}\n`) }
+    if (cmd.startsWith('gh pr diff')) return { value: ok(fx.prDiff ?? '') }
     if (cmd.startsWith('git diff')) return { value: ok(fx.diff ?? 'src/a.ts\nsrc/a.test.ts\n') }
     if (cmd.includes('/annotations')) return { value: ok(fx.annotations ?? '') }
     if (cmd.includes('/check-runs')) return { value: ok(JSON.stringify([{ id: 7, text: '' }])) }
@@ -259,4 +261,32 @@ test('a hostile deleted test file name is cleaned in the weakening deny', async 
   expect(d).toContain('weakens the tests')
   expect(d).toContain('src/bA')
   expect(UNSAFE.test(d)).toBe(false)
+})
+
+const prJson = (over: Record<string, unknown>) => ({
+  exitCode: 0,
+  stdout: JSON.stringify({ state: 'OPEN', mergeable: 'MERGEABLE', headRefName: 'factory/t-001-add-thing', headRefOid: SHA, statusCheckRollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }], ...over }),
+  stderr: '',
+})
+
+for (const [name, over, reason] of [
+  ['a PR that is already merged', { state: 'MERGED' }, 'the PR is MERGED'],
+  ['a PR that is closed', { state: 'CLOSED' }, 'the PR is CLOSED'],
+  ['a PR with merge conflicts', { mergeable: 'CONFLICTING' }, 'merge conflicts'],
+  ['a PR that is not from a factory/* branch', { headRefName: 'feature/x' }, 'only merges factory/* PRs'],
+] as const) {
+  test(`merge is denied for ${name}`, async ($, on) => {
+    setup($, on, { review: CLEAN, prView: prJson(over) })
+    expect(denyOf(await $.tool.call({ tool: 'Bash', command: 'gh pr merge 4 --squash' }))).toContain(reason)
+  })
+}
+
+test('merge is denied when the PR diff weakens the tests', async ($, on) => {
+  setup($, on, { review: CLEAN, prView: prJson({}), prDiff: 'diff --git a/src/b.test.ts b/src/b.test.ts\ndeleted file mode 100644\n' })
+  expect(denyOf(await $.tool.call({ tool: 'Bash', command: 'gh pr merge 4 --squash' }))).toContain('the PR weakens the tests')
+})
+
+test('merge goes through for a green factory PR whose diff does not weaken the tests', async ($, on) => {
+  setup($, on, { review: CLEAN, prView: prJson({}), prDiff: 'diff --git a/src/a.ts b/src/a.ts\n' })
+  expect(JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'gh pr merge 4 --squash' }))).not.toContain('code-factory:')
 })

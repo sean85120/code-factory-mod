@@ -1089,6 +1089,41 @@ test('a factory turn that ends in an error pauses the loop with that reason', as
   expect(fx.state().pausedReason).toBe('turn ended with error')
 })
 
+test('/factory-start with every item done still runs the pending release', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, {
+    todo: VERSIONED.replace('status: todo', 'status: done'),
+    settings: { stopAfterVersion: '0.2', tagRelease: true },
+    state: { approvedDone: ['T-001', 'T-002'], roadmapAsked: true },
+    hook: what => (what.startsWith('gh release view') ? { exitCode: 1, stderr: 'release not found' } : undefined),
+  })
+  fx.live.usd = 1
+  const reply = (await $.command.run({ command: 'factory-start' } as never)).text
+  await clock.advance(2000)
+  expect(reply).not.toContain('Nothing to do')
+  expect(prompts(fx).some(x => x.includes('release v0.2'))).toBe(true)
+})
+
+test('/factory-start with every item done and the release cut asks for the next phase once', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { todo: DONE_TODO, state: { approvedDone: ['T-001', 'T-002'] } })
+  fx.live.usd = 1
+  const reply = (await $.command.run({ command: 'factory-start' } as never)).text
+  await clock.advance(2000)
+  expect(reply).not.toContain('Nothing to do')
+  expect(fx.live.submitted.some(x => x.includes('next-phase interview'))).toBe(true)
+  const again = (await $.command.run({ command: 'factory-start' } as never)).text
+  expect(again).toContain('Nothing to do')
+})
+
+test('a prompt typed in a session that does not hold the lock leaves the other session\'s loop running', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { lockedBy: 'other-session', state: { autopilot: true, current: 'T-001' } })
+  await $.prompt.submit({ text: 'something unrelated', origin: { kind: 'composer' } } as never)
+  expect(fx.state().autopilot).toBe(true)
+  expect(lockOwner(fx)).toBe('other-session')
+})
+
 function midStep($: any, command: string, when: (f: any) => boolean, done: (f: any) => boolean) {
   const t = { armed: false, fired: 0, fx: null as any }
   const hook = async (what: string) => {

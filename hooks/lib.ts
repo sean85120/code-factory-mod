@@ -1823,6 +1823,13 @@ export function planComplete(items: readonly Item[]): boolean {
   return items.length > 0 && items.every(i => i.status === 'done')
 }
 
+export function releasePending(settings: Pick<Settings, 'stopAfterVersion' | 'tagRelease'>, state: Pick<FactoryState, 'releasedVersion'>, items: readonly Item[]): boolean {
+  const version = settings.stopAfterVersion
+  if (!version || !settings.tagRelease || state.releasedVersion === version) return false
+  const scope = items.filter(i => inScope(i, version))
+  return scope.length > 0 && scope.every(i => i.status === 'done')
+}
+
 export function shouldAskRoadmap(settings: Pick<Settings, 'askNextPhase'>, state: Pick<FactoryState, 'approved' | 'roadmapAsked'>, items: readonly Item[]): boolean {
   return settings.askNextPhase && state.approved && !state.roadmapAsked && planComplete(items)
 }

@@ -34,6 +34,7 @@ import {
   roadmapExpired,
   isSafeBranchName,
   isRoadmapDone,
+  releasePending,
   roadmapPrompt,
   sanitizeEvents,
   settleCost,
@@ -1209,7 +1210,8 @@ export const register: Register = (on, _options) => {
     const snap = await load($)
     const problem = await integrityProblem(snap)
     if (problem) return { text: safeLines(`Cannot start: ${problem}.`) }
-    if (!pickNext(effectiveItems(snap), snap.blocked, snap.settings.stopAfterVersion) && !snap.state.current) {
+    const startItems = effectiveItems(snap)
+    if (!pickNext(startItems, snap.blocked, snap.settings.stopAfterVersion) && !snap.state.current && !releasePending(snap.settings, snap.state, startItems) && !shouldAskRoadmap(snap.settings, snap.state, startItems)) {
       return { text: `Nothing to do: ${summarize(effectiveItems(snap), snap.blocked)}. /factory-roadmap plans the next phase; /factory-retry <ID> unblocks an item.` }
     }
     loopEpoch++
@@ -1469,7 +1471,7 @@ export const register: Register = (on, _options) => {
     }
     if (['composer', 'bridge', 'sdk'].includes(e.origin.kind) && !e.text.trimStart().startsWith('/')) {
       const state = await readState($)
-      if (state.autopilot) await pause($, state, 'you sent a prompt; /factory-start resumes', true)
+      if (state.autopilot && !(await lockedByOther($))) await pause($, state, 'you sent a prompt; /factory-start resumes', true)
       else await settle($, false)
       isFactoryTurn = false
       isArmed = false
