@@ -54,11 +54,15 @@ const SETTINGS = { testCmd: ['unit'], baseBranch: 'main', requireReview: false, 
 const prompts: string[] = []
 let catFileExit = 0
 let diffExit = 0
+let onRun: (() => void) | null = null
+let readCount = 0
 
 function setup($: any, on: any, state: Record<string, unknown>, agentText = '', extraFiles: Record<string, string> = {}, agentResult?: unknown): Record<string, string> {
   prompts.length = 0
   catFileExit = 0
   diffExit = 0
+  onRun = null
+  readCount = 0
   const settings = JSON.stringify(SETTINGS)
   const hash = decisionsHash(parseSettings(settings).settings, parseTodo(TODO))
   const files: Record<string, string> = {
@@ -69,7 +73,14 @@ function setup($: any, on: any, state: Record<string, unknown>, agentText = '', 
   }
   const key = (path: string) => Object.keys(files).find(k => path.endsWith(`/${k}`))
   on('fs.exists', (_: unknown, e: { path: string }) => ({ value: key(e.path) !== undefined }))
-  on('fs.read', (_: unknown, e: { path: string }) => ({ value: files[key(e.path) ?? ''] ?? '' }))
+  on('fs.read', (_: unknown, e: { path: string }) => {
+    if (onRun && ++readCount >= 65) {
+      const fire = onRun
+      onRun = null
+      fire()
+    }
+    return { value: files[key(e.path) ?? ''] ?? '' }
+  })
   on('fs.list', () => ({ value: [] }))
   on('fs.write', (_: unknown, e: { path: string; text: string }) => {
     files[key(e.path) ?? e.path.replace(/^.*\/\.factory\//, '.factory/')] = e.text
@@ -169,6 +180,27 @@ test('advance waits while the review it launched is pending, then pauses when it
   expect(saved.pausedReason).toContain('did not report')
   expect(saved.reviewAgentId).toBeNull()
   expect(saved.reviewRounds).toBe(1)
+  expect(files['blocked/T-001.md']).toBeUndefined()
+})
+
+test('a stop that lands during the expiry pause leaves no blocked note and keeps the rounds', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const files = setup($, on, { autopilot: true, current: 'T-001', reviewRounds: 4 }, 'Async agent launched successfully.\nagentId: a4d789fa45ad6c140')
+  on('prompt.submit', (_: unknown, e: { text: string }) => ({ text: e.text }))
+  await reviewSpawn($)
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1_190_000)
+  let fired = 0
+  readCount = 0
+  onRun = () => {
+    fired++
+    void $.command.run({ command: 'factory-stop' } as never)
+  }
+  await clock.advance(800_000)
+  expect(fired).toBe(1)
+  const saved = JSON.parse(files['state.json']!)
+  expect(saved.pausedReason).toBe('stopped by you')
+  expect(saved.reviewRounds).toBe(4)
   expect(files['blocked/T-001.md']).toBeUndefined()
 })
 

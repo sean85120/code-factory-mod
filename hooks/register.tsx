@@ -729,10 +729,18 @@ async function advance($: Dollar): Promise<void> {
       state = { ...state, reviewAgentId: null, reviewAgentAt: 0 }
       if (isExpired) {
         const rounds = state.reviewRounds + 1
-        await halt(`the review agent did not report within ${Math.round(reviewWindow(state, settings) / 60000)} min; /factory-start retries`, { reviewAgentId: null, reviewAgentAt: 0, reviewRounds: rounds })
-        if (rounds >= settings.maxReviewRounds && state.current) {
-          await $.fs.write(`${BLOCKED_DIR}/${state.current}.md`, `The review agent gave no verdict ${rounds} times.\n`)
-          await logEvent($, { itemId: state.current, kind: 'blocked', detail: `review agent gave no verdict ${rounds} times` })
+        const capped = rounds >= settings.maxReviewRounds
+        await halt(
+          capped ? `the review agent gave no verdict ${rounds} times; ${state.current} is blocked` : `the review agent did not report within ${Math.round(reviewWindow(state, settings) / 60000)} min; /factory-start retries`,
+          { reviewAgentId: null, reviewAgentAt: 0, reviewRounds: rounds },
+        )
+        if (capped && !aborted && state.current) {
+          try {
+            await $.fs.write(`${BLOCKED_DIR}/${state.current}.md`, `The review agent gave no verdict ${rounds} times.\n`)
+            await logEvent($, { itemId: state.current, kind: 'blocked', detail: `review agent gave no verdict ${rounds} times` })
+          } catch {
+            return
+          }
         }
         return
       }
