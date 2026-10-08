@@ -538,7 +538,7 @@ test('the band shows the run spend and the latest timeline events', async ($, on
   fx.live.usd = 2.25
   await $.command.run({ command: 'factory-status' } as never)
   const ui = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false } } as never)
-  expect(await ui.find({ type: 'Text', text: /\$1\.25 run \/ \$20\.00 · T-001 \$1\.25/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /\$1\.25\/\$20\.00 .* · item \$1\.25/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /T-001 started/ })).toBeDefined()
   await ui.unmount()
 })
@@ -599,6 +599,55 @@ test('with a budget set and no readable spend the loop pauses and says why', asy
   expect(fx.state().pausedReason).toContain('cannot be read')
   expect(fx.live.submitted.some(t => t.startsWith('CODE FACTORY: work item'))).toBe(false)
   expect((await $.command.run({ command: 'factory-status' } as never)).text).toContain('budget cannot be enforced')
+})
+
+test('one unreadable cost read right after a turn does not pause a budgeted loop, two in a row do', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { settings: { budgetUsd: 5 } })
+  fx.live.usd = 1
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1000)
+  fx.live.noCost = true
+  await mainTurn($)
+  expect(fx.state().autopilot).toBe(true)
+  fx.live.noCost = false
+  fx.live.usd = 2
+  await clock.advance(1000)
+  expect(fx.state().autopilot).toBe(true)
+  fx.live.noCost = true
+  await mainTurn($)
+  await clock.advance(1000)
+  expect(fx.state().autopilot).toBe(false)
+  expect(fx.state().pausedReason).toContain('cannot be read')
+})
+
+test('two reviewer turns in a row with an unreadable cost read pause a budgeted loop at the second, before any advance', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { noCost: true, settings: { budgetUsd: 5 }, state: { autopilot: true, current: 'T-001', reviewAgentId: ID, reviewAgentAt: 999_000, reviewWaitMs: 1_800_000 } })
+  const turn = () => $.turn.complete({ answer: 'still running', durationMs: 10, isAborted: false, turnId: 'r1', reason: 'answer', agentId: ID } as never)
+  await turn()
+  expect(fx.state().autopilot).toBe(true)
+  await turn()
+  expect(fx.state().autopilot).toBe(false)
+  expect(fx.state().pausedReason).toContain('cannot be read')
+})
+
+test('a readable cost read between two unreadable ones resets the tolerance', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { settings: { budgetUsd: 5 }, state: { autopilot: true, current: 'T-001', reviewAgentId: ID, reviewAgentAt: 999_000, reviewWaitMs: 1_800_000 } })
+  const turn = () => $.turn.complete({ answer: 'still running', durationMs: 10, isAborted: false, turnId: 'r1', reason: 'answer', agentId: ID } as never)
+  fx.live.usd = 1
+  fx.live.noCost = true
+  await turn()
+  expect(fx.state().autopilot).toBe(true)
+  fx.live.noCost = false
+  await turn()
+  expect(fx.state().autopilot).toBe(true)
+  fx.live.noCost = true
+  await turn()
+  expect(fx.state().autopilot).toBe(true)
+  await turn()
+  expect(fx.state().autopilot).toBe(false)
 })
 
 test('a counter that becomes readable later is not charged for the time before', async ($, on) => {
