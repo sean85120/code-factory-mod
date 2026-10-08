@@ -407,6 +407,19 @@ test('approve refuses design files that exist only on a feature branch', async (
   expect(r.text).toContain('Not approved')
   expect(r.text).toContain('not on origin/main')
   expect(r.text).toContain('.factory/settings.json')
+  const steps = [
+    "  git checkout 'main' && git checkout 'factory/t-001-first' -- .factory/design.md .factory/todo.md .factory/settings.json && git add -- .factory/design.md .factory/todo.md .factory/settings.json && git commit -m \"Code factory design\" -- .factory/design.md .factory/todo.md .factory/settings.json && git push origin 'main'",
+    "  git checkout 'main' && git add -- .factory/design.md .factory/todo.md .factory/settings.json && git commit -m \"Code factory design\" -- .factory/design.md .factory/todo.md .factory/settings.json && git push origin 'main'",
+  ]
+  let at = -1
+  for (const line of steps) {
+    const i = (r.text ?? '').indexOf(line)
+    expect(i).toBeGreaterThan(at)
+    at = i
+  }
+  expect(r.text).toContain('from the repository root with nothing else staged')
+  expect(r.text).toContain('through a PR')
+  expect(r.text).toContain('Then run /factory-approve again')
 })
 
 test('approve refuses design files whose content differs from the base branch', async ($, on) => {
@@ -415,7 +428,23 @@ test('approve refuses design files whose content differs from the base branch', 
   diffExit = 1
   const r = await $.command.run({ command: 'factory-approve' } as never)
   expect(r.text).toContain('differ from origin/main')
+  expect(r.text).toContain("git push origin 'main'")
 })
+
+const HOSTILE = ['main; touch ~/pwn', '$(x)', 'a`id`b', 'a b', '-x', 'a..b']
+
+for (const base of HOSTILE) {
+  test(`approve prints no runnable git line for the unsafe base branch ${JSON.stringify(base)}`, async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    setup($, on, { approved: false, autopilot: false, current: null }, '', { '.factory/design.md': '# Design\n\n## Decisions\n- x\n', '.factory/settings.json': JSON.stringify({ ...SETTINGS, baseBranch: base }) })
+    catFileExit = 1
+    const r = await $.command.run({ command: 'factory-approve' } as never)
+    expect(r.text).toContain('Not approved')
+    expect(r.text).toContain('no git commands are shown')
+    expect(r.text).not.toMatch(/^\s*git /m)
+    expect(r.text).not.toContain('touch ~/pwn\n')
+  })
+}
 
 test('approve ignores the proposed to todo flip that approve itself makes, and a failed fetch is reported', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })

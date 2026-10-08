@@ -13,6 +13,10 @@ export type FactoryView = {
   more: number
   marks: Record<string, Mark>
   changes: string[]
+  runUsd: number | null
+  itemUsd: number | null
+  budgetUsd: number
+  events: string[]
 }
 
 declare module 'claude-code' {
