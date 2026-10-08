@@ -18,6 +18,8 @@ test('the pending reviewer own answer decides: record, unavailable, or clear whe
   expect(decideReviewAnswer('FACTORY-REVIEW: unavailable', ID, pending, true)).toEqual({ action: 'unavailable' })
   expect(decideReviewAnswer('ran out of turns', ID, pending, true)).toEqual({ action: 'clear' })
   expect(decideReviewAnswer('', ID, pending, true)).toEqual({ action: 'clear' })
+  expect(decideReviewAnswer('The reviewer is still running, so I will wait.', ID, pending, true, false)).toEqual({ action: 'ignore' })
+  expect(decideReviewAnswer(`FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}`, ID, pending, true, false)).toEqual({ action: 'record', mark: { danger: 0, medium: 0, sha: SHA } })
 })
 
 test('a numeric verdict wins over a quoted unavailable instruction', () => {
@@ -220,6 +222,23 @@ test('a reviewer that died or answered without a verdict frees the loop and coun
   expect(saved.reviewAgentId).toBeNull()
   expect(saved.review ?? null).toBeNull()
   expect(saved.reviewRounds).toBe(1)
+})
+
+test('a reviewer turn that ends while its own helpers run keeps the review pending until the turn with the verdict', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const files = setup($, on, { autopilot: true, current: 'T-001' }, `Async agent launched successfully.\nagentId: ${ID}`)
+  on('turn.complete', () => ({ text: '' }))
+  await reviewSpawn($)
+  await reviewerTurn($, { answer: 'The reviewer is still running, so I will wait for its notification.' })
+  await reviewerTurn($, { answer: '' })
+  let saved = JSON.parse(files['state.json']!)
+  expect(saved.reviewAgentId).toBe(ID)
+  expect(saved.reviewRounds).toBe(0)
+  expect(saved.review ?? null).toBeNull()
+  await reviewerTurn($)
+  saved = JSON.parse(files['state.json']!)
+  expect(saved.review).toEqual({ danger: 0, medium: 0, sha: SHA })
+  expect(saved.reviewAgentId).toBeNull()
 })
 
 test('repeated reviewers without a verdict block the item at the round cap', async ($, on) => {
