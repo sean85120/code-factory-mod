@@ -18,6 +18,8 @@ test('the pending reviewer own answer decides: record, unavailable, or clear whe
   expect(decideReviewAnswer('FACTORY-REVIEW: unavailable', ID, pending, true)).toEqual({ action: 'unavailable' })
   expect(decideReviewAnswer('ran out of turns', ID, pending, true)).toEqual({ action: 'clear' })
   expect(decideReviewAnswer('', ID, pending, true)).toEqual({ action: 'clear' })
+  expect(decideReviewAnswer('The reviewer is still running, so I will wait.', ID, pending, true, false)).toEqual({ action: 'ignore' })
+  expect(decideReviewAnswer(`FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}`, ID, pending, true, false)).toEqual({ action: 'record', mark: { danger: 0, medium: 0, sha: SHA } })
 })
 
 test('a numeric verdict wins over a quoted unavailable instruction', () => {
@@ -52,11 +54,15 @@ const SETTINGS = { testCmd: ['unit'], baseBranch: 'main', requireReview: false, 
 const prompts: string[] = []
 let catFileExit = 0
 let diffExit = 0
+let onRun: (() => void) | null = null
+let readCount = 0
 
 function setup($: any, on: any, state: Record<string, unknown>, agentText = '', extraFiles: Record<string, string> = {}, agentResult?: unknown): Record<string, string> {
   prompts.length = 0
   catFileExit = 0
   diffExit = 0
+  onRun = null
+  readCount = 0
   const settings = JSON.stringify(SETTINGS)
   const hash = decisionsHash(parseSettings(settings).settings, parseTodo(TODO))
   const files: Record<string, string> = {
@@ -67,7 +73,14 @@ function setup($: any, on: any, state: Record<string, unknown>, agentText = '', 
   }
   const key = (path: string) => Object.keys(files).find(k => path.endsWith(`/${k}`))
   on('fs.exists', (_: unknown, e: { path: string }) => ({ value: key(e.path) !== undefined }))
-  on('fs.read', (_: unknown, e: { path: string }) => ({ value: files[key(e.path) ?? ''] ?? '' }))
+  on('fs.read', (_: unknown, e: { path: string }) => {
+    if (onRun && ++readCount >= 65) {
+      const fire = onRun
+      onRun = null
+      fire()
+    }
+    return { value: files[key(e.path) ?? ''] ?? '' }
+  })
   on('fs.list', () => ({ value: [] }))
   on('fs.write', (_: unknown, e: { path: string; text: string }) => {
     files[key(e.path) ?? e.path.replace(/^.*\/\.factory\//, '.factory/')] = e.text
@@ -166,6 +179,40 @@ test('advance waits while the review it launched is pending, then pauses when it
   expect(saved.autopilot).toBe(false)
   expect(saved.pausedReason).toContain('did not report')
   expect(saved.reviewAgentId).toBeNull()
+  expect(saved.reviewRounds).toBe(1)
+  expect(files['blocked/T-001.md']).toBeUndefined()
+})
+
+test('a stop that lands during the expiry pause leaves no blocked note and keeps the rounds', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const files = setup($, on, { autopilot: true, current: 'T-001', reviewRounds: 4 }, 'Async agent launched successfully.\nagentId: a4d789fa45ad6c140')
+  on('prompt.submit', (_: unknown, e: { text: string }) => ({ text: e.text }))
+  await reviewSpawn($)
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1_190_000)
+  let fired = 0
+  readCount = 0
+  onRun = () => {
+    fired++
+    void $.command.run({ command: 'factory-stop' } as never)
+  }
+  await clock.advance(800_000)
+  expect(fired).toBe(1)
+  const saved = JSON.parse(files['state.json']!)
+  expect(saved.pausedReason).toBe('stopped by you')
+  expect(saved.reviewRounds).toBe(4)
+  expect(files['blocked/T-001.md']).toBeUndefined()
+})
+
+test('a reviewer that never reports at the round cap blocks the item', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const files = setup($, on, { autopilot: true, current: 'T-001', reviewRounds: 4 }, 'Async agent launched successfully.\nagentId: a4d789fa45ad6c140')
+  on('prompt.submit', (_: unknown, e: { text: string }) => ({ text: e.text }))
+  await reviewSpawn($)
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1_900_000)
+  expect(JSON.parse(files['state.json']!).reviewRounds).toBe(5)
+  expect(files['blocked/T-001.md']).toContain('no verdict')
 })
 
 test('design instructions attach without an approved plan and survive a failed approve', async ($, on) => {
@@ -210,7 +257,7 @@ test('a verdict in another agent turn or in the main loop answer is not recorded
   expect(saved.reviewAgentId).toBe(ID)
 })
 
-test('a reviewer that died or answered without a verdict frees the loop and counts a round', async ($, on) => {
+test('a reviewer turn that ended in an error frees the loop and counts a round', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   const files = setup($, on, { autopilot: true, current: 'T-001' }, `Async agent launched successfully.\nagentId: ${ID}`)
   on('turn.complete', () => ({ text: '' }))
@@ -220,6 +267,23 @@ test('a reviewer that died or answered without a verdict frees the loop and coun
   expect(saved.reviewAgentId).toBeNull()
   expect(saved.review ?? null).toBeNull()
   expect(saved.reviewRounds).toBe(1)
+})
+
+test('a reviewer turn that ends while its own helpers run keeps the review pending until the turn with the verdict', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const files = setup($, on, { autopilot: true, current: 'T-001' }, `Async agent launched successfully.\nagentId: ${ID}`)
+  on('turn.complete', () => ({ text: '' }))
+  await reviewSpawn($)
+  await reviewerTurn($, { answer: 'The reviewer is still running, so I will wait for its notification.' })
+  await reviewerTurn($, { answer: '' })
+  let saved = JSON.parse(files['state.json']!)
+  expect(saved.reviewAgentId).toBe(ID)
+  expect(saved.reviewRounds).toBe(0)
+  expect(saved.review ?? null).toBeNull()
+  await reviewerTurn($)
+  saved = JSON.parse(files['state.json']!)
+  expect(saved.review).toEqual({ danger: 0, medium: 0, sha: SHA })
+  expect(saved.reviewAgentId).toBeNull()
 })
 
 test('repeated reviewers without a verdict block the item at the round cap', async ($, on) => {

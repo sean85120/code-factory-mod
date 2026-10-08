@@ -727,7 +727,23 @@ async function advance($: Dollar): Promise<void> {
       const isExpired = state.reviewAgentId === launchedHere
       launchedHere = null
       state = { ...state, reviewAgentId: null, reviewAgentAt: 0 }
-      if (isExpired) return await halt(`the review agent did not report within ${Math.round(reviewWindow(state, settings) / 60000)} min; /factory-start retries`, { reviewAgentId: null, reviewAgentAt: 0 })
+      if (isExpired) {
+        const rounds = state.reviewRounds + 1
+        const capped = rounds >= settings.maxReviewRounds
+        await halt(
+          capped ? `the review agent gave no verdict ${rounds} times; ${state.current} is blocked` : `the review agent did not report within ${Math.round(reviewWindow(state, settings) / 60000)} min; /factory-start retries`,
+          { reviewAgentId: null, reviewAgentAt: 0, reviewRounds: rounds },
+        )
+        if (capped && !aborted && state.current) {
+          try {
+            await $.fs.write(`${BLOCKED_DIR}/${state.current}.md`, `The review agent gave no verdict ${rounds} times.\n`)
+            await logEvent($, { itemId: state.current, kind: 'blocked', detail: `review agent gave no verdict ${rounds} times` })
+          } catch {
+            return
+          }
+        }
+        return
+      }
     }
     if (state.current) {
       const item = snap.items.find(i => i.id === state.current)
@@ -1016,14 +1032,14 @@ async function recordReview($: Dollar, itemId: string, mark: ReviewMark, maxRoun
   }
 }
 
-async function reviewerTurn($: Dollar, agentId: string, answer: string): Promise<void> {
+async function reviewerTurn($: Dollar, agentId: string, answer: string, final: boolean): Promise<void> {
   try {
     for (let i = 0; i < 25 && reviewInFlight; i++) await new Promise<void>(resolve => $.clock.after(200, () => resolve()))
     if ((await readState($)).reviewAgentId !== agentId || launchedHere !== agentId) return
     const snap = await load($)
     if (!reviewWaiting(snap.state, snap.settings, await $.clock.now())) return
     const item = snap.items.find(i => i.id === snap.state.current)
-    const act = decideReviewAnswer(answer, agentId, snap.state, item !== undefined)
+    const act = decideReviewAnswer(answer, agentId, snap.state, item !== undefined, final)
     if (act.action === 'ignore' || !item || (await lockedByOther($))) return
     launchedHere = null
     if (act.action === 'unavailable') {
@@ -1424,7 +1440,7 @@ export const register: Register = (on, _options) => {
     await refreshView($)
     if (e.agentId) {
       const wasReviewer = (await readState($)).reviewAgentId === e.agentId
-      await reviewerTurn($, e.agentId, e.reason === 'answer' ? e.answer : '')
+      await reviewerTurn($, e.agentId, e.reason === 'answer' ? e.answer : '', e.reason !== 'answer')
       if (wasReviewer) await stopForBudget($)
       return out
     }

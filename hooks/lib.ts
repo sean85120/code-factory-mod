@@ -1079,12 +1079,13 @@ export function decideReviewAnswer(
   agentId: string,
   state: Pick<FactoryState, 'approved' | 'autopilot' | 'reviewAgentId'>,
   hasItem: boolean,
+  final = true,
 ): ReviewAction {
   if (!state.approved || !hasItem || state.reviewAgentId === null || agentId !== state.reviewAgentId) return { action: 'ignore' }
   const mark = parseReviewMarker(answer)
   if (mark) return { action: 'record', mark }
   if (/FACTORY-REVIEW:\s*unavailable/i.test(answer)) return { action: 'unavailable' }
-  return { action: 'clear' }
+  return final ? { action: 'clear' } : { action: 'ignore' }
 }
 
 export function reviewAgentPrompt(s: Settings, branch: string): string {
