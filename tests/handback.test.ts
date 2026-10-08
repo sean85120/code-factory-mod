@@ -168,6 +168,19 @@ test('advance waits while the review it launched is pending, then pauses when it
   expect(saved.autopilot).toBe(false)
   expect(saved.pausedReason).toContain('did not report')
   expect(saved.reviewAgentId).toBeNull()
+  expect(saved.reviewRounds).toBe(1)
+  expect(files['blocked/T-001.md']).toBeUndefined()
+})
+
+test('a reviewer that never reports at the round cap blocks the item', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const files = setup($, on, { autopilot: true, current: 'T-001', reviewRounds: 4 }, 'Async agent launched successfully.\nagentId: a4d789fa45ad6c140')
+  on('prompt.submit', (_: unknown, e: { text: string }) => ({ text: e.text }))
+  await reviewSpawn($)
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1_900_000)
+  expect(JSON.parse(files['state.json']!).reviewRounds).toBe(5)
+  expect(files['blocked/T-001.md']).toContain('no verdict')
 })
 
 test('design instructions attach without an approved plan and survive a failed approve', async ($, on) => {
@@ -212,7 +225,7 @@ test('a verdict in another agent turn or in the main loop answer is not recorded
   expect(saved.reviewAgentId).toBe(ID)
 })
 
-test('a reviewer that died or answered without a verdict frees the loop and counts a round', async ($, on) => {
+test('a reviewer turn that ended in an error frees the loop and counts a round', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   const files = setup($, on, { autopilot: true, current: 'T-001' }, `Async agent launched successfully.\nagentId: ${ID}`)
   on('turn.complete', () => ({ text: '' }))
