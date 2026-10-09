@@ -1,9 +1,9 @@
 // Pure logic of the code factory: parsing, validation, guards and prompts.
 // No engine calls here, so tests can exercise it directly.
 
-import type { AgentRow, FactoryView, Mark, Stage, Step, ViewRow } from '../types'
+import type { AgentRow, DoctorCheck, FactoryView, Mark, Stage, Step, ViewRow } from '../types'
 
-export type { AgentRow, FactoryView, Mark, Stage, Step, ViewRow }
+export type { AgentRow, DoctorCheck, FactoryView, Mark, Stage, Step, ViewRow }
 
 export type ItemType = 'feature' | 'bug' | 'chore' | 'docs'
 export type ItemStatus = 'proposed' | 'todo' | 'done'
@@ -1206,7 +1206,7 @@ export const VIEW_CHANGES = 3
 export const VIEW_EVENTS = 3
 
 export type ViewSpend = { runUsd: number | null; itemUsd: number | null; budgetUsd: number }
-export type ViewExtra = { maxAttempts: number; maxReviewRounds: number; agents: AgentRow[]; now: number }
+export type ViewExtra = { maxAttempts: number; maxReviewRounds: number; agents: AgentRow[]; now: number; notes?: ReadonlyMap<string, string> }
 
 export const MAX_VIEW_AGENTS = 6
 
@@ -1280,11 +1280,35 @@ export function itemSteps(
 
 export type Control = { key: string; label: string; command: string; args?: string }
 
+export function runControls(v: FactoryView): Control[] {
+  if (!v.approved) return []
+  return v.running
+    ? [
+        { key: 'pause', label: '⏸ pause', command: 'factory-pause' },
+        { key: 'stop', label: '■ stop', command: 'factory-stop' },
+      ]
+    : [{ key: 'start', label: '▶ start', command: 'factory-start' }]
+}
+
 export function controlsFor(v: FactoryView): Control[] {
   if (!v.approved) return []
-  const run: Control[] = v.running ? [{ key: 'pause', label: '⏸ pause', command: 'factory-pause' }] : []
   const retry: Control[] = v.rows.filter(r => r.mark === 'blocked').map(r => ({ key: `retry-${r.id}`, label: `↻ retry ${r.id}`, command: 'factory-retry', args: r.id }))
-  return [...run, ...retry]
+  return [...runControls(v), ...retry]
+}
+
+export function isCompact(columns: number | undefined): boolean {
+  return columns !== undefined && columns < 90
+}
+
+export function checksLine(c: DoctorCheck): string {
+  return `${c.status === 'ok' ? '✓' : c.status === 'warn' ? '!' : '✗'} ${cleanText(c.name)}${c.detail ? ` · ${cleanText(c.detail)}` : ''}`
+}
+
+export function checksReport(checks: readonly DoctorCheck[]): string {
+  const bad = checks.filter(c => c.status === 'fail').length
+  const warn = checks.filter(c => c.status === 'warn').length
+  const head = bad > 0 ? `${bad} problem${bad === 1 ? '' : 's'} to fix before /factory-start` : warn > 0 ? `ready, ${warn} warning${warn === 1 ? '' : 's'}` : 'ready to run'
+  return [`Factory checks: ${head}`, ...checks.map(checksLine)].join('\n')
 }
 
 export function statusLine(v: FactoryView): string {
@@ -1355,6 +1379,7 @@ export function buildView(
     events: (state.events ?? []).slice(-VIEW_EVENTS).map(shortEvent),
     total: all.filter(r => r.mark !== 'proposed').length,
     blockedCount: all.filter(r => r.mark === 'blocked').length,
+    blocked: all.filter(r => r.mark === 'blocked').slice(0, VIEW_ROWS).map(r => ({ id: r.id, title: r.title, reason: cleanText(extra.notes?.get(r.id) ?? '').slice(0, 200) })),
     attempt: state.attempts,
     maxAttempts: extra.maxAttempts,
     reviewRound: state.reviewRounds,
