@@ -1268,7 +1268,18 @@ async function startCmd($: Dollar): Promise<{ text: string }> {
   $.clock.after(300, () => {
     void advance($)
   })
-  return { text: 'Factory running. Esc or typing your own prompt pauses it; /factory-stop stops it; new sessions in this repo resume it.' }
+  await openDashboard($)
+  return { text: 'Factory running; the dashboard is open (Esc or /factory-dashboard off closes it). Typing your own prompt pauses the loop; /factory-stop stops it; new sessions in this repo resume it.' }
+}
+
+async function openDashboard($: Dollar): Promise<void> {
+  try {
+    await refreshView($)
+    const opened = await $.ui.open({ id: PANE, title: 'Code factory' })
+    if (!opened.isPlaced) toast($, `factory: dashboard waits undrawn (${cleanText(opened.reason)}); /factory-dashboard shows it`)
+  } catch {
+    return
+  }
 }
 
 async function stopCmd($: Dollar): Promise<{ text: string }> {
@@ -1357,7 +1368,7 @@ export const register: Register = (on, _options) => {
       ['factory-skip', 'Code factory: mark an item blocked so the loop moves on', '<ID> [reason]', false],
       ['factory-retry', 'Code factory: unblock an item and reset its attempts', '<ID>', false],
       ['factory-costs', 'Code factory: show spend per repo and per item', '[repo|all] | reset <repo>', true],
-      ['factory-dashboard', 'Code factory: open the dashboard (control panel) with every step, agent and check', undefined, true],
+      ['factory-dashboard', 'Code factory: open the dashboard (control panel) with every step, agent and check; off closes it', '[off]', true],
       ['factory-doctor', 'Code factory: check that gh, git, the design files and settings are ready to run', undefined, false],
       ['factory-roadmap', 'Code factory: interview me about the next phase once nothing is left to run', undefined, false],
     ] as const) {
@@ -1460,9 +1471,10 @@ export const register: Register = (on, _options) => {
     const warn = !snap.settings.requireBranchProtection && protection.length > 0
       ? `\nWarnings (set requireBranchProtection to make them blocking):\n- ${protection.join('\n- ')}\n`
       : ''
-    return {
-      text: safeLines(`Approved. ${warn}${promotedCount > 0 ? `${promotedCount} proposed item(s) promoted to todo.\n` : ''}Queue (in order):\n${lines.join('\n') || '(empty)'}\nRun /factory-start to begin.`),
-    }
+    const head = `Approved. ${warn}${promotedCount > 0 ? `${promotedCount} proposed item(s) promoted to todo.\n` : ''}Queue (in order):\n${lines.join('\n') || '(empty)'}\n`
+    if (after.state.autopilot || lines.length === 0) return { text: safeLines(`${head}${after.state.autopilot ? 'The loop is already running.' : 'Run /factory-start when items are ready.'}`) }
+    const started = await startCmd($)
+    return { text: safeLines(`${head}${started.text}`) }
   })
 
   on('command.run', { command: 'factory-start' }, async $ => startCmd($))
@@ -1501,10 +1513,14 @@ export const register: Register = (on, _options) => {
 
   on('command.run', { command: 'factory-doctor' }, async $ => doctorCmd($))
 
-  on('command.run', { command: 'factory-dashboard' }, async $ => {
+  on('command.run', { command: 'factory-dashboard' }, async ($, e) => {
+    if (/^\s*(off|close)\s*$/i.test(e.args ?? '')) {
+      await $.ui.close({ id: PANE })
+      return { text: 'Factory dashboard closed; /factory-dashboard opens it again.' }
+    }
     await refreshView($)
     await $.ui.open({ id: PANE, title: 'Code factory' })
-    return { text: 'Factory dashboard opened. Press an agent to see what it is doing.' }
+    return { text: 'Factory dashboard opened. Press an agent to see what it is doing; /factory-dashboard off closes it.' }
   })
 
   on('command.run', { command: 'factory-costs' }, async ($, e) => {
