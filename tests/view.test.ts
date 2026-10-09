@@ -80,6 +80,7 @@ function fixture($: any, on: any, toolIsError = false, branch = 'factory/t-001-f
       : { result: 'ran', text: 'ran', isError: toolIsError },
   )
   on('ui.render', ($$: any, e: any) => $$.ui.resolve(e).Text({ children: 'base' }))
+  on('ui.status', () => ({ value: undefined }))
 }
 
 async function stageIs($: any, stage: string): Promise<boolean> {
@@ -160,10 +161,11 @@ test('a commit after the PR moves the band back to build', async ($, on) => {
 test('a view saved by the previous version, without spend or events, still renders', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   on('ui.render', ($$: any, e: any) => $$.ui.resolve(e).Text({ children: 'base' }))
+  on('ui.status', () => ({ value: undefined }))
   const old = { approved: true, running: false, pausedReason: 'old version', current: 'T-001', stage: null, summary: 'old summary', doneCount: 0, rows: [], more: 0, marks: {}, changes: [] }
   on('state.get', () => ({ value: { value: old, version: 1 } }))
   const ui = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false } } as never)
-  expect(await ui.find({ type: 'Text', text: /old summary/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /old version/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /run/ })).toBeUndefined()
   await ui.unmount()
 })

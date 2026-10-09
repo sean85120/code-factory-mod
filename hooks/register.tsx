@@ -7,6 +7,7 @@ import {
   designPushSteps,
   PLAN_KEY,
   addTokens,
+  agentActions,
   appendEvent,
   cleanText,
   applyChanges,
@@ -18,11 +19,15 @@ import {
   costPhase,
   costSummaryForPrompt,
   costsReport,
+  formatDuration,
   formatLog,
   formatUsd,
   liveSpend,
   mergeEvents,
   normalizeRepoCosts,
+  oneLine,
+  progressBar,
+  statusLine,
   noteItem,
   parseCostsArgs,
   parseItemArg,
@@ -90,7 +95,7 @@ import {
   validateItems,
   workPrompt,
 } from './lib'
-import type { Drive, EventKind, FactoryEvent, FactoryState, FactoryView, Item, LoopEvent, Mark, RepoCosts, ReviewMark, Settings, Stage, Usage } from './lib'
+import type { AgentRow, Drive, EventKind, FactoryEvent, FactoryState, FactoryView, Item, LoopEvent, Mark, RepoCosts, ReviewMark, Settings, Stage, Step, Usage } from './lib'
 
 type Dollar = EngineInterface
 
@@ -468,15 +473,6 @@ async function headSha($: Dollar): Promise<string> {
 
 async function refreshStatus($: Dollar): Promise<void> {
   await refreshView($)
-  const snap = await load($)
-  const { state, blocked } = snap
-  if (!state.approved) {
-    status($, snap.items.length > 0 ? 'factory: design not approved' : undefined)
-    return
-  }
-  const sum = summarize(effectiveItems(snap), blocked)
-  if (state.autopilot && !state.unreadable) status($, `factory ▶ ${state.current ?? 'picking next'} · ${sum}`)
-  else status($, `factory ⏸ ${state.pausedReason ?? 'stopped'} · ${sum}`)
 }
 
 let loopEpoch = 0
@@ -593,9 +589,69 @@ async function resetContext($: Dollar, settings: Settings): Promise<void> {
 }
 
 const view = atom({ plugin: 'code-factory', key: 'view' } as const, null)
+const openAgent = atom({ plugin: 'code-factory', key: 'openAgent' } as const, null)
 const GLYPH: Record<Mark, string> = { done: '✓', doing: '▶', todo: '○', blocked: '✗', proposed: '·' }
 const COLOR: Record<Mark, string | undefined> = { done: 'green', doing: 'yellow', todo: undefined, blocked: 'red', proposed: undefined }
+const PANE = 'factory'
 let viewTimer: Timer | null = null
+let lastStatusText: string | undefined | null = null
+
+const agentCache = new Map<string, { row: AgentRow; at: number }>()
+const ACTIVE_AGENT = new Set(['running', 'waiting', 'pending'])
+const AGENT_READ_MS = 6000
+
+async function recentActions($: Dollar, agentId?: string): Promise<string[]> {
+  try {
+    const m = agentId === undefined ? await $.session.messages() : await $.session.messages({ agentId })
+    if ('deny' in m) return []
+    return agentActions(m.slice(-40), 5)
+  } catch {
+    return []
+  }
+}
+
+async function collectAgents($: Dollar, mainBusy: boolean, current: string | null, now: number): Promise<AgentRow[]> {
+  const rows: AgentRow[] = []
+  try {
+    if (mainBusy) {
+      const cached = agentCache.get('main')
+      if (cached && now - cached.at < AGENT_READ_MS && cached.row.label.startsWith(current ?? 'main loop')) rows.push(cached.row)
+      else {
+        const recent = await recentActions($)
+        const row: AgentRow = { id: 'main', label: current ? `${current} (main loop)` : 'main loop', kind: 'main', status: 'running', summary: recent.at(-1) ?? 'working…', recent, parent: null }
+        agentCache.set('main', { row, at: now })
+        rows.push(row)
+      }
+    } else agentCache.delete('main')
+    const list = await $.agent.list()
+    const seen = new Set(['main'])
+    for (const a of list.slice(-12)) {
+      seen.add(a.id)
+      const cached = agentCache.get(a.id)
+      const fresh = cached !== undefined && cached.row.status === a.status && (!ACTIVE_AGENT.has(a.status) || now - cached.at < AGENT_READ_MS)
+      if (cached && fresh) {
+        rows.push(cached.row)
+        continue
+      }
+      const recent = await recentActions($, a.id)
+      const row: AgentRow = {
+        id: a.id,
+        label: oneLine(a.description || a.type, 48),
+        kind: oneLine(a.type, 24),
+        status: a.status,
+        summary: recent.at(-1) ?? (ACTIVE_AGENT.has(a.status) ? 'starting…' : a.status),
+        recent,
+        parent: a.parentId ?? null,
+      }
+      agentCache.set(a.id, { row, at: now })
+      rows.push(row)
+    }
+    for (const id of [...agentCache.keys()]) if (!seen.has(id)) agentCache.delete(id)
+  } catch {
+    return rows
+  }
+  return [...rows.filter(r => ACTIVE_AGENT.has(r.status)), ...rows.filter(r => !ACTIVE_AGENT.has(r.status)).slice(-2)]
+}
 
 async function refreshOnce($: Dollar): Promise<void> {
   try {
@@ -603,13 +659,25 @@ async function refreshOnce($: Dollar): Promise<void> {
     const items = effectiveItems(snap)
     const spent = snap.state.approved ? await currentSpend($, snap.state.current) : null
     const spend = { runUsd: spent?.runUsd ?? null, itemUsd: spent?.itemUsd ?? null, budgetUsd: snap.settings.budgetUsd }
-    const build = (prev: FactoryView | null): FactoryView => buildView(items, snap.state, snap.blocked, snap.settings.stopAfterVersion, prev, spend)
+    const running = snap.state.autopilot && !snap.state.unreadable
+    const now = await stamp($)
+    const agents = snap.state.approved ? await collectAgents($, running && isFactoryTurn, snap.state.current, now) : []
+    const extra = { maxAttempts: snap.settings.maxAttempts, maxReviewRounds: snap.settings.maxReviewRounds, agents, now }
+    const build = (prev: FactoryView | null): FactoryView => buildView(items, snap.state, snap.blocked, snap.settings.stopAfterVersion, prev, spend, extra)
     const before = await read($, view)
-    if (JSON.stringify(before) === JSON.stringify(build(before))) return
-    await update($, view, prev => {
-      const next = build(prev)
-      return JSON.stringify(prev) === JSON.stringify(next) ? prev : next
-    })
+    let shown = build(before)
+    if (JSON.stringify(before) !== JSON.stringify(shown)) {
+      await update($, view, prev => {
+        const next = build(prev)
+        shown = next
+        return JSON.stringify(prev) === JSON.stringify(next) ? prev : next
+      })
+    }
+    const text = snap.state.approved ? statusLine(shown) : snap.items.length > 0 ? 'factory: design not approved' : undefined
+    if (text !== lastStatusText) {
+      lastStatusText = text
+      status($, text)
+    }
   } catch {
     return
   }
@@ -629,7 +697,12 @@ function refreshView($: Dollar): Promise<void> {
 
 async function markStage($: Dollar, ev: LoopEvent): Promise<void> {
   try {
-    await update($, view, v => (v && v.running && v.current ? { ...v, stage: stageAfter(ev) } : v))
+    await update($, view, v => {
+      if (!v || !v.running || !v.current) return v
+      const stage = stageAfter(ev)
+      const at = STAGES.indexOf(stage)
+      return { ...v, stage, steps: v.steps?.map((st, i): Step => ({ ...st, state: i < at ? 'done' : i === at ? 'doing' : 'todo' })) }
+    })
   } catch {
     return
   }
@@ -1086,17 +1159,23 @@ async function turnCost($: Dollar, e: { agentId?: string; usage?: Usage }): Prom
   })
 }
 
-async function budgetProblem($: Dollar, settings: Settings, current: string | null): Promise<string | null> {
+let unreadableMisses = 0
+
+async function budgetProblem($: Dollar, settings: Settings, current: string | null, tolerateOneMiss = false): Promise<string | null> {
   if (settings.budgetUsd <= 0) return null
   const spend = await currentSpend($, current)
-  if (!spend) return budgetUnreadableReason(settings.budgetUsd)
+  if (!spend) {
+    unreadableMisses++
+    return tolerateOneMiss && unreadableMisses < 2 ? null : budgetUnreadableReason(settings.budgetUsd)
+  }
+  unreadableMisses = 0
   return budgetReached(settings.budgetUsd, spend.runUsd) ? budgetPauseReason(settings.budgetUsd, spend.runUsd) : null
 }
 
 async function stopForBudget($: Dollar): Promise<boolean> {
   const snap = await load($)
   if (!snap.state.autopilot) return false
-  const problem = await budgetProblem($, snap.settings, snap.state.current)
+  const problem = await budgetProblem($, snap.settings, snap.state.current, true)
   if (!problem) return false
   await pause($, snap.state, problem)
   return true
@@ -1124,11 +1203,13 @@ export const register: Register = (on, _options) => {
       ['factory-skip', 'Code factory: mark an item blocked so the loop moves on', '<ID> [reason]', false],
       ['factory-retry', 'Code factory: unblock an item and reset its attempts', '<ID>', false],
       ['factory-costs', 'Code factory: show spend per repo and per item', '[repo|all] | reset <repo>', true],
+      ['factory-dashboard', 'Code factory: open the dashboard pane with every step and agent', undefined, true],
       ['factory-roadmap', 'Code factory: interview me about the next phase once nothing is left to run', undefined, false],
     ] as const) {
       await $.command.register({ name, description, ...(argumentHint ? { argumentHint } : {}), ...(immediate ? { immediate: true as const } : {}) })
     }
 
+    lastStatusText = null
     startWatchdog($)
     await startView($)
     // A new session resumes the loop by itself when the repo is approved and running.
@@ -1341,6 +1422,12 @@ export const register: Register = (on, _options) => {
     }))
     await refreshStatus($)
     return { text: `${id} is eligible again${isCurrent ? ' with its attempts and review rounds reset' : ''}. ${snap.state.autopilot ? 'The running loop picks it up in order.' : '/factory-start runs it.'}` }
+  })
+
+  on('command.run', { command: 'factory-dashboard' }, async $ => {
+    await refreshView($)
+    await $.ui.open({ id: PANE, title: 'Code factory' })
+    return { text: 'Factory dashboard opened. Press an agent to see what it is doing.' }
   })
 
   on('command.run', { command: 'factory-costs' }, async ($, e) => {
@@ -1756,30 +1843,51 @@ export const register: Register = (on, _options) => {
     return next(e)
   })
 
+  const AGENT_GLYPH: Record<string, string> = { running: '●', waiting: '◐', pending: '○', idle: '◌', completed: '✓', failed: '✗', killed: '✗' }
+  const STEP_GLYPH = { done: '✓', doing: '●', todo: '○' } as const
+  const STEP_COLOR = { done: 'green', doing: 'yellow', todo: undefined } as const
+  const budgetColor = (v: FactoryView): string | undefined =>
+    v.runUsd == null || v.budgetUsd <= 0 ? undefined : v.runUsd >= v.budgetUsd ? 'red' : v.runUsd >= v.budgetUsd * 0.8 ? 'yellow' : undefined
+  const agentLine = (a: AgentRow): string => oneLine(`${AGENT_GLYPH[a.status] ?? '·'} ${a.label} · ${a.status} · ${a.summary}`, 110)
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const v = await read($, view)
     if (e.props.hasSurvey || !v || !v.approved) return next(e)
-    const { Box, Text } = $.ui.resolve(e)
-    const at = v.stage === null ? -1 : STAGES.indexOf(v.stage)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const total = v.total ?? v.doneCount + v.rows.length + v.more
+    const agents = v.agents ?? []
+    const steps = v.steps ?? []
+    const openPane = (): void => {
+      void $.ui.open({ id: PANE, title: 'Code factory', focus: true })
+    }
+    const pick = (id: string): void => {
+      void update($, openAgent, () => id)
+      openPane()
+    }
 
     return (
       <Box flexDirection="column" paddingX={1}>
         <Box gap={1}>
-          <Text bold color={v.running ? 'green' : undefined} dimColor={!v.running}>
-            {v.running ? 'factory ▶' : `factory ⏸ ${v.pausedReason ?? 'stopped'}`}
+          <Text bold color={v.running ? 'green' : undefined} dimColor={!v.running} wrap="truncate-end">
+            {v.running ? `factory ▶ ${v.current ?? 'picking next'}` : `factory ⏸ ${oneLine(v.pausedReason ?? 'stopped', 60)}`}
           </Text>
-          <Text dimColor>{v.summary}</Text>
+          <Text dimColor>{`${v.doneCount}/${total} done ${progressBar(v.doneCount, total, 8)}${(v.blockedCount ?? 0) > 0 ? ` · ${v.blockedCount} blocked` : ''}`}</Text>
           {v.runUsd != null && (
-            <Text dimColor={!(v.budgetUsd > 0 && v.runUsd >= v.budgetUsd * 0.8)} color={v.budgetUsd > 0 && v.runUsd >= v.budgetUsd * 0.8 ? 'yellow' : undefined}>
-              {`${formatUsd(v.runUsd)} run${v.budgetUsd > 0 ? ` / ${formatUsd(v.budgetUsd)}` : ''}${v.current !== null && v.itemUsd != null ? ` · ${v.current} ${formatUsd(v.itemUsd)}` : ''}`}
+            <Text dimColor={budgetColor(v) === undefined} color={budgetColor(v)}>
+              {`${v.budgetUsd > 0 ? `${formatUsd(v.runUsd)}/${formatUsd(v.budgetUsd)} ${progressBar(v.runUsd, v.budgetUsd, 6)}` : `${formatUsd(v.runUsd)} run`}${v.current !== null && v.itemUsd != null ? ` · item ${formatUsd(v.itemUsd)}` : ''}`}
             </Text>
           )}
+          {v.running && v.elapsedMs != null && v.current !== null && <Text dimColor>{formatDuration(v.elapsedMs)}</Text>}
+          <Button plain dimColor key="details" onPress={openPane}>
+            [details]
+          </Button>
         </Box>
-        {v.running && (
+        {v.running && steps.length > 0 && (
           <Box gap={1}>
-            {STAGES.map((s, i) => (
-              <Text key={s} bold={i === at} color={i < at ? 'green' : i === at ? 'yellow' : undefined} dimColor={i > at}>
-                {i < at ? '✓' : i === at ? '●' : '○'} {s}
+            {steps.map(st => (
+              <Text key={st.label} bold={st.state === 'doing'} color={STEP_COLOR[st.state]} dimColor={st.state === 'todo'}>
+                {STEP_GLYPH[st.state]} {st.label}
+                {st.state === 'doing' ? ` (${st.detail})` : ''}
               </Text>
             ))}
           </Box>
@@ -1801,12 +1909,114 @@ export const register: Register = (on, _options) => {
             {v.more > 0 ? `+${v.more} more` : ''}
           </Text>
         )}
+        {agents.slice(0, 4).map(a => (
+          <Button plain dimColor={!ACTIVE_AGENT.has(a.status)} key={`agent-${a.id}`} onPress={() => pick(a.id)}>
+            {agentLine(a)}
+          </Button>
+        ))}
         {v.changes.length > 0 && <Text dimColor>Δ {v.changes.join(' · ')}</Text>}
         {(v.events?.length ?? 0) > 0 && (
           <Text dimColor wrap="truncate-end">
             ⋯ {v.events.join(' · ')}
           </Text>
         )}
+      </Box>
+    )
+  })
+
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const v = await read($, view)
+    const open = await read($, openAgent)
+    if (!v || !v.approved) return <Text dimColor>The design is not approved yet. Run /factory-approve.</Text>
+    const total = v.total ?? v.doneCount + v.rows.length + v.more
+    const steps = v.steps ?? []
+    const agents = v.agents ?? []
+
+    return (
+      <Box flexDirection="column" paddingX={1}>
+        <Text bold color={v.running ? 'green' : undefined}>
+          {statusLine(v)}
+        </Text>
+        <Text> </Text>
+        <Text bold>Plan {progressBar(v.doneCount, total, 20)} {v.doneCount}/{total}</Text>
+        {v.rows.map(r => (
+          <Box key={r.id} gap={1}>
+            <Text color={COLOR[r.mark]} bold={r.mark === 'doing'} dimColor={r.mark === 'proposed'}>
+              {GLYPH[r.mark]} {r.id}
+            </Text>
+            <Text dimColor={r.mark !== 'doing'} wrap="truncate-end">
+              [{r.type}] {r.title}
+            </Text>
+          </Box>
+        ))}
+        {v.more > 0 && <Text dimColor>+{v.more} more</Text>}
+        {v.current !== null && steps.length > 0 && (
+          <Box flexDirection="column">
+            <Text> </Text>
+            <Text bold>
+              {v.current} {progressBar(steps.filter(s => s.state === 'done').length + (steps.some(s => s.state === 'doing') ? 0.5 : 0), steps.length, 20)}
+              {v.running && v.elapsedMs != null ? ` · ${formatDuration(v.elapsedMs)}` : ''}
+              {v.runUsd != null && v.itemUsd != null ? ` · ${formatUsd(v.itemUsd)}` : ''}
+            </Text>
+            {steps.map(st => (
+              <Box key={st.label} gap={1}>
+                <Text color={STEP_COLOR[st.state]} bold={st.state === 'doing'} dimColor={st.state === 'todo'}>
+                  {STEP_GLYPH[st.state]} {st.label}
+                </Text>
+                <Text dimColor wrap="truncate-end">
+                  {st.detail}
+                </Text>
+              </Box>
+            ))}
+          </Box>
+        )}
+        {v.runUsd != null && (
+          <Box flexDirection="column">
+            <Text> </Text>
+            <Text bold color={budgetColor(v)}>
+              Spend {v.budgetUsd > 0 ? `${formatUsd(v.runUsd)} of ${formatUsd(v.budgetUsd)} ${progressBar(v.runUsd, v.budgetUsd, 20)}` : `${formatUsd(v.runUsd)} this run (no budget set)`}
+            </Text>
+          </Box>
+        )}
+        <Text> </Text>
+        <Text bold>Agents{agents.length === 0 ? ' · none running' : ` · ${agents.length}`}</Text>
+        {agents.map(a => (
+          <Box key={a.id} flexDirection="column">
+            <Button plain dimColor={!ACTIVE_AGENT.has(a.status)} key={`agent-${a.id}`} onPress={() => void update($, openAgent, cur => (cur === a.id ? null : a.id))}>
+              {`${open === a.id ? '▾' : '▸'} ${agentLine(a)}`}
+            </Button>
+            {open === a.id && (
+              <Box flexDirection="column" paddingLeft={3}>
+                <Text dimColor>
+                  {a.kind}
+                  {a.parent ? ` · spawned by ${a.parent}` : ''}
+                </Text>
+                {a.recent.length === 0 && <Text dimColor>No activity read yet.</Text>}
+                {a.recent.map((line, i) => (
+                  <Text key={`${a.id}-${i}`} dimColor={i < a.recent.length - 1} wrap="truncate-end">
+                    {i === a.recent.length - 1 ? '→' : '·'} {line}
+                  </Text>
+                ))}
+              </Box>
+            )}
+          </Box>
+        ))}
+        {(v.events?.length ?? 0) > 0 && (
+          <Box flexDirection="column">
+            <Text> </Text>
+            <Text bold>Recent</Text>
+            {v.events.map((ev, i) => (
+              <Text key={`ev-${i}`} dimColor wrap="truncate-end">
+                {ev}
+              </Text>
+            ))}
+          </Box>
+        )}
+        <Text> </Text>
+        <Button plain dimColor key="close" onPress={() => void $.ui.close({ id: PANE })}>
+          [close]
+        </Button>
       </Box>
     )
   })

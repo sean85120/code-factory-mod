@@ -1,9 +1,9 @@
 // Pure logic of the code factory: parsing, validation, guards and prompts.
 // No engine calls here, so tests can exercise it directly.
 
-import type { FactoryView, Mark, Stage, ViewRow } from '../types'
+import type { AgentRow, FactoryView, Mark, Stage, Step, ViewRow } from '../types'
 
-export type { FactoryView, Mark, Stage, ViewRow }
+export type { AgentRow, FactoryView, Mark, Stage, Step, ViewRow }
 
 export type ItemType = 'feature' | 'bug' | 'chore' | 'docs'
 export type ItemStatus = 'proposed' | 'todo' | 'done'
@@ -1206,6 +1206,101 @@ export const VIEW_CHANGES = 3
 export const VIEW_EVENTS = 3
 
 export type ViewSpend = { runUsd: number | null; itemUsd: number | null; budgetUsd: number }
+export type ViewExtra = { maxAttempts: number; maxReviewRounds: number; agents: AgentRow[]; now: number }
+
+export const MAX_VIEW_AGENTS = 6
+
+export function progressBar(done: number, total: number, width = 10): string {
+  const w = Math.max(1, Math.floor(width))
+  const frac = total > 0 && Number.isFinite(done) ? Math.min(1, Math.max(0, done / total)) : 0
+  const full = frac >= 1 ? w : Math.floor(frac * w)
+  return '█'.repeat(full) + '░'.repeat(w - full)
+}
+
+export const oneLine = (t: string, max: number): string => {
+  const c = cleanText(t).replace(/\s+/g, ' ').trim()
+  return c.length > max ? `${c.slice(0, max - 1)}…` : c
+}
+
+const briefInput = (input: Record<string, unknown>): string => {
+  for (const k of ['command', 'file_path', 'path', 'pattern', 'description', 'prompt', 'query', 'skill', 'url']) {
+    const v = input[k]
+    if (typeof v === 'string' && v.trim() !== '') return v
+  }
+  return ''
+}
+
+export type AgentMessage = { role: string; text: string; toolUses: readonly { tool: string; input: Record<string, unknown> }[] }
+
+export function agentActions(messages: readonly AgentMessage[], n = 5): string[] {
+  const out: string[] = []
+  for (const m of messages) {
+    if (m.role !== 'assistant') continue
+    for (const u of m.toolUses ?? []) {
+      const b = oneLine(briefInput(u.input ?? {}), 70)
+      const tool = oneLine(u.tool, 40)
+      out.push(b === '' ? tool : `${tool}: ${b}`)
+    }
+    const t = oneLine((m.text ?? '').split('\n').find(l => l.trim() !== '') ?? '', 90)
+    if (t !== '' && (m.toolUses ?? []).length === 0) out.push(t)
+  }
+  return n > 0 ? out.slice(-n) : []
+}
+
+export function agentSummary(messages: readonly AgentMessage[]): string {
+  const last = agentActions(messages, 1)[0]
+  return last ?? ''
+}
+
+export function itemSteps(
+  stage: Stage | null,
+  events: readonly FactoryEvent[],
+  current: string | null,
+  ctx: { attempt: number; maxAttempts: number; reviewRound: number; maxReviewRounds: number },
+): Step[] {
+  if (current === null) return []
+  const mine = events.filter(e => e.itemId === current)
+  const from = mine.map(e => e.kind).lastIndexOf('started')
+  const run = from >= 0 ? mine.slice(from) : mine
+  const commits = run.filter(e => e.kind === 'commit').length
+  const verdict = [...run].reverse().find(e => e.kind === 'review-verdict')
+  const pr = [...run].reverse().find(e => e.kind === 'pr-opened')
+  const ci = [...run].reverse().find(e => e.kind === 'ci-passed' || e.kind === 'ci-failed')
+  const at = stage === null ? 0 : STAGES.indexOf(stage)
+  const state = (i: number): Step['state'] => (i < at ? 'done' : i === at ? 'doing' : 'todo')
+  const reviewDetail = verdict ? oneLine(verdict.detail, 40) : ctx.reviewRound > 0 ? `round ${ctx.reviewRound}/${ctx.maxReviewRounds}` : 'not started'
+  return [
+    { label: 'build', state: state(0), detail: `${commits} commit${commits === 1 ? '' : 's'} · attempt ${Math.max(1, ctx.attempt)}/${ctx.maxAttempts}` },
+    { label: 'review', state: state(1), detail: reviewDetail },
+    { label: 'PR', state: state(2), detail: pr?.pr !== undefined ? `#${pr.pr}` : pr ? 'opened' : 'not opened' },
+    { label: 'CI', state: state(3), detail: ci ? (ci.kind === 'ci-passed' ? 'passed' : 'failed') : 'pending' },
+    { label: 'merge', state: state(4), detail: at >= 4 ? 'merging' : 'waiting' },
+  ]
+}
+
+export function statusLine(v: FactoryView): string {
+  if (!v.approved) return 'factory: design not approved'
+  const parts: string[] = []
+  const at = v.stage === null ? -1 : STAGES.indexOf(v.stage)
+  if (v.running) {
+    parts.push(`factory ▶ ${v.current ?? 'picking next'}`)
+    if (v.current !== null && at >= 0) parts.push(`${v.stage} ${progressBar(at + 1, STAGES.length, 5)} ${at + 1}/${STAGES.length}`)
+    if (v.current !== null && (v.attempt ?? 0) > 1) parts.push(`attempt ${v.attempt}/${v.maxAttempts ?? '?'}`)
+    if (v.current !== null && (v.reviewRound ?? 0) > 0) parts.push(`review ${v.reviewRound}/${v.maxReviewRounds ?? '?'}`)
+  } else parts.push(`factory ⏸ ${oneLine(v.pausedReason ?? 'stopped', 70)}`)
+  const total = v.total ?? v.doneCount + v.rows.length + v.more
+  const todo = Math.max(0, total - v.doneCount - (v.blockedCount ?? 0))
+  parts.push(`${v.doneCount}/${total} done ${progressBar(v.doneCount, total, 6)}`)
+  parts.push(todo > 0 ? `${todo} to do` : 'nothing left')
+  if ((v.blockedCount ?? 0) > 0) parts.push(`${v.blockedCount} blocked`)
+  if (v.runUsd != null) {
+    parts.push(v.budgetUsd > 0 ? `${formatUsd(v.runUsd)}/${formatUsd(v.budgetUsd)} ${progressBar(v.runUsd, v.budgetUsd, 6)}` : `${formatUsd(v.runUsd)} spent`)
+  }
+  const active = (v.agents ?? []).filter(a => a.id !== 'main' && (a.status === 'running' || a.status === 'waiting' || a.status === 'pending'))
+  if (active.length > 0) parts.push(`${active.length} agent${active.length === 1 ? '' : 's'}`)
+  if (v.running && v.elapsedMs != null && v.current !== null) parts.push(formatDuration(v.elapsedMs))
+  return parts.join(' · ')
+}
 
 export function buildView(
   items: readonly Item[],
@@ -1214,6 +1309,7 @@ export function buildView(
   stopAfterVersion: string | null,
   prev: FactoryView | null,
   spend: ViewSpend = { runUsd: null, itemUsd: null, budgetUsd: 0 },
+  extra: ViewExtra = { maxAttempts: 3, maxReviewRounds: 3, agents: [], now: 0 },
 ): FactoryView {
   const scoped = items.filter(i => inScope(i, stopAfterVersion))
   const markOf = (i: Item): Mark => (blocked.has(i.id) ? 'blocked' : state.current === i.id && i.status !== 'proposed' ? 'doing' : i.status)
@@ -1229,6 +1325,9 @@ export function buildView(
   }
   const open = all.filter(r => r.mark !== 'done')
   const stage = state.current === null ? null : prev && prev.current === state.current ? prev.stage ?? 'build' : 'build'
+  const events = state.events ?? []
+  const startedEv = state.current === null ? undefined : [...events].reverse().find(e => e.kind === 'started' && e.itemId === state.current)
+  const prEv = state.current === null ? undefined : [...events].reverse().find(e => e.kind === 'pr-opened' && e.itemId === state.current && e.pr !== undefined)
   return {
     approved: state.approved,
     running: state.autopilot && !state.unreadable,
@@ -1245,6 +1344,16 @@ export function buildView(
     itemUsd: state.current === null ? null : spend.itemUsd,
     budgetUsd: spend.budgetUsd,
     events: (state.events ?? []).slice(-VIEW_EVENTS).map(shortEvent),
+    total: all.filter(r => r.mark !== 'proposed').length,
+    blockedCount: all.filter(r => r.mark === 'blocked').length,
+    attempt: state.attempts,
+    maxAttempts: extra.maxAttempts,
+    reviewRound: state.reviewRounds,
+    maxReviewRounds: extra.maxReviewRounds,
+    prNumber: prEv?.pr ?? null,
+    elapsedMs: startedEv && extra.now > 0 ? Math.max(0, extra.now - startedEv.ts) : null,
+    steps: itemSteps(stage, events, state.current, { attempt: state.attempts, maxAttempts: extra.maxAttempts, reviewRound: state.reviewRounds, maxReviewRounds: extra.maxReviewRounds }),
+    agents: extra.agents.slice(0, MAX_VIEW_AGENTS),
   }
 }
 
