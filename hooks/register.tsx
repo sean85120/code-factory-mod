@@ -1269,7 +1269,7 @@ async function startCmd($: Dollar): Promise<{ text: string }> {
     void advance($)
   })
   await openDashboard($)
-  return { text: 'Factory running; the dashboard is open (Esc or /factory-dashboard off closes it). Typing your own prompt pauses the loop; /factory-stop stops it; new sessions in this repo resume it.' }
+  return { text: 'Factory running; the dashboard is open (/factory-dashboard off or its [close] button closes it). Esc or typing your own prompt pauses the loop; /factory-stop stops it; new sessions in this repo resume it.' }
 }
 
 async function openDashboard($: Dollar): Promise<void> {
