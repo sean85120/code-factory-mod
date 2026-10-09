@@ -4,6 +4,8 @@ export type ViewRow = { id: string; type: 'feature' | 'bug' | 'chore' | 'docs'; 
 export type StepState = 'done' | 'doing' | 'todo'
 export type Step = { label: string; state: StepState; detail: string }
 export type AgentRow = { id: string; label: string; kind: string; status: string; summary: string; recent: string[]; parent: string | null }
+export type BlockedRow = { id: string; title: string; reason: string }
+export type DoctorCheck = { name: string; status: 'ok' | 'warn' | 'fail'; detail: string }
 export type FactoryView = {
   approved: boolean
   running: boolean
@@ -30,10 +32,11 @@ export type FactoryView = {
   elapsedMs?: number | null
   steps?: Step[]
   agents?: AgentRow[]
+  blocked?: BlockedRow[]
 }
 
 declare module 'claude-code' {
   interface PluginState {
-    'code-factory': { view: FactoryView | null; openAgent: string | null }
+    'code-factory': { view: FactoryView | null; openAgent: string | null; skipTarget: string | null; checks: DoctorCheck[] | null }
   }
 }

@@ -27,7 +27,12 @@ import {
   normalizeRepoCosts,
   oneLine,
   progressBar,
+  checksLine,
+  checksReport,
   controlsFor,
+  isCompact,
+  unsafeBaseNote,
+  runControls,
   statusLine,
   noteItem,
   parseCostsArgs,
@@ -96,7 +101,7 @@ import {
   validateItems,
   workPrompt,
 } from './lib'
-import type { AgentRow, Control, Drive, EventKind, FactoryEvent, FactoryState, FactoryView, Item, LoopEvent, Mark, RepoCosts, ReviewMark, Settings, Stage, Step, Usage } from './lib'
+import type { AgentRow, Control, DoctorCheck, Drive, EventKind, FactoryEvent, FactoryState, FactoryView, Item, LoopEvent, Mark, RepoCosts, ReviewMark, Settings, Stage, Step, Usage } from './lib'
 
 type Dollar = EngineInterface
 
@@ -216,8 +221,13 @@ async function stamp($: Dollar): Promise<number> {
 }
 
 function pressControl($: Dollar, c: Control): void {
+  if (c.command === 'factory-start' && mainTurnOpen && !isFactoryTurn) {
+    toast($, 'factory: a turn is still running; start after it finishes, or type /factory-start')
+    return
+  }
   const args = c.args ?? ''
-  const out = c.command === 'factory-pause' ? pauseCmd($) : retryCmd($, args)
+  const out =
+    c.command === 'factory-start' ? startCmd($) : c.command === 'factory-pause' ? pauseCmd($) : c.command === 'factory-stop' ? stopCmd($) : c.command === 'factory-skip' ? skipCmd($, args) : c.command === 'factory-doctor' ? doctorCmd($) : c.command === 'factory-retry' ? retryCmd($, args) : Promise.resolve({ text: `factory: unknown control ${c.command}` })
   void out.then(r => toast($, oneLine(r.text, 120))).catch(() => toast($, `factory: ${c.label} failed`))
 }
 
@@ -597,6 +607,9 @@ async function resetContext($: Dollar, settings: Settings): Promise<void> {
 
 const view = atom({ plugin: 'code-factory', key: 'view' } as const, null)
 const openAgent = atom({ plugin: 'code-factory', key: 'openAgent' } as const, null)
+const skipTarget = atom({ plugin: 'code-factory', key: 'skipTarget' } as const, null)
+const checksAtom = atom({ plugin: 'code-factory', key: 'checks' } as const, null)
+let mainTurnOpen = false
 const GLYPH: Record<Mark, string> = { done: '✓', doing: '▶', todo: '○', blocked: '✗', proposed: '·' }
 const COLOR: Record<Mark, string | undefined> = { done: 'green', doing: 'yellow', todo: undefined, blocked: 'red', proposed: undefined }
 const PANE = 'factory'
@@ -669,7 +682,7 @@ async function refreshOnce($: Dollar): Promise<void> {
     const running = snap.state.autopilot && !snap.state.unreadable
     const now = await stamp($)
     const agents = snap.state.approved ? await collectAgents($, running && isFactoryTurn, snap.state.current, now) : []
-    const extra = { maxAttempts: snap.settings.maxAttempts, maxReviewRounds: snap.settings.maxReviewRounds, agents, now }
+    const extra = { maxAttempts: snap.settings.maxAttempts, maxReviewRounds: snap.settings.maxReviewRounds, agents, now, notes: await blockedNotes($, snap.blocked) }
     const build = (prev: FactoryView | null): FactoryView => buildView(items, snap.state, snap.blocked, snap.settings.stopAfterVersion, prev, spend, extra)
     const before = await read($, view)
     let shown = build(before)
@@ -1233,6 +1246,104 @@ async function retryCmd($: Dollar, args: string): Promise<{ text: string }> {
   return { text: `${id} is eligible again${isCurrent ? ' with its attempts and review rounds reset' : ''}. ${snap.state.autopilot ? 'The running loop picks it up in order.' : '/factory-start runs it.'}` }
 }
 
+async function startCmd($: Dollar): Promise<{ text: string }> {
+  dropRoadmap()
+  const snap = await load($)
+  const problem = await integrityProblem(snap)
+  if (problem) return { text: safeLines(`Cannot start: ${problem}.`) }
+  const startItems = effectiveItems(snap)
+  if (!pickNext(startItems, snap.blocked, snap.settings.stopAfterVersion) && !snap.state.current && !releasePending(snap.settings, snap.state, startItems) && !shouldAskRoadmap(snap.settings, snap.state, startItems)) {
+    return { text: `Nothing to do: ${summarize(effectiveItems(snap), snap.blocked)}. /factory-roadmap plans the next phase; /factory-retry <ID> unblocks an item.` }
+  }
+  loopEpoch++
+  if (!(await acquireLock($))) return { text: 'Cannot start: another session is running the factory in this repo (its lock was refreshed in the last two minutes).' }
+  handsOff = false
+  await ensureGitignore($)
+  const startedAt = await stamp($)
+  await editCosts($, (rc, c) => ({ costs: startRun(rc, startedAt, c.tree), value: null }))
+  const detail = snap.settings.budgetUsd > 0 ? `new run, budget ${formatUsd(snap.settings.budgetUsd)}` : 'new run'
+  await patchState($, fresh => ({ ...withEvent(fresh, startedAt, { itemId: fresh.current, kind: 'resumed', detail }), autopilot: true, pausedReason: null, doneThisRun: 0, releaseAttempts: 0, attempts: fresh.current ? fresh.attempts : 0 }))
+  startWatchdog($)
+  await refreshStatus($)
+  $.clock.after(300, () => {
+    void advance($)
+  })
+  return { text: 'Factory running. Esc or typing your own prompt pauses it; /factory-stop stops it; new sessions in this repo resume it.' }
+}
+
+async function stopCmd($: Dollar): Promise<{ text: string }> {
+  dropRoadmap()
+  expectReport = false
+  loopEpoch++
+  await settle($, isFactoryTurn || launchedHere !== null)
+  const ts = await stamp($)
+  await patchState($, fresh => ({ ...withEvent(fresh, ts, { itemId: fresh.current, kind: 'paused', detail: 'stopped by you' }), autopilot: false, pausedReason: 'stopped by you' }))
+  await releaseLock($)
+  await refreshStatus($)
+  return { text: 'Factory paused. The current turn finishes; nothing new starts. /factory-start resumes.' }
+}
+
+async function skipCmd($: Dollar, args: string): Promise<{ text: string }> {
+  const { id, note } = parseItemArg(args)
+  if (!id) return { text: 'Usage: /factory-skip <ID> [reason], for example /factory-skip T-004 needs a product decision.' }
+  if (await lockedByOther($)) return { text: 'Cannot skip: another session is running the factory in this repo (its lock was refreshed in the last two minutes).' }
+  const snap = await load($)
+  const item = effectiveItems(snap).find(i => i.id === id)
+  if (!item) return { text: `Cannot skip: ${id} is not an item in ${TODO_PATH}.` }
+  if (item.status === 'done') return { text: `Cannot skip: ${id} is already done.` }
+  if (snap.blocked.has(id)) return { text: `${id} is already blocked (${BLOCKED_DIR}/${id}.md); /factory-retry ${id} unblocks it.` }
+  await $.fs.write(`${BLOCKED_DIR}/${id}.md`, `Skipped by you${note ? `: ${note}` : '.'} /factory-retry ${id} makes it eligible again.\n`)
+  await logEvent($, { itemId: id, kind: 'skip', detail: note || 'skipped by you' })
+  await editCosts($, (rc, c) => ({ costs: noteItem(rc, id, item.title, c.now, { outcome: 'skipped' }), value: null }))
+  await refreshStatus($)
+  const isCurrent = snap.state.current === id
+  return { text: `${id} skipped; the note is in ${BLOCKED_DIR}/${id}.md.${isCurrent && snap.state.autopilot ? ' It is the current item: the turn in progress finishes, then the loop moves on to the next item.' : ''}` }
+}
+
+async function doctorChecks($: Dollar): Promise<DoctorCheck[]> {
+  const out: DoctorCheck[] = []
+  const add = (name: string, status: DoctorCheck['status'], detail = ''): void => {
+    out.push({ name, status, detail })
+  }
+  const snap = await load($)
+  if (snap.settingsProblems.length > 0) add('settings.json', 'fail', snap.settingsProblems[0]!)
+  else add('settings.json', 'ok')
+  const todoText = (await readText($, TODO_PATH)) ?? ''
+  const headingProblems = todoHeadingProblems(todoText)
+  if (snap.items.length === 0) add('todo.md', 'fail', 'no items; run /factory-design')
+  else if (headingProblems.length > 0) add('todo.md', 'fail', headingProblems[0]!)
+  else add('todo.md', 'ok', `${snap.items.length} items`)
+  const problem = await integrityProblem(snap)
+  if (problem) add('approval', 'fail', problem)
+  else add('approval', 'ok', 'design approved and unchanged')
+  const auth = await run($, ['gh', 'auth', 'status'], 20000)
+  add('gh login', auth.exitCode === 0 ? 'ok' : 'fail', auth.exitCode === 0 ? '' : 'run `gh auth login`')
+  const remote = await run($, ['git', 'remote', 'get-url', 'origin'], 15000)
+  add('origin remote', remote.exitCode === 0 ? 'ok' : 'fail', remote.exitCode === 0 ? '' : 'git has no origin to push PRs to')
+  if (!isSafeBranchName(snap.settings.baseBranch)) add('base branch', 'fail', unsafeBaseNote())
+  else if (remote.exitCode === 0) {
+    const gone = await missingOnBase($, snap.settings.baseBranch)
+    if (gone.length > 0) add('design on base', 'fail', gone[0]!)
+    else add('design on base', 'ok', `pushed to ${cleanText(snap.settings.baseBranch)}`)
+  }
+  const tree = await run($, ['git', '--no-optional-locks', 'status', '--porcelain'], 15000)
+  const dirty = tree.stdout.split('\n').filter(l => l.trim() && !l.includes(' .factory/')).length
+  add('working tree', tree.exitCode !== 0 ? 'warn' : dirty > 0 ? 'warn' : 'ok', tree.exitCode !== 0 ? 'git status failed' : dirty > 0 ? `${dirty} uncommitted change${dirty === 1 ? '' : 's'}` : 'clean')
+  if (await lockedByOther($)) add('loop lock', 'warn', 'another session is running the loop here')
+  else add('loop lock', 'ok')
+  if (snap.settings.budgetUsd > 0) {
+    const spent = await currentSpend($, snap.state.current)
+    add('budget', spent === null ? 'warn' : 'ok', spent === null ? 'spend cannot be read, so the budget would pause the loop' : `${formatUsd(spent.runUsd)} of ${formatUsd(snap.settings.budgetUsd)}`)
+  }
+  return out
+}
+
+async function doctorCmd($: Dollar): Promise<{ text: string }> {
+  const checks = await doctorChecks($)
+  await update($, checksAtom, () => checks)
+  return { text: safeLines(checksReport(checks)) }
+}
+
 export const register: Register = (on, _options) => {
   on('session.start', async ($, e, next) => {
     for (const [name, description, argumentHint, immediate] of [
@@ -1246,7 +1357,8 @@ export const register: Register = (on, _options) => {
       ['factory-skip', 'Code factory: mark an item blocked so the loop moves on', '<ID> [reason]', false],
       ['factory-retry', 'Code factory: unblock an item and reset its attempts', '<ID>', false],
       ['factory-costs', 'Code factory: show spend per repo and per item', '[repo|all] | reset <repo>', true],
-      ['factory-dashboard', 'Code factory: open the dashboard pane with every step and agent', undefined, true],
+      ['factory-dashboard', 'Code factory: open the dashboard (control panel) with every step, agent and check', undefined, true],
+      ['factory-doctor', 'Code factory: check that gh, git, the design files and settings are ready to run', undefined, false],
       ['factory-roadmap', 'Code factory: interview me about the next phase once nothing is left to run', undefined, false],
     ] as const) {
       await $.command.register({ name, description, ...(argumentHint ? { argumentHint } : {}), ...(immediate ? { immediate: true as const } : {}) })
@@ -1353,42 +1465,9 @@ export const register: Register = (on, _options) => {
     }
   })
 
-  on('command.run', { command: 'factory-start' }, async $ => {
-    dropRoadmap()
-    const snap = await load($)
-    const problem = await integrityProblem(snap)
-    if (problem) return { text: safeLines(`Cannot start: ${problem}.`) }
-    const startItems = effectiveItems(snap)
-    if (!pickNext(startItems, snap.blocked, snap.settings.stopAfterVersion) && !snap.state.current && !releasePending(snap.settings, snap.state, startItems) && !shouldAskRoadmap(snap.settings, snap.state, startItems)) {
-      return { text: `Nothing to do: ${summarize(effectiveItems(snap), snap.blocked)}. /factory-roadmap plans the next phase; /factory-retry <ID> unblocks an item.` }
-    }
-    loopEpoch++
-    if (!(await acquireLock($))) return { text: 'Cannot start: another session is running the factory in this repo (its lock was refreshed in the last two minutes).' }
-    handsOff = false
-    await ensureGitignore($)
-    const startedAt = await stamp($)
-    await editCosts($, (rc, c) => ({ costs: startRun(rc, startedAt, c.tree), value: null }))
-    const detail = snap.settings.budgetUsd > 0 ? `new run, budget ${formatUsd(snap.settings.budgetUsd)}` : 'new run'
-    await patchState($, fresh => ({ ...withEvent(fresh, startedAt, { itemId: fresh.current, kind: 'resumed', detail }), autopilot: true, pausedReason: null, doneThisRun: 0, releaseAttempts: 0, attempts: fresh.current ? fresh.attempts : 0 }))
-    startWatchdog($)
-    await refreshStatus($)
-    $.clock.after(300, () => {
-      void advance($)
-    })
-    return { text: 'Factory running. Esc or typing your own prompt pauses it; /factory-stop stops it; new sessions in this repo resume it.' }
-  })
+  on('command.run', { command: 'factory-start' }, async $ => startCmd($))
 
-  on('command.run', { command: 'factory-stop' }, async $ => {
-    dropRoadmap()
-    expectReport = false
-    loopEpoch++
-    await settle($, isFactoryTurn || launchedHere !== null)
-    const ts = await stamp($)
-    await patchState($, fresh => ({ ...withEvent(fresh, ts, { itemId: fresh.current, kind: 'paused', detail: 'stopped by you' }), autopilot: false, pausedReason: 'stopped by you' }))
-    await releaseLock($)
-    await refreshStatus($)
-    return { text: 'Factory paused. The current turn finishes; nothing new starts. /factory-start resumes.' }
-  })
+  on('command.run', { command: 'factory-stop' }, async $ => stopCmd($))
 
   on('command.run', { command: 'factory-pause' }, async $ => pauseCmd($))
 
@@ -1416,24 +1495,11 @@ export const register: Register = (on, _options) => {
     return { text: formatLog((await readState($)).events, id) }
   })
 
-  on('command.run', { command: 'factory-skip' }, async ($, e) => {
-    const { id, note } = parseItemArg(e.args)
-    if (!id) return { text: 'Usage: /factory-skip <ID> [reason], for example /factory-skip T-004 needs a product decision.' }
-    if (await lockedByOther($)) return { text: 'Cannot skip: another session is running the factory in this repo (its lock was refreshed in the last two minutes).' }
-    const snap = await load($)
-    const item = effectiveItems(snap).find(i => i.id === id)
-    if (!item) return { text: `Cannot skip: ${id} is not an item in ${TODO_PATH}.` }
-    if (item.status === 'done') return { text: `Cannot skip: ${id} is already done.` }
-    if (snap.blocked.has(id)) return { text: `${id} is already blocked (${BLOCKED_DIR}/${id}.md); /factory-retry ${id} unblocks it.` }
-    await $.fs.write(`${BLOCKED_DIR}/${id}.md`, `Skipped by you${note ? `: ${note}` : '.'} /factory-retry ${id} makes it eligible again.\n`)
-    await logEvent($, { itemId: id, kind: 'skip', detail: note || 'skipped by you' })
-    await editCosts($, (rc, c) => ({ costs: noteItem(rc, id, item.title, c.now, { outcome: 'skipped' }), value: null }))
-    await refreshStatus($)
-    const isCurrent = snap.state.current === id
-    return { text: `${id} skipped; the note is in ${BLOCKED_DIR}/${id}.md.${isCurrent && snap.state.autopilot ? ' It is the current item: the turn in progress finishes, then the loop moves on to the next item.' : ''}` }
-  })
+  on('command.run', { command: 'factory-skip' }, async ($, e) => skipCmd($, e.args))
 
   on('command.run', { command: 'factory-retry' }, async ($, e) => retryCmd($, e.args))
+
+  on('command.run', { command: 'factory-doctor' }, async $ => doctorCmd($))
 
   on('command.run', { command: 'factory-dashboard' }, async $ => {
     await refreshView($)
@@ -1518,6 +1584,7 @@ export const register: Register = (on, _options) => {
   // ---- the loop --------------------------------------------------------
 
   on('turn.complete', async ($, e, next) => {
+    if (!e.agentId) mainTurnOpen = false
     if (e.agentId && e.agentId === launchedHere) expectReport = true
     const out = await next(e)
     await turnCost($, e)
@@ -1620,6 +1687,7 @@ export const register: Register = (on, _options) => {
   })
 
   on('turn.start', async ($, e, next) => {
+    mainTurnOpen = true
     if (personSlash && slashTurnId === null) slashTurnId = e.turnId
     return next(e)
   })
@@ -1865,6 +1933,7 @@ export const register: Register = (on, _options) => {
     const v = await read($, view)
     if (e.props.hasSurvey || !v || !v.approved) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
+    const compact = isCompact(e.props.bodyColumns)
     const total = v.total ?? v.doneCount + v.rows.length + v.more
     const agents = v.agents ?? []
     const steps = v.steps ?? []
@@ -1880,25 +1949,25 @@ export const register: Register = (on, _options) => {
       <Box flexDirection="column" paddingX={1}>
         <Box gap={1}>
           <Text bold color={v.running ? 'green' : undefined} dimColor={!v.running} wrap="truncate-end">
-            {v.running ? `factory ▶ ${v.current ?? 'picking next'}` : `factory ⏸ ${oneLine(v.pausedReason ?? 'stopped', 60)}`}
+            {v.running ? `factory ▶ ${v.current ?? 'picking next'}` : `factory ⏸ ${oneLine(v.pausedReason ?? 'stopped', compact ? 24 : 60)}`}
           </Text>
-          <Text dimColor>{`${v.doneCount}/${total} done ${progressBar(v.doneCount, total, 8)}${(v.blockedCount ?? 0) > 0 ? ` · ${v.blockedCount} blocked` : ''}`}</Text>
-          {v.runUsd != null && (
+          <Text dimColor>{`${v.doneCount}/${total} done ${progressBar(v.doneCount, total, compact ? 4 : 8)}${(v.blockedCount ?? 0) > 0 ? ` · ${v.blockedCount} blocked` : ''}`}</Text>
+          {!compact && v.runUsd != null && (
             <Text dimColor={budgetColor(v) === undefined} color={budgetColor(v)}>
               {`${v.budgetUsd > 0 ? `${formatUsd(v.runUsd)}/${formatUsd(v.budgetUsd)} ${progressBar(v.runUsd, v.budgetUsd, 6)}` : `${formatUsd(v.runUsd)} run`}${v.current !== null && v.itemUsd != null ? ` · item ${formatUsd(v.itemUsd)}` : ''}`}
             </Text>
           )}
-          {v.running && v.elapsedMs != null && v.current !== null && <Text dimColor>{formatDuration(v.elapsedMs)}</Text>}
+          {!compact && v.running && v.elapsedMs != null && v.current !== null && <Text dimColor>{formatDuration(v.elapsedMs)}</Text>}
           <Button plain dimColor key="details" onPress={openPane}>
-            [details]
+            [panel]
           </Button>
-          {controlsFor(v).map(c => (
+          {(compact ? runControls(v) : controlsFor(v)).map(c => (
             <Button plain key={c.key} onPress={() => pressControl($, c)}>
               [{c.label}]
             </Button>
           ))}
         </Box>
-        {v.running && steps.length > 0 && (
+        {!compact && v.running && steps.length > 0 && (
           <Box gap={1}>
             {steps.map(st => (
               <Text key={st.label} bold={st.state === 'doing'} color={STEP_COLOR[st.state]} dimColor={st.state === 'todo'}>
@@ -1908,7 +1977,7 @@ export const register: Register = (on, _options) => {
             ))}
           </Box>
         )}
-        {v.rows.map(r => (
+        {v.rows.slice(0, compact ? 2 : v.rows.length).map(r => (
           <Box key={r.id} gap={1}>
             <Text color={COLOR[r.mark]} bold={r.mark === 'doing'} dimColor={r.mark === 'proposed'}>
               {GLYPH[r.mark]} {r.id}
@@ -1925,13 +1994,13 @@ export const register: Register = (on, _options) => {
             {v.more > 0 ? `+${v.more} more` : ''}
           </Text>
         )}
-        {agents.slice(0, 4).map(a => (
+        {agents.slice(0, compact ? 2 : 4).map(a => (
           <Button plain dimColor={!ACTIVE_AGENT.has(a.status)} key={`agent-${a.id}`} onPress={() => pick(a.id)}>
-            {agentLine(a)}
+            {oneLine(agentLine(a), compact ? 60 : 110)}
           </Button>
         ))}
-        {v.changes.length > 0 && <Text dimColor>Δ {v.changes.join(' · ')}</Text>}
-        {(v.events?.length ?? 0) > 0 && (
+        {!compact && v.changes.length > 0 && <Text dimColor>Δ {v.changes.join(' · ')}</Text>}
+        {!compact && (v.events?.length ?? 0) > 0 && (
           <Text dimColor wrap="truncate-end">
             ⋯ {v.events.join(' · ')}
           </Text>
@@ -1941,19 +2010,48 @@ export const register: Register = (on, _options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const els = $.ui.resolve(e)
+    const { Box, Text, Button } = els
+    const Input = 'Input' in els ? els.Input : null
     const v = await read($, view)
     const open = await read($, openAgent)
-    if (!v || !v.approved) return <Text dimColor>The design is not approved yet. Run /factory-approve.</Text>
+    const skipping = await read($, skipTarget)
+    const checks = await read($, checksAtom)
+    if (!v || !v.approved) {
+      return (
+        <Box flexDirection="column" paddingX={1}>
+          <Text dimColor>The design is not approved yet. Run /factory-approve.</Text>
+          <Button plain key="doctor" onPress={() => pressControl($, { key: 'doctor', label: '✔ check', command: 'factory-doctor' })}>
+            [✔ check setup]
+          </Button>
+          {(checks ?? []).map((c, i) => (
+            <Text key={`chk-${i}`} color={c.status === 'fail' ? 'red' : c.status === 'warn' ? 'yellow' : 'green'} wrap="truncate-end">
+              {checksLine(c)}
+            </Text>
+          ))}
+        </Box>
+      )
+    }
     const total = v.total ?? v.doneCount + v.rows.length + v.more
     const steps = v.steps ?? []
     const agents = v.agents ?? []
+    const blocked = v.blocked ?? []
 
     return (
       <Box flexDirection="column" paddingX={1}>
         <Text bold color={v.running ? 'green' : undefined}>
           {statusLine(v)}
         </Text>
+        <Box gap={1}>
+          {runControls(v).map(c => (
+            <Button plain key={c.key} onPress={() => pressControl($, c)}>
+              [{c.label}]
+            </Button>
+          ))}
+          <Button plain key="doctor" onPress={() => pressControl($, { key: 'doctor', label: '✔ check', command: 'factory-doctor' })}>
+            [✔ check setup]
+          </Button>
+        </Box>
         <Text> </Text>
         <Text bold>Plan {progressBar(v.doneCount, total, 20)} {v.doneCount}/{total}</Text>
         {v.rows.map(r => (
@@ -1964,9 +2062,58 @@ export const register: Register = (on, _options) => {
             <Text dimColor={r.mark !== 'doing'} wrap="truncate-end">
               [{r.type}] {r.title}
             </Text>
+            {(r.mark === 'todo' || r.mark === 'doing') && (
+              <Button plain dimColor key={`skip-${r.id}`} onPress={() => (Input === null ? pressControl($, { key: 'skip', label: `skip ${r.id}`, command: 'factory-skip', args: r.id }) : void update($, skipTarget, () => r.id))}>
+                [skip]
+              </Button>
+            )}
           </Box>
         ))}
         {v.more > 0 && <Text dimColor>+{v.more} more</Text>}
+        {skipping !== null && Input !== null && (
+          <Box gap={1}>
+            <Input
+              key="skip-reason"
+              label={`skip ${skipping} · why?`}
+              placeholder="reason (optional), Enter to skip"
+              autoFocus
+              onSubmit={(text: string) => {
+                void update($, skipTarget, () => null)
+                pressControl($, { key: 'skip', label: `skip ${skipping}`, command: 'factory-skip', args: `${skipping} ${text}`.trim() })
+              }}
+            />
+            <Button plain dimColor key="skip-cancel" onPress={() => void update($, skipTarget, () => null)}>
+              [cancel]
+            </Button>
+          </Box>
+        )}
+        {blocked.length > 0 && (
+          <Box flexDirection="column">
+            <Text> </Text>
+            <Text bold color="red">
+              Blocked · {v.blockedCount ?? blocked.length}
+            </Text>
+            {blocked.map(b => (
+              <Box key={`blocked-${b.id}`} flexDirection="column">
+                <Box gap={1}>
+                  <Text color="red">✗ {b.id}</Text>
+                  <Text dimColor wrap="truncate-end">
+                    {b.title}
+                  </Text>
+                  <Button plain key={`retry-${b.id}`} onPress={() => pressControl($, { key: `retry-${b.id}`, label: `↻ retry ${b.id}`, command: 'factory-retry', args: b.id })}>
+                    [↻ retry]
+                  </Button>
+                </Box>
+                {b.reason !== '' && (
+                  <Text dimColor wrap="truncate-end">
+                    {'  '}
+                    {b.reason}
+                  </Text>
+                )}
+              </Box>
+            ))}
+          </Box>
+        )}
         {v.current !== null && steps.length > 0 && (
           <Box flexDirection="column">
             <Text> </Text>
@@ -2018,6 +2165,17 @@ export const register: Register = (on, _options) => {
             )}
           </Box>
         ))}
+        {checks !== null && checks.length > 0 && (
+          <Box flexDirection="column">
+            <Text> </Text>
+            <Text bold>Checks</Text>
+            {checks.map((c, i) => (
+              <Text key={`chk-${i}`} color={c.status === 'fail' ? 'red' : c.status === 'warn' ? 'yellow' : 'green'} wrap="truncate-end">
+                {checksLine(c)}
+              </Text>
+            ))}
+          </Box>
+        )}
         {(v.events?.length ?? 0) > 0 && (
           <Box flexDirection="column">
             <Text> </Text>
@@ -2030,11 +2188,6 @@ export const register: Register = (on, _options) => {
           </Box>
         )}
         <Text> </Text>
-        <Box gap={1}>{controlsFor(v).map(c => (
-            <Button plain key={c.key} onPress={() => pressControl($, c)}>
-              [{c.label}]
-            </Button>
-          ))}</Box>
         <Button plain dimColor key="close" onPress={() => void $.ui.close({ id: PANE })}>
           [close]
         </Button>

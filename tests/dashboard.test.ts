@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { DEFAULT_STATE, agentActions, controlsFor, agentSummary, buildView, decisionsHash, itemSteps, parseSettings, parseTodo, progressBar, statusLine } from '../hooks/lib'
+import { DEFAULT_STATE, agentActions, checksReport, controlsFor, isCompact, agentSummary, buildView, decisionsHash, itemSteps, parseSettings, parseTodo, progressBar, statusLine } from '../hooks/lib'
 import type { FactoryEvent, FactoryView } from '../hooks/lib'
 
 const TODO = `## T-001 [feature] First
@@ -150,20 +150,27 @@ test('statusLine shortens a long pause reason to one line and drops the stage of
 const ok = (stdout: string) => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 const SETTINGS = JSON.stringify({ testCmd: ['unit'], baseBranch: 'main', requireReview: false, requireTestChanges: false, allowTestRemoval: true })
 
-function fixture($: any, on: any, o: { agents?: any[]; messages?: Record<string, any[]>; statuses?: (string | undefined)[]; rosterFails?: boolean; reads?: { n: number } } = {}) {
+function fixture($: any, on: any, o: { runs?: string[][]; autopilot?: boolean; blocked?: string[]; writes?: { path: string; text: string }[]; agents?: any[]; messages?: Record<string, any[]>; statuses?: (string | undefined)[]; rosterFails?: boolean; reads?: { n: number } } = {}) {
   const clock = mock.clock(on, { now: 1_000_000 })
   const hash = decisionsHash(parseSettings(SETTINGS).settings, parseTodo(TODO))
   const files: Record<string, string> = {
     '.factory/settings.json': SETTINGS,
     '.factory/todo.md': TODO,
-    '.factory/state.json': JSON.stringify({ approved: true, approvedHash: hash, autopilot: true, current: 'T-002', approvedDone: ['T-001'], events: [{ ts: 999_000, itemId: 'T-002', kind: 'started', detail: '' }] }),
+    '.factory/state.json': JSON.stringify({ approved: true, approvedHash: hash, autopilot: o.autopilot ?? true, current: o.autopilot === false ? null : 'T-002', approvedDone: ['T-001'], events: [{ ts: 999_000, itemId: 'T-002', kind: 'started', detail: '' }] }),
   }
+  for (const id of o.blocked ?? []) files[`.factory/blocked/${id}.md`] = 'Skipped by you: needs a product decision. /factory-retry makes it eligible again.\n'
   const key = (path: string) => Object.keys(files).find(k => path.endsWith(`/${k}`))
-  on('fs.exists', (_: unknown, e: { path: string }) => ({ value: key(e.path) !== undefined }))
+  on('fs.exists', (_: unknown, e: { path: string }) => ({ value: key(e.path) !== undefined || (e.path.endsWith('.factory/blocked') && (o.blocked?.length ?? 0) > 0) }))
   on('fs.read', (_: unknown, e: { path: string }) => ({ value: files[key(e.path) ?? ''] ?? '' }))
-  on('fs.list', () => ({ value: [] }))
-  on('fs.write', () => ({ value: undefined }))
-  on('process.run', () => ({ value: ok('') }))
+  on('fs.list', () => ({ value: (o.blocked ?? []).map(id => ({ name: `${id}.md` })) as never }))
+  on('fs.write', (_: unknown, e: { path: string; text: string }) => {
+    o.writes?.push({ path: e.path, text: e.text })
+    return { value: undefined }
+  })
+  on('process.run', (_: unknown, e: { argv: string[] }) => {
+    o.runs?.push(e.argv)
+    return { value: ok('') }
+  })
   on('ui.status', (_: unknown, e: { text?: string }) => {
     o.statuses?.push(e.text)
     return { value: undefined }
@@ -310,13 +317,35 @@ test('the main loop row is not counted as a subagent in the status line', () => 
   expect(statusLine(base({ agents: [main] }))).not.toContain('agent')
 })
 
-test('controlsFor offers pause while running, nothing when paused, and a retry per blocked row', () => {
+test('controlsFor offers pause and stop while running, start when not, and a retry per blocked row', () => {
   const view = (o: Partial<FactoryView>): FactoryView => ({ ...buildView(parseTodo(TODO), { ...DEFAULT_STATE, approved: true }, new Set(), null, null), ...o })
-  expect(controlsFor(view({ running: true })).map(c => c.command)).toEqual(['factory-pause'])
-  expect(controlsFor(view({ running: false })).map(c => c.command)).toEqual([])
+  expect(controlsFor(view({ running: true })).map(c => c.command)).toEqual(['factory-pause', 'factory-stop'])
+  expect(controlsFor(view({ running: false })).map(c => c.command)).toEqual(['factory-start'])
   expect(controlsFor(view({ approved: false }))).toEqual([])
   const blocked = view({ running: false, rows: [{ id: 'T-002', type: 'feature', title: 'Second', version: '', mark: 'blocked' }, { id: 'T-003', type: 'chore', title: 'Third', version: '', mark: 'todo' }] })
   expect(controlsFor(blocked).filter(c => c.command === 'factory-retry')).toEqual([{ key: 'retry-T-002', label: '↻ retry T-002', command: 'factory-retry', args: 'T-002' }])
+})
+
+test('buildView lists blocked items with the first line of their note', () => {
+  const items = parseTodo(TODO)
+  const v = buildView(items, { ...DEFAULT_STATE, approved: true }, new Set(['T-003']), null, null, undefined, { maxAttempts: 3, maxReviewRounds: 3, agents: [], now: 0, notes: new Map([['T-003', 'needs\u001b[31m a decision']]) })
+  expect(v.blocked).toEqual([{ id: 'T-003', title: 'Third', reason: 'needs[31m a decision' }])
+})
+
+test('checksReport counts problems and warnings and marks each line', () => {
+  expect(checksReport([{ name: 'gh login', status: 'ok', detail: '' }])).toBe('Factory checks: ready to run\n✓ gh login')
+  const mixed = checksReport([{ name: 'gh login', status: 'fail', detail: 'run `gh auth login`' }, { name: 'working tree', status: 'warn', detail: '2 uncommitted changes' }])
+  expect(mixed).toContain('1 problem to fix before /factory-start')
+  expect(mixed).toContain('✗ gh login · run `gh auth login`')
+  expect(mixed).toContain('! working tree · 2 uncommitted changes')
+  expect(checksReport([{ name: 'a', status: 'warn', detail: '' }])).toContain('ready, 1 warning')
+})
+
+test('isCompact is true only for a known narrow width', () => {
+  expect(isCompact(60)).toBe(true)
+  expect(isCompact(89)).toBe(true)
+  expect(isCompact(90)).toBe(false)
+  expect(isCompact(undefined)).toBe(false)
 })
 
 test('pressing pause in the band runs /factory-pause', async ($, on) => {
@@ -333,4 +362,142 @@ test('pressing pause in the band runs /factory-pause', async ($, on) => {
   await clock.advance(2000)
   expect(toasts).toContain('factory paused: paused by you; /factory-start resumes')
   await ui.unmount()
+})
+
+test('the band drops spend, steps and events at a narrow width', async ($, on) => {
+  fixture($, on)
+  await $.command.run({ command: 'factory-status' } as never)
+  const wide = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, bodyColumns: 140 } } as never)
+  expect(await wide.find({ text: /● build/ })).toBeDefined()
+  expect(await wide.find({ text: /⋯/ })).toBeDefined()
+  await wide.unmount()
+  const narrow = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, bodyColumns: 60 } } as never)
+  expect(await narrow.find({ text: /1\/3 done/ })).toBeDefined()
+  expect(await narrow.find({ text: /● build/ })).toBeUndefined()
+  expect(await narrow.find({ text: /⋯/ })).toBeUndefined()
+  await narrow.unmount()
+})
+
+test('pressing stop in the band stops the loop', async ($, on) => {
+  const toasts: string[] = []
+  const clock = fixture($, on)
+  on('ui.toast', (_: unknown, e: { text: string }) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.command.run({ command: 'factory-status' } as never)
+  const ui = await band($)
+  await ui.press({ key: 'stop' })
+  await clock.advance(2000)
+  expect(toasts).toContain('Factory paused. The current turn finishes; nothing new starts. /factory-start resumes.')
+  await ui.unmount()
+})
+
+test('pressing start in the band starts a paused loop', async ($, on) => {
+  const toasts: string[] = []
+  const clock = fixture($, on, { autopilot: false })
+  on('ui.toast', (_: unknown, e: { text: string }) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.command.run({ command: 'factory-status' } as never)
+  const ui = await band($)
+  expect(await ui.find({ text: /▶ start/ })).toBeDefined()
+  await ui.press({ key: 'start' })
+  await clock.advance(2000)
+  expect(toasts.some(t => t.startsWith('Cannot start') || t.startsWith('Factory running'))).toBe(true)
+  await ui.unmount()
+})
+
+test('start is refused while a main turn is running', async ($, on) => {
+  on('turn.start', (_: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
+  const toasts: string[] = []
+  const clock = fixture($, on, { autopilot: false })
+  on('ui.toast', (_: unknown, e: { text: string }) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.command.run({ command: 'factory-status' } as never)
+  await $.turn.start({ text: 'my own prompt', turnId: 't1' } as never)
+  const ui = await band($)
+  await ui.press({ key: 'start' })
+  await clock.advance(2000)
+  expect(toasts.some(t => t.includes('a turn is still running'))).toBe(true)
+  await ui.unmount()
+})
+
+test('the panel skips a todo item with a typed reason and lists blocked items with their note and a retry button', async ($, on) => {
+  const writes: { path: string; text: string }[] = []
+  const clock = fixture($, on, { writes })
+  await $.command.run({ command: 'factory-status' } as never)
+  const pane = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'Pane', requestId: 'factory', props: {} } as never)
+  expect(await pane.find({ key: 'skip-reason' })).toBeUndefined()
+  await pane.press({ key: 'skip-T-003' })
+  expect(await pane.find({ key: 'skip-reason' })).toBeDefined()
+  await (pane as any).input({ key: 'skip-reason', text: 'needs a decision', kind: 'submit' })
+  await clock.advance(2000)
+  expect(writes.some(w => w.path.endsWith('.factory/blocked/T-003.md') && w.text.includes('needs a decision'))).toBe(true)
+  await pane.unmount()
+})
+
+test('the panel shows a blocked item with its note', async ($, on) => {
+  fixture($, on, { blocked: ['T-003'] })
+  await $.command.run({ command: 'factory-status' } as never)
+  const pane = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'Pane', requestId: 'factory', props: {} } as never)
+  expect(await pane.find({ text: /Blocked · 1/ })).toBeDefined()
+  expect(await pane.find({ text: /Skipped by you: needs a product decision/ })).toBeDefined()
+  expect(await pane.find({ text: /↻ retry/ })).toBeDefined()
+  await pane.unmount()
+})
+
+test('/factory-doctor reports the checks', async ($, on) => {
+  fixture($, on)
+  const out = await $.command.run({ command: 'factory-doctor' } as never)
+  expect(out.text).toContain('Factory checks:')
+  expect(out.text).toContain('gh login')
+})
+
+test('the check button in the panel runs the checks and shows them', async ($, on) => {
+  const clock = fixture($, on)
+  await $.command.run({ command: 'factory-status' } as never)
+  const pane = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'Pane', requestId: 'factory', props: {} } as never)
+  expect(await pane.find({ text: /^Checks$/ })).toBeUndefined()
+  await pane.press({ key: 'doctor' })
+  await clock.advance(2000)
+  expect(await pane.find({ text: /^Checks$/ })).toBeDefined()
+  await pane.unmount()
+})
+
+test('the retry button in the panel removes that item\'s blocked note', async ($, on) => {
+  const runs: string[][] = []
+  const clock = fixture($, on, { blocked: ['T-003'], runs })
+  await $.command.run({ command: 'factory-status' } as never)
+  const pane = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'Pane', requestId: 'factory', props: {} } as never)
+  await pane.press({ key: 'retry-T-003' })
+  await clock.advance(2000)
+  expect(runs.some(a => a[0] === 'rm' && a.includes('.factory/blocked/T-003.md'))).toBe(true)
+  await pane.unmount()
+})
+
+test('the panel offers skip on the current and todo items only, and its own run controls', async ($, on) => {
+  fixture($, on, { blocked: ['T-003'] })
+  await $.command.run({ command: 'factory-status' } as never)
+  const pane = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'Pane', requestId: 'factory', props: {} } as never)
+  expect(await pane.find({ key: 'skip-T-002' })).toBeDefined()
+  expect(await pane.find({ key: 'skip-T-003' })).toBeUndefined()
+  expect(await pane.find({ key: 'pause' })).toBeDefined()
+  expect(await pane.find({ key: 'stop' })).toBeDefined()
+  await pane.unmount()
+})
+
+test('a narrow band keeps only the run controls, not a retry per blocked item', async ($, on) => {
+  fixture($, on, { blocked: ['T-003'] })
+  await $.command.run({ command: 'factory-status' } as never)
+  const wide = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, bodyColumns: 140 } } as never)
+  expect(await wide.find({ key: 'retry-T-003' })).toBeDefined()
+  await wide.unmount()
+  const narrow = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, bodyColumns: 60 } } as never)
+  expect(await narrow.find({ key: 'retry-T-003' })).toBeUndefined()
+  expect(await narrow.find({ key: 'pause' })).toBeDefined()
+  await narrow.unmount()
 })
