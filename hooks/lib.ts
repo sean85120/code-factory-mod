@@ -1278,6 +1278,15 @@ export function itemSteps(
   ]
 }
 
+export type Control = { key: string; label: string; command: string; args?: string }
+
+export function controlsFor(v: FactoryView): Control[] {
+  if (!v.approved) return []
+  const run: Control[] = v.running ? [{ key: 'pause', label: '⏸ pause', command: 'factory-pause' }] : []
+  const retry: Control[] = v.rows.filter(r => r.mark === 'blocked').map(r => ({ key: `retry-${r.id}`, label: `↻ retry ${r.id}`, command: 'factory-retry', args: r.id }))
+  return [...run, ...retry]
+}
+
 export function statusLine(v: FactoryView): string {
   if (!v.approved) return 'factory: design not approved'
   const parts: string[] = []

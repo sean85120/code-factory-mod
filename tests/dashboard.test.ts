@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { DEFAULT_STATE, agentActions, agentSummary, buildView, decisionsHash, itemSteps, parseSettings, parseTodo, progressBar, statusLine } from '../hooks/lib'
+import { DEFAULT_STATE, agentActions, controlsFor, agentSummary, buildView, decisionsHash, itemSteps, parseSettings, parseTodo, progressBar, statusLine } from '../hooks/lib'
 import type { FactoryEvent, FactoryView } from '../hooks/lib'
 
 const TODO = `## T-001 [feature] First
@@ -308,4 +308,29 @@ test('an active agent is not re-read within the throttle window, a finished one 
 test('the main loop row is not counted as a subagent in the status line', () => {
   const main = { id: 'main', label: 'T-002 (main loop)', kind: 'main', status: 'running', summary: 'x', recent: [], parent: null }
   expect(statusLine(base({ agents: [main] }))).not.toContain('agent')
+})
+
+test('controlsFor offers pause while running, nothing when paused, and a retry per blocked row', () => {
+  const view = (o: Partial<FactoryView>): FactoryView => ({ ...buildView(parseTodo(TODO), { ...DEFAULT_STATE, approved: true }, new Set(), null, null), ...o })
+  expect(controlsFor(view({ running: true })).map(c => c.command)).toEqual(['factory-pause'])
+  expect(controlsFor(view({ running: false })).map(c => c.command)).toEqual([])
+  expect(controlsFor(view({ approved: false }))).toEqual([])
+  const blocked = view({ running: false, rows: [{ id: 'T-002', type: 'feature', title: 'Second', version: '', mark: 'blocked' }, { id: 'T-003', type: 'chore', title: 'Third', version: '', mark: 'todo' }] })
+  expect(controlsFor(blocked).filter(c => c.command === 'factory-retry')).toEqual([{ key: 'retry-T-002', label: '↻ retry T-002', command: 'factory-retry', args: 'T-002' }])
+})
+
+test('pressing pause in the band runs /factory-pause', async ($, on) => {
+  const toasts: string[] = []
+  const clock = fixture($, on)
+  on('ui.toast', (_: unknown, e: { text: string }) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.command.run({ command: 'factory-status' } as never)
+  const ui = await band($)
+  expect(await ui.find({ text: /⏸ pause/ })).toBeDefined()
+  await ui.press({ key: 'pause' })
+  await clock.advance(2000)
+  expect(toasts).toContain('factory paused: paused by you; /factory-start resumes')
+  await ui.unmount()
 })

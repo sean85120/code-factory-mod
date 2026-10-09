@@ -27,6 +27,7 @@ import {
   normalizeRepoCosts,
   oneLine,
   progressBar,
+  controlsFor,
   statusLine,
   noteItem,
   parseCostsArgs,
@@ -95,7 +96,7 @@ import {
   validateItems,
   workPrompt,
 } from './lib'
-import type { AgentRow, Drive, EventKind, FactoryEvent, FactoryState, FactoryView, Item, LoopEvent, Mark, RepoCosts, ReviewMark, Settings, Stage, Step, Usage } from './lib'
+import type { AgentRow, Control, Drive, EventKind, FactoryEvent, FactoryState, FactoryView, Item, LoopEvent, Mark, RepoCosts, ReviewMark, Settings, Stage, Step, Usage } from './lib'
 
 type Dollar = EngineInterface
 
@@ -212,6 +213,12 @@ async function stamp($: Dollar): Promise<number> {
   } catch {
     return Date.now()
   }
+}
+
+function pressControl($: Dollar, c: Control): void {
+  const args = c.args ?? ''
+  const out = c.command === 'factory-pause' ? pauseCmd($) : retryCmd($, args)
+  void out.then(r => toast($, oneLine(r.text, 120))).catch(() => toast($, `factory: ${c.label} failed`))
 }
 
 function toast($: Dollar, text: string, options?: Parameters<Dollar['ui']['toast']>[1]): void {
@@ -1190,6 +1197,42 @@ async function logBashEvent($: Dollar, itemId: string, ev: LoopEvent, command: s
   if (ev === 'merge') return logEvent($, { itemId, kind: 'merged', detail: `gh pr merge ${classifyBash(command, 'main').prSelector ?? ''}`.trim() })
 }
 
+async function pauseCmd($: Dollar): Promise<{ text: string }> {
+  dropRoadmap()
+  loopEpoch++
+  const state = await readState($)
+  if (!state.autopilot) return { text: safeLines(`Factory is not running (${state.pausedReason ?? 'stopped'}). /factory-start resumes it.`) }
+  await pause($, state, 'paused by you; /factory-start resumes')
+  return { text: `Factory paused. The current turn finishes${state.reviewAgentId ? ' and the pending review still reports' : ''}; nothing new starts. ${state.current ? `${state.current}, its attempts and review rounds are kept; ` : ''}/factory-start resumes where it left off.` }
+}
+
+async function retryCmd($: Dollar, args: string): Promise<{ text: string }> {
+  const { id } = parseItemArg(args)
+  if (!id) return { text: 'Usage: /factory-retry <ID>, for example /factory-retry T-004.' }
+  if (await lockedByOther($)) return { text: 'Cannot retry: another session is running the factory in this repo (its lock was refreshed in the last two minutes).' }
+  const snap = await load($)
+  const problem = await integrityProblem(snap)
+  if (problem) return { text: safeLines(`Cannot retry: ${problem}.`) }
+  const raw = snap.items.find(i => i.id === id)
+  const item = effectiveItems(snap).find(i => i.id === id)
+  if (!raw || !item) return { text: `Cannot retry: ${id} is not an item in ${TODO_PATH}.` }
+  if (raw.status === 'proposed') return { text: `Cannot retry: ${id} is still proposed; /factory-approve promotes it first.` }
+  if (item.status === 'done') return { text: `Cannot retry: ${id} is already done.` }
+  const isCurrent = snap.state.current === id
+  if (!snap.blocked.has(id) && !isCurrent) return { text: `${id} is not blocked; it is picked up in order.` }
+  if (snap.blocked.has(id)) {
+    for (const name of [`${id}.md`, `${id.toLowerCase()}.md`]) await run($, ['rm', '-f', '--', `${BLOCKED_DIR}/${name}`], 15000)
+    if ((await blockedIds($)).has(id)) return { text: `Cannot retry: could not remove the note in ${BLOCKED_DIR}/; delete it by hand.` }
+  }
+  const ts = await stamp($)
+  await patchState($, s => ({
+    ...withEvent(s, ts, { itemId: id, kind: 'retry', detail: 'unblocked by you' }),
+    ...(s.current === id ? { attempts: 0, reviewRounds: 0 } : {}),
+  }))
+  await refreshStatus($)
+  return { text: `${id} is eligible again${isCurrent ? ' with its attempts and review rounds reset' : ''}. ${snap.state.autopilot ? 'The running loop picks it up in order.' : '/factory-start runs it.'}` }
+}
+
 export const register: Register = (on, _options) => {
   on('session.start', async ($, e, next) => {
     for (const [name, description, argumentHint, immediate] of [
@@ -1347,14 +1390,7 @@ export const register: Register = (on, _options) => {
     return { text: 'Factory paused. The current turn finishes; nothing new starts. /factory-start resumes.' }
   })
 
-  on('command.run', { command: 'factory-pause' }, async $ => {
-    dropRoadmap()
-    loopEpoch++
-    const state = await readState($)
-    if (!state.autopilot) return { text: safeLines(`Factory is not running (${state.pausedReason ?? 'stopped'}). /factory-start resumes it.`) }
-    await pause($, state, 'paused by you; /factory-start resumes')
-    return { text: `Factory paused. The current turn finishes${state.reviewAgentId ? ' and the pending review still reports' : ''}; nothing new starts. ${state.current ? `${state.current}, its attempts and review rounds are kept; ` : ''}/factory-start resumes where it left off.` }
-  })
+  on('command.run', { command: 'factory-pause' }, async $ => pauseCmd($))
 
   on('command.run', { command: 'factory-status' }, async $ => {
     await refreshView($)
@@ -1397,32 +1433,7 @@ export const register: Register = (on, _options) => {
     return { text: `${id} skipped; the note is in ${BLOCKED_DIR}/${id}.md.${isCurrent && snap.state.autopilot ? ' It is the current item: the turn in progress finishes, then the loop moves on to the next item.' : ''}` }
   })
 
-  on('command.run', { command: 'factory-retry' }, async ($, e) => {
-    const { id } = parseItemArg(e.args)
-    if (!id) return { text: 'Usage: /factory-retry <ID>, for example /factory-retry T-004.' }
-    if (await lockedByOther($)) return { text: 'Cannot retry: another session is running the factory in this repo (its lock was refreshed in the last two minutes).' }
-    const snap = await load($)
-    const problem = await integrityProblem(snap)
-    if (problem) return { text: safeLines(`Cannot retry: ${problem}.`) }
-    const raw = snap.items.find(i => i.id === id)
-    const item = effectiveItems(snap).find(i => i.id === id)
-    if (!raw || !item) return { text: `Cannot retry: ${id} is not an item in ${TODO_PATH}.` }
-    if (raw.status === 'proposed') return { text: `Cannot retry: ${id} is still proposed; /factory-approve promotes it first.` }
-    if (item.status === 'done') return { text: `Cannot retry: ${id} is already done.` }
-    const isCurrent = snap.state.current === id
-    if (!snap.blocked.has(id) && !isCurrent) return { text: `${id} is not blocked; it is picked up in order.` }
-    if (snap.blocked.has(id)) {
-      for (const name of [`${id}.md`, `${id.toLowerCase()}.md`]) await run($, ['rm', '-f', '--', `${BLOCKED_DIR}/${name}`], 15000)
-      if ((await blockedIds($)).has(id)) return { text: `Cannot retry: could not remove the note in ${BLOCKED_DIR}/; delete it by hand.` }
-    }
-    const ts = await stamp($)
-    await patchState($, s => ({
-      ...withEvent(s, ts, { itemId: id, kind: 'retry', detail: 'unblocked by you' }),
-      ...(s.current === id ? { attempts: 0, reviewRounds: 0 } : {}),
-    }))
-    await refreshStatus($)
-    return { text: `${id} is eligible again${isCurrent ? ' with its attempts and review rounds reset' : ''}. ${snap.state.autopilot ? 'The running loop picks it up in order.' : '/factory-start runs it.'}` }
-  })
+  on('command.run', { command: 'factory-retry' }, async ($, e) => retryCmd($, e.args))
 
   on('command.run', { command: 'factory-dashboard' }, async $ => {
     await refreshView($)
@@ -1881,6 +1892,11 @@ export const register: Register = (on, _options) => {
           <Button plain dimColor key="details" onPress={openPane}>
             [details]
           </Button>
+          {controlsFor(v).map(c => (
+            <Button plain key={c.key} onPress={() => pressControl($, c)}>
+              [{c.label}]
+            </Button>
+          ))}
         </Box>
         {v.running && steps.length > 0 && (
           <Box gap={1}>
@@ -2014,6 +2030,11 @@ export const register: Register = (on, _options) => {
           </Box>
         )}
         <Text> </Text>
+        <Box gap={1}>{controlsFor(v).map(c => (
+            <Button plain key={c.key} onPress={() => pressControl($, c)}>
+              [{c.label}]
+            </Button>
+          ))}</Box>
         <Button plain dimColor key="close" onPress={() => void $.ui.close({ id: PANE })}>
           [close]
         </Button>
