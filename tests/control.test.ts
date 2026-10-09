@@ -2395,3 +2395,91 @@ test("a reviewer still spending while the person's slash turn ends under a hand-
   const total = (after + 2 - 1).toFixed(2)
   expect(await itemUsd($)).toMatch(new RegExp(`T-001\\s+\\$${total.replace('.', '\\.')}`))
 })
+
+const DESIGN = '# Design\n\n## Decisions\n- x\n'
+const panes = (on: any): { opened: string[]; closed: string[] } => {
+  const seen = { opened: [] as string[], closed: [] as string[] }
+  on('ui.open', (_: unknown, e: { id: string }) => {
+    seen.opened.push(e.id)
+    return { value: { isPlaced: true as const } }
+  })
+  on('ui.close', (_: unknown, e: { id: string }) => {
+    seen.closed.push(e.id)
+    return { value: undefined }
+  })
+  return seen
+}
+const resumedEvents = (state: { events?: { kind: string }[] }): number => (state.events ?? []).filter(e => e.kind === 'resumed').length
+
+test('approving a design starts the loop and opens the dashboard without a separate /factory-start', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const seen = panes(on)
+  const fx = setup($, on, { state: { approved: false, approvedHash: '' }, files: { '.factory/design.md': DESIGN } })
+  const out = await $.command.run({ command: 'factory-approve' } as never)
+  expect(out.text).toContain('Approved')
+  expect(out.text).toContain('Factory running')
+  expect(out.text).not.toContain('Run /factory-start to begin')
+  expect(fx.state().autopilot).toBe(true)
+  expect(seen.opened).toEqual(['factory'])
+  await clock.advance(1000)
+  expect(fx.live.submitted.some(s => s.startsWith('CODE FACTORY: work item T-001'))).toBe(true)
+})
+
+test('approving while the loop already runs does not start a second run or reopen the dashboard', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const seen = panes(on)
+  const fx = setup($, on, { state: { autopilot: true }, files: { '.factory/design.md': DESIGN } })
+  const before = resumedEvents(fx.state())
+  const out = await $.command.run({ command: 'factory-approve' } as never)
+  expect(out.text).toContain('already running')
+  expect(resumedEvents(fx.state())).toBe(before)
+  expect(seen.opened).toEqual([])
+})
+
+test('approving a plan with nothing left to build starts nothing', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const seen = panes(on)
+  const fx = setup($, on, { todo: DONE_TODO, state: { approved: false, approvedHash: '' }, files: { '.factory/design.md': DESIGN } })
+  const out = await $.command.run({ command: 'factory-approve' } as never)
+  expect(out.text).toContain('Approved')
+  expect(fx.state().autopilot).toBe(false)
+  expect(seen.opened).toEqual([])
+})
+
+test('a refused start says so in the approve reply and opens no dashboard', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const seen = panes(on)
+  const fx = setup($, on, { state: { approved: false, approvedHash: '' }, lockedBy: 'other-session', files: { '.factory/design.md': DESIGN } })
+  const out = await $.command.run({ command: 'factory-approve' } as never)
+  expect(out.text).toContain('another session is running the factory')
+  expect(fx.state().autopilot).toBe(false)
+  expect(seen.opened).toEqual([])
+})
+
+test('/factory-start opens the dashboard and /factory-dashboard off closes it', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const seen = panes(on)
+  setup($, on)
+  await $.command.run({ command: 'factory-start' } as never)
+  expect(seen.opened).toEqual(['factory'])
+  const out = await $.command.run({ command: 'factory-dashboard', args: 'off' } as never)
+  expect(seen.closed).toEqual(['factory'])
+  expect(out.text).toContain('closed')
+  await $.command.run({ command: 'factory-dashboard' } as never)
+  expect(seen.opened).toEqual(['factory', 'factory'])
+})
+
+test('a dashboard that cannot be drawn is reported but never stops the loop from starting', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  on('ui.open', () => ({ value: { isPlaced: false as const, reason: 'terminal is 80 columns' } }))
+  const toasts: string[] = []
+  on('ui.toast', (_: unknown, e: { text: string }) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  const fx = setup($, on)
+  const out = await $.command.run({ command: 'factory-start' } as never)
+  expect(out.text).toContain('Factory running')
+  expect(fx.state().autopilot).toBe(true)
+  expect(toasts.some(t => t.includes('80 columns'))).toBe(true)
+})
