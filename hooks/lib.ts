@@ -1056,7 +1056,7 @@ export function sanitizeDeclined(raw: unknown): string[] {
 }
 
 export function declinedSection(declined: string[]): string {
-  return declined.length === 0 ? '' : `\n\nAlready declined by an earlier reviewer of this item (do not report these again):\n${declined.map(d => `- ${d}`).join('\n')}`
+  return declined.length === 0 ? '' : `\n\nAlready declined by an earlier reviewer of this item (do not report these again, unless the code there has changed since or the problem is now High or above):\n${declined.map(d => `- ${d}`).join('\n')}`
 }
 
 export function isReviewClean(mark: ReviewMark | null, headSha: string): boolean {

@@ -310,6 +310,6 @@ test('agent.spawn appends the stored ledger to the review prompt and leaves othe
   await ($ as any).agent.spawn({ prompt: reviewPrompt() })
   await ($ as any).agent.spawn({ prompt: 'unrelated task' })
   expect(seen[0]).toContain(reviewPrompt())
-  expect(seen[0]).toContain('do not report these again):\n- src/a.ts:4 narrow input')
+  expect(seen[0]).toContain('do not report these again, unless the code there has changed since or the problem is now High or above):\n- src/a.ts:4 narrow input')
   expect(seen[1]).toBe('unrelated task')
 })
