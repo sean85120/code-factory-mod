@@ -13,18 +13,18 @@ test('the agent id is read from the launch acknowledgement', () => {
 })
 
 test('the pending reviewer own answer decides: record, unavailable, or clear when it has no verdict', () => {
-  expect(decideReviewAnswer(`Clean.\nFACTORY-REVIEW: danger=0 medium=0 sha=${SHA}`, ID, pending, true)).toEqual({ action: 'record', mark: { danger: 0, medium: 0, sha: SHA } })
-  expect(decideReviewAnswer(`FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}`, ID, { ...pending, autopilot: false }, true)).toEqual({ action: 'record', mark: { danger: 0, medium: 0, sha: SHA } })
+  expect(decideReviewAnswer(`Clean.\nFACTORY-REVIEW: danger=0 medium=0 sha=${SHA}`, ID, pending, true)).toEqual({ action: 'record', mark: { danger: 0, medium: 0, sha: SHA }, declined: [] })
+  expect(decideReviewAnswer(`FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}`, ID, { ...pending, autopilot: false }, true)).toEqual({ action: 'record', mark: { danger: 0, medium: 0, sha: SHA }, declined: [] })
   expect(decideReviewAnswer('FACTORY-REVIEW: unavailable', ID, pending, true)).toEqual({ action: 'unavailable' })
   expect(decideReviewAnswer('ran out of turns', ID, pending, true)).toEqual({ action: 'clear' })
   expect(decideReviewAnswer('', ID, pending, true)).toEqual({ action: 'clear' })
   expect(decideReviewAnswer('The reviewer is still running, so I will wait.', ID, pending, true, false)).toEqual({ action: 'ignore' })
-  expect(decideReviewAnswer(`FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}`, ID, pending, true, false)).toEqual({ action: 'record', mark: { danger: 0, medium: 0, sha: SHA } })
+  expect(decideReviewAnswer(`FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}`, ID, pending, true, false)).toEqual({ action: 'record', mark: { danger: 0, medium: 0, sha: SHA }, declined: [] })
 })
 
 test('a numeric verdict wins over a quoted unavailable instruction', () => {
   const quoted = `If it cannot run write FACTORY-REVIEW: unavailable\nFACTORY-REVIEW: danger=1 medium=2 sha=${SHA}`
-  expect(decideReviewAnswer(quoted, ID, pending, true)).toEqual({ action: 'record', mark: { danger: 1, medium: 2, sha: SHA } })
+  expect(decideReviewAnswer(quoted, ID, pending, true)).toEqual({ action: 'record', mark: { danger: 1, medium: 2, sha: SHA }, declined: [] })
 })
 
 test('any other agent, no pending reviewer, an unapproved plan or no current item is ignored', () => {

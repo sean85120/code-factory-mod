@@ -58,6 +58,7 @@ export type FactoryState = {
   pausedReason: string | null
   review: ReviewMark | null
   reviewRounds: number
+  reviewDeclined: string[]
   reviewAgentId: string | null
   reviewAgentAt: number
   reviewWaitMs: number
@@ -114,6 +115,7 @@ export const DEFAULT_STATE: FactoryState = {
   pausedReason: null,
   review: null,
   reviewRounds: 0,
+  reviewDeclined: [],
   reviewAgentId: null,
   reviewAgentAt: 0,
   reviewWaitMs: 0,
@@ -1034,6 +1036,29 @@ export function parseReviewMarker(text: string): ReviewMark | null {
   return m ? { danger: Number(m[1]), medium: Number(m[2]), sha: m[3]!.toLowerCase() } : null
 }
 
+export const MAX_DECLINED = 20
+
+export function declinedLines(text: string): string[] {
+  const out: string[] = []
+  for (const m of text.matchAll(/^[ \t]*FACTORY-DECLINED:[ \t]*(.+)$/gim)) {
+    const line = cleanText(m[1]!).slice(0, 200)
+    if (line && !out.includes(line)) out.push(line)
+  }
+  return out.slice(0, MAX_DECLINED)
+}
+
+export function mergeDeclined(prev: string[], add: string[]): string[] {
+  return [...new Set([...prev, ...add])].slice(-MAX_DECLINED)
+}
+
+export function sanitizeDeclined(raw: unknown): string[] {
+  return Array.isArray(raw) ? mergeDeclined([], raw.filter((x): x is string => typeof x === 'string').map(x => cleanText(x).slice(0, 200)).filter(Boolean)) : []
+}
+
+export function declinedSection(declined: string[]): string {
+  return declined.length === 0 ? '' : `\n\nAlready declined by an earlier reviewer of this item (do not report these again, unless the code there has changed since or the problem is now High or above):\n${declined.map(d => `- ${d}`).join('\n')}`
+}
+
 export function isReviewClean(mark: ReviewMark | null, headSha: string): boolean {
   if (!mark || mark.danger !== 0 || mark.medium !== 0) return false
   const head = headSha.trim().toLowerCase()
@@ -1063,7 +1088,7 @@ export function isReviewPending(state: Pick<FactoryState, 'reviewAgentId' | 'rev
 
 export type ReviewAction =
   | { action: 'ignore' }
-  | { action: 'record'; mark: ReviewMark }
+  | { action: 'record'; mark: ReviewMark; declined: string[] }
   | { action: 'unavailable' }
   | { action: 'clear' }
 
@@ -1083,7 +1108,7 @@ export function decideReviewAnswer(
 ): ReviewAction {
   if (!state.approved || !hasItem || state.reviewAgentId === null || agentId !== state.reviewAgentId) return { action: 'ignore' }
   const mark = parseReviewMarker(answer)
-  if (mark) return { action: 'record', mark }
+  if (mark) return { action: 'record', mark, declined: declinedLines(answer) }
   if (/FACTORY-REVIEW:\s*unavailable/i.test(answer)) return { action: 'unavailable' }
   return final ? { action: 'clear' } : { action: 'ignore' }
 }
@@ -1097,6 +1122,7 @@ Loop until clean:
 2. Re-run the full test suite (${s.testCmd.join(' ')}) and commit the fixes with clear messages.
 3. Repeat step 1 on the new state. Stop only when a full pass reports no danger/critical/high findings and no medium findings left unresolved. At most ${s.maxReviewRounds} passes; do not weaken or delete tests to get there.
 
+Before the final line, write one line \`FACTORY-DECLINED: <file:line> <one-line reason>\` for each medium finding you chose not to fix. The factory hands that list to the next reviewer so it is not reported again.
 Finish your answer with exactly one final line, using the output of \`git rev-parse HEAD\` after your last commit and the counts of unresolved findings from your last pass:
 FACTORY-REVIEW: danger=<n> medium=<n> sha=<HEAD sha>
 If ${s.reviewCommand} does not exist or cannot run, instead write exactly: FACTORY-REVIEW: unavailable`
