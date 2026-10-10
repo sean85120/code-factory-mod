@@ -22,6 +22,7 @@ type Fx = {
   state?: Record<string, unknown>
   failOut?: string
   prView?: { exitCode: number; stdout: string; stderr: string }
+  agentText?: string
 }
 
 const ok = (stdout: string, exitCode = 0) => ({ exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
@@ -63,7 +64,7 @@ function setup($: any, on: any, fx: Fx): { writes: Record<string, string>; ran: 
   })
   on('tool.call', (_: unknown, e: { tool: string; prompt?: string }) =>
     e.tool === 'Agent'
-      ? { result: { content: [{ type: 'text', text: `Done.\nFACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` }], prompt: 'echoed FACTORY-REVIEW: danger=9 medium=9 sha=0000000' }, text: 'agent', isError: false }
+      ? { result: { content: [{ type: 'text', text: fx.agentText ?? `Done.\nFACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` }], prompt: 'echoed FACTORY-REVIEW: danger=9 medium=9 sha=0000000' }, text: 'agent', isError: false }
       : { result: 'ran', text: fx.ghOut ?? 'ran', isError: false },
   )
   return { writes, ran }
@@ -289,4 +290,26 @@ test('merge is denied when the PR diff weakens the tests', async ($, on) => {
 test('merge goes through for a green factory PR whose diff does not weaken the tests', async ($, on) => {
   setup($, on, { review: CLEAN, prView: prJson({}), prDiff: 'diff --git a/src/a.ts b/src/a.ts\n' })
   expect(JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'gh pr merge 4 --squash' }))).not.toContain('code-factory:')
+})
+
+test('declined findings in the reviewer answer are stored, cleaned and capped', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { agentText: `Notes.\nFACTORY-DECLINED: src/a.ts:4 narrow input, not reachable\n  FACTORY-DECLINED: src/b.ts:9 \u001b[31mred\u001b[0m reason\nFACTORY-REVIEW: danger=0 medium=0 sha=${SHA}`, state: { reviewDeclined: ['old.ts:1 older reason'] } })
+  await spawn($, reviewPrompt())
+  const saved = JSON.parse(fx.writes['.factory/state.json'] ?? '{}')
+  expect(saved.reviewDeclined).toEqual(['old.ts:1 older reason', 'src/a.ts:4 narrow input, not reachable', 'src/b.ts:9 [31mred[0m reason'])
+})
+
+test('agent.spawn appends the stored ledger to the review prompt and leaves other agents alone', async ($, on) => {
+  setup($, on, { state: { reviewDeclined: ['src/a.ts:4 narrow input'] } })
+  const seen: string[] = []
+  on('agent.spawn', (_: unknown, e: { prompt: string }) => {
+    seen.push(e.prompt)
+    return { model: 'm' }
+  })
+  await ($ as any).agent.spawn({ prompt: reviewPrompt() })
+  await ($ as any).agent.spawn({ prompt: 'unrelated task' })
+  expect(seen[0]).toContain(reviewPrompt())
+  expect(seen[0]).toContain('do not report these again):\n- src/a.ts:4 narrow input')
+  expect(seen[1]).toBe('unrelated task')
 })

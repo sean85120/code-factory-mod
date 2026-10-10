@@ -2483,3 +2483,19 @@ test('a dashboard that cannot be drawn is reported but never stops the loop from
   expect(fx.state().autopilot).toBe(true)
   expect(toasts.some(t => t.includes('80 columns'))).toBe(true)
 })
+
+test('the declined-findings ledger is cleared when the loop starts a new item', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { state: { approved: false, approvedHash: '', reviewDeclined: ['src/a.ts:4 old item reason'] }, files: { '.factory/design.md': DESIGN } })
+  await $.command.run({ command: 'factory-approve' } as never)
+  await clock.advance(1000)
+  expect(fx.state().current).toBe('T-001')
+  expect(fx.state().reviewDeclined).toEqual([])
+})
+
+test('the declined-findings ledger survives a pause', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { state: { autopilot: true, current: 'T-001', reviewDeclined: ['src/b.ts:9 reason'] } })
+  await $.command.run({ command: 'factory-pause' } as never)
+  expect(fx.state().reviewDeclined).toEqual(['src/b.ts:9 reason'])
+})

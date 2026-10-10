@@ -76,7 +76,11 @@ import {
   inScope,
   isBillingProblem,
   isLockedByOther,
+  declinedLines,
+  declinedSection,
   decideReviewAnswer,
+  mergeDeclined,
+  sanitizeDeclined,
   designFileSame,
   isReviewClean,
   isReviewPending,
@@ -168,7 +172,7 @@ async function readStateOnce($: Dollar): Promise<FactoryState | 'absent' | null>
   try {
     const raw = JSON.parse(text) as Partial<FactoryState>
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
-    return { ...DEFAULT_STATE, ...raw, events: sanitizeEvents(raw.events), roadmapAsked: raw.roadmapAsked === true, unreadable: undefined }
+    return { ...DEFAULT_STATE, ...raw, events: sanitizeEvents(raw.events), reviewDeclined: sanitizeDeclined(raw.reviewDeclined), roadmapAsked: raw.roadmapAsked === true, unreadable: undefined }
   } catch {
     return null
   }
@@ -953,7 +957,7 @@ async function advance($: Dollar): Promise<void> {
       }
       return
     }
-    state = { ...withEvent(state, now, { itemId: next.id, kind: 'started', detail: next.title }), current: next.id, attempts: 0, pausedReason: null, review: null, reviewRounds: 0 }
+    state = { ...withEvent(state, now, { itemId: next.id, kind: 'started', detail: next.title }), current: next.id, attempts: 0, pausedReason: null, review: null, reviewRounds: 0, reviewDeclined: [] }
     if (!(await write(state))) return
     await refreshStatus($)
     if (hasMerged && (await live())) await resetContext($, settings)
@@ -1106,13 +1110,14 @@ async function guardWrite($: Dollar, path: string, agentId: string | undefined):
   return null
 }
 
-async function recordReview($: Dollar, itemId: string, mark: ReviewMark, maxRounds: number): Promise<void> {
+async function recordReview($: Dollar, itemId: string, mark: ReviewMark, maxRounds: number, declined: string[]): Promise<void> {
   const isClean = mark.danger === 0 && mark.medium === 0
   await markStage($, isClean ? 'reviewed' : 'commit')
   const ts = await stamp($)
   const saved = await patchState($, fresh => ({
     ...withEvent(fresh, ts, { itemId, kind: 'review-verdict', detail: `danger=${mark.danger} medium=${mark.medium} sha=${mark.sha.slice(0, 7)}` }),
     review: mark,
+    reviewDeclined: mergeDeclined(fresh.reviewDeclined, declined),
     reviewRounds: isClean ? 0 : fresh.reviewRounds + 1,
     reviewAgentId: null,
     reviewAgentAt: 0,
@@ -1140,7 +1145,7 @@ async function reviewerTurn($: Dollar, agentId: string, answer: string, final: b
       await pause($, snap.state, `${snap.settings.reviewCommand} is not available to the review agent`, false, { reviewAgentId: null, reviewAgentAt: 0 })
       return
     }
-    if (act.action === 'record') await recordReview($, item.id, act.mark, snap.settings.maxReviewRounds)
+    if (act.action === 'record') await recordReview($, item.id, act.mark, snap.settings.maxReviewRounds, act.declined)
     else {
       const ts = await stamp($)
       const saved = await patchState($, fresh => ({
@@ -1773,7 +1778,7 @@ export const register: Register = (on, _options) => {
       }
       const mark = parseReviewMarker(text)
       if (mark) {
-        await recordReview($, item.id, mark, snap.settings.maxReviewRounds)
+        await recordReview($, item.id, mark, snap.settings.maxReviewRounds, declinedLines(text))
         return ran
       }
       if (/FACTORY-REVIEW:\s*unavailable/i.test(text)) {
@@ -1783,6 +1788,12 @@ export const register: Register = (on, _options) => {
     } finally {
       reviewInFlight = false
     }
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    if (!e.prompt.includes(REVIEW_TAG)) return next(e)
+    const extra = declinedSection((await readState($)).reviewDeclined)
+    return next(extra ? { ...e, prompt: `${e.prompt}${extra}` } : e)
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, nextRaw) => {
