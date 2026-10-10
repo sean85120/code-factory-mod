@@ -3,6 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import {
   agentText,
   classifyBash,
+  DEFAULT_SETTINGS,
   isBillingProblem,
   normalizePath,
   parseTodo,
@@ -11,6 +12,7 @@ import {
   testWeakening,
   todoHeadingProblems,
   validateItems,
+  workPrompt,
 } from '../hooks/lib'
 
 const BODY = `- how: Use the standard library only, because zero dependencies.
@@ -280,4 +282,11 @@ test('agentText reads content blocks only', () => {
 test('testWeakening notices a test file renamed out of the tests', () => {
   const diff = 'diff --git a/tests/a.test.ts b/src/a.ts\nsimilarity index 90%\nrename from tests/a.test.ts\nrename to src/a.ts\n'
   expect(testWeakening(diff).join()).toContain('moved out of the tests')
+})
+
+test('work prompt asks for the Reviewed-clean line at PR creation and after a CI fix', () => {
+  const it = parseTodo(item('T-001', 'todo'))[0]!
+  const p = workPrompt(it, DEFAULT_SETTINGS, null)
+  expect(p).toContain('Reviewed-clean: <output of git rev-parse HEAD>')
+  expect(p).toContain('gh pr edit <n> --body')
 })
