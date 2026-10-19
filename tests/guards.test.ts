@@ -16,7 +16,7 @@ function files(isRunning: boolean): Record<string, string> {
   return {
     '.factory/settings.json': SETTINGS,
     '.factory/todo.md': TODO,
-    '.factory/state.json': JSON.stringify({ approved: true, approvedHash: hash, autopilot: isRunning, current: 'T-001', review: { sha: SHA, danger: 0, medium: 0 } }),
+    '.factory/state.json': JSON.stringify({ approved: true, approvedHash: hash, autopilot: isRunning, current: 'T-001', review: { sha: SHA, danger: 0, medium: 0, security: 0 } }),
   }
 }
 

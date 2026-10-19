@@ -46,7 +46,7 @@ export type Settings = {
   askNextPhase: boolean
 }
 
-export type ReviewMark = { sha: string; danger: number; medium: number }
+export type ReviewMark = { sha: string; danger: number; medium: number; security?: number }
 
 export type FactoryState = {
   approved: boolean
@@ -59,6 +59,7 @@ export type FactoryState = {
   review: ReviewMark | null
   reviewRounds: number
   reviewDeclined: string[]
+  reviewOpen: string[]
   reviewAgentId: string | null
   reviewAgentAt: number
   reviewWaitMs: number
@@ -116,6 +117,7 @@ export const DEFAULT_STATE: FactoryState = {
   review: null,
   reviewRounds: 0,
   reviewDeclined: [],
+  reviewOpen: [],
   reviewAgentId: null,
   reviewAgentAt: 0,
   reviewWaitMs: 0,
@@ -1031,16 +1033,38 @@ export const deny = (t: string): { deny: string } => ({ deny: safeLines(t) })
 export const REVIEW_TAG = '[FACTORY-REVIEW-AGENT]'
 
 export function parseReviewMarker(text: string): ReviewMark | null {
-  const all = [...text.matchAll(/FACTORY-REVIEW:\s*danger=(\d+)\s+medium=(\d+)\s+sha=([0-9a-f]{7,40})/gi)]
+  const all = [...text.matchAll(/FACTORY-REVIEW:\s*danger=(\d+)\s+medium=(\d+)(?:\s+security=(\d+))?\s+sha=([0-9a-f]{7,40})/gi)]
   const m = all[all.length - 1]
-  return m ? { danger: Number(m[1]), medium: Number(m[2]), sha: m[3]!.toLowerCase() } : null
+  if (!m) return null
+  const mark: ReviewMark = { danger: Number(m[1]), medium: Number(m[2]), sha: m[4]!.toLowerCase() }
+  if (m[3] !== undefined) mark.security = Number(m[3])
+  return mark
+}
+
+export function markClean(mark: ReviewMark): boolean {
+  return mark.danger === 0 && mark.medium === 0 && mark.security === 0
+}
+
+export function markCounts(mark: ReviewMark): string {
+  return `danger=${mark.danger} medium=${mark.medium} security=${mark.security ?? 'unreported'}`
+}
+
+export function markDetail(mark: ReviewMark): string {
+  return `${markCounts(mark)} sha=${mark.sha.slice(0, 7)}`
+}
+
+export const REREVIEW_FROM_ROUND = 2
+
+export function rereviewSection(last: ReviewMark | null, rounds: number, open: string[]): string {
+  if (!last || rounds < REREVIEW_FROM_ROUND || open.length === 0 || !/^[0-9a-f]{7,40}$/.test(last.sha)) return ''
+  return `\n\nThis is review round ${rounds + 1}. The earlier pass covered everything up to ${last.sha}; if that commit is not in this branch's history, ignore this paragraph and review the whole branch. First re-check each finding the earlier pass left open and report it again unless the code now fixes it:\n${open.map(o => `- ${o}`).join('\n')}\nThen review the fixes since then in full (\`git diff ${last.sha}..HEAD\`) and report problems that diff introduces; code that was already in ${last.sha} and was not flagged is Pre-existing, never counts, and is not reported again. When you report a problem, name its class (for example "unchecked input on every handler") and list every instance in the diff so the author fixes them all in one round.`
 }
 
 export const MAX_DECLINED = 20
 
-export function declinedLines(text: string): string[] {
+export function declinedLines(text: string, tag = 'DECLINED'): string[] {
   const out: string[] = []
-  for (const m of text.matchAll(/^[ \t]*FACTORY-DECLINED:[ \t]*(.+)$/gim)) {
+  for (const m of text.matchAll(new RegExp(`^[ \\t]*FACTORY-${tag}:[ \\t]*(.+)$`, 'gim'))) {
     const line = cleanText(m[1]!).slice(0, 200)
     if (line && !out.includes(line)) out.push(line)
   }
@@ -1060,7 +1084,7 @@ export function declinedSection(declined: string[]): string {
 }
 
 export function isReviewClean(mark: ReviewMark | null, headSha: string): boolean {
-  if (!mark || mark.danger !== 0 || mark.medium !== 0) return false
+  if (!mark || !markClean(mark)) return false
   const head = headSha.trim().toLowerCase()
   return head.length >= 7 && (head.startsWith(mark.sha) || mark.sha.startsWith(head))
 }
@@ -1088,7 +1112,7 @@ export function isReviewPending(state: Pick<FactoryState, 'reviewAgentId' | 'rev
 
 export type ReviewAction =
   | { action: 'ignore' }
-  | { action: 'record'; mark: ReviewMark; declined: string[] }
+  | { action: 'record'; mark: ReviewMark; declined: string[]; open: string[] }
   | { action: 'unavailable' }
   | { action: 'clear' }
 
@@ -1108,23 +1132,25 @@ export function decideReviewAnswer(
 ): ReviewAction {
   if (!state.approved || !hasItem || state.reviewAgentId === null || agentId !== state.reviewAgentId) return { action: 'ignore' }
   const mark = parseReviewMarker(answer)
-  if (mark) return { action: 'record', mark, declined: declinedLines(answer) }
+  if (mark) return { action: 'record', mark, declined: declinedLines(answer), open: declinedLines(answer, 'OPEN') }
   if (/FACTORY-REVIEW:\s*unavailable/i.test(answer)) return { action: 'unavailable' }
   return final ? { action: 'clear' } : { action: 'ignore' }
 }
 
 export function reviewAgentPrompt(s: Settings, branch: string): string {
   return `${REVIEW_TAG} You are an independent code reviewer with a fresh context. You have not seen how this code was written.
-Repository branch: ${branch}, to be merged into ${s.baseBranch}. Read .factory/design.md and the item's acceptance criteria in .factory/todo.md for intent.
+Repository branch: ${branch}, to be merged into ${s.baseBranch}. Read .factory/design.md and the item's acceptance criteria in .factory/todo.md for intent. Read CLAUDE.md and REVIEW.md (repo root, and next to the files the diff touches) when they exist and apply REVIEW.md: what failure means here, paths to skip, a cap on nits. Every finding cites file:line as evidence.
 
 Loop until clean:
-1. Run the slash command ${s.reviewCommand} on the changes of this branch against origin/${s.baseBranch} (use the Skill tool if it is not directly runnable) so it reviews and fixes them.
-2. Re-run the full test suite (${s.testCmd.join(' ')}) and commit the fixes with clear messages.
-3. Repeat step 1 on the new state. Stop only when a full pass reports no danger/critical/high findings and no medium findings left unresolved. At most ${s.maxReviewRounds} passes; do not weaken or delete tests to get there.
+1. Run the slash command ${s.reviewCommand} on the changes of this branch against origin/${s.baseBranch} (use the Skill tool if it is not directly runnable) so it reviews and fixes them. A finding counts only after a separate verifier (a fresh agent that sees just the finding and the code) failed to refute it by running or tracing it; drop what the verifier refutes. Tag each surviving finding Important (a real defect this change introduces or exposes), Nit, or Pre-existing (code the diff does not touch and does not make reachable). Only Important findings count as danger (wrong output, crash, security hole or data loss reachable on real inputs) or medium (real bug with narrow or latent blast radius, or a missing test on a delete, privacy, security or payment path); Nit and Pre-existing never count and are listed once, never chased.
+2. Run a separate security pass with /security-review on the same changes (or your own focused pass on injection, authz, secrets, unsafe deserialization and path handling if that command is missing). Every confirmed finding that is not a false positive counts toward security; fix it or write the false-positive reason in the commit message.
+3. Re-run the full test suite (${s.testCmd.join(' ')}) and commit the fixes with clear messages.
+4. Repeat from step 1 on the new state. Stop only when a full pass reports no danger and no medium findings and the security pass has none open. At most ${s.maxReviewRounds} passes; do not weaken or delete tests to get there.
 
 Before the final line, write one line \`FACTORY-DECLINED: <file:line> <one-line reason>\` for each medium finding you chose not to fix. The factory hands that list to the next reviewer so it is not reported again.
+Also write one line \`FACTORY-OPEN: <file:line> <one-line summary>\` for every danger, medium or security finding still unresolved in your last pass (the same findings your counts report). The factory hands that list to the next reviewer so a later diff-only pass still re-checks them.
 Finish your answer with exactly one final line, using the output of \`git rev-parse HEAD\` after your last commit and the counts of unresolved findings from your last pass:
-FACTORY-REVIEW: danger=<n> medium=<n> sha=<HEAD sha>
+FACTORY-REVIEW: danger=<n> medium=<n> security=<n> sha=<HEAD sha>
 If ${s.reviewCommand} does not exist or cannot run, instead write exactly: FACTORY-REVIEW: unavailable`
 }
 
@@ -1141,7 +1167,7 @@ Do this:
    d. Versions: which version milestones exist (for example 0.1 walking skeleton, 0.2 core features, 1.0 launch), what each contains, and WHICH VERSION THE LOOP MUST STOP AFTER. Whether to cut a GitHub release when that version is complete.
    e. Verification: the exact commands that run the whole unit/integration suite, BUILD the app locally, and run the END-TO-END tests (for a web app: the e2e tool such as Playwright and how it starts the app; for an iOS/macOS app: xcodebuild build and test commands, simulator and UI tests). Which item types need e2e. What is not testable.
    f. CI and branch protection: does CI exist, what does it run, must it pass before merge. If it does not exist, add a first todo item to create it. Is branch protection (PRs required, status checks required, no force-push, applies to admins) enabled on the base branch? Offer to set it up with gh as an early todo item; private repos on a free GitHub plan cannot have it.
-   g. Review: the loop reviews each branch with an independent agent running the slash command in settings.reviewCommand (default /review-fix) until no danger or medium findings remain. Confirm the command name.
+   g. Review: the loop reviews each branch with an independent agent running the slash command in settings.reviewCommand (default /review-fix) until no danger, medium or security findings remain; a separate security pass is part of it. Confirm the command name. Ask what failure means in this repo (for example "double charge", "wrong currency"), which paths the reviewer should skip (generated code, snapshots), the sensitive paths, and how many nits to allow; if the repo has no REVIEW.md, add an early docs todo item to write one from the answers, because reviewers read it.
    h. Git: base branch, merge method (squash/merge/rebase), anything protected. Context handling between items (clear, compact or none; default clear).
    i. When the loop is blocked or a decision turns out infeasible: the default is to mark the item blocked and continue with the next one.
    j. Spend: an optional US-dollar budget per run (settings.budgetUsd, 0 for none; the loop pauses when one run reaches it) and whether the factory should interview them about the next phase once every item is done (settings.askNextPhase, default true).
@@ -1185,8 +1211,8 @@ Work autonomously with no questions to the person. Follow this loop exactly:
 -----
 ${reviewAgentPrompt(s, branch)}
 -----
-If the Agent tool says the agent was launched in the background, end your turn and wait: its report arrives later as a message and the factory reads the FACTORY-REVIEW line from the reviewer's own final turn, so do not spawn a second reviewer. Its answer ends with a FACTORY-REVIEW line; the factory reads it and only lets the PR open when it shows danger=0 medium=0 for the current HEAD. If it shows findings you may spawn a new reviewer again (at most ${s.maxReviewRounds} rounds in total); if it is still not clean after that, write .factory/blocked/${item.id}.md and stop.
-7. Push the branch and open a PR: \`gh pr create --base ${s.baseBranch} --title "${item.id}: ${item.title}" --body "<what changed, decisions followed, tests, how you verified it locally>"\`. End the body with a last line \`Reviewed-clean: <output of git rev-parse HEAD>\` (the full SHA the clean review was for, after a blank line); it tells later review tooling that the review is already done. Before it opens, the factory itself runs${s.buildCmd.length > 0 ? ' the build,' : ''} the test suite${needsE2e ? ', the e2e tests' : ''}, checks that tests changed and that the review is clean for HEAD; fix what it reports and retry.
+If the Agent tool says the agent was launched in the background, end your turn and wait: its report arrives later as a message and the factory reads the FACTORY-REVIEW line from the reviewer's own final turn, so do not spawn a second reviewer. Its answer ends with a FACTORY-REVIEW line; the factory reads it and only lets the PR open when it shows danger=0 medium=0 security=0 for the current HEAD. If it shows findings you may spawn a new reviewer again (at most ${s.maxReviewRounds} rounds in total); if it is still not clean after that, write .factory/blocked/${item.id}.md and stop.
+7. Push the branch and open a PR: \`gh pr create --base ${s.baseBranch} --title "${item.id}: ${item.title}" --body "<what changed and the decisions followed>\n\n## Testing\n<tests and how you verified it locally>\n\n## Risk\n<what could break and how big the blast radius is>\n\n## How to revert\n<the exact revert step>"\`. End the body with a last line \`Reviewed-clean: <output of git rev-parse HEAD>\` (the full SHA the clean review was for, after a blank line); it tells later review tooling that the review is already done. Before it opens, the factory itself runs${s.buildCmd.length > 0 ? ' the build,' : ''} the test suite${needsE2e ? ', the e2e tests' : ''}, checks that tests changed and that the review is clean for HEAD; fix what it reports and retry.
 8. Wait for CI (\`gh pr checks <n> --watch\`). If a check fails, read the logs (\`gh run view --log-failed\`), fix, push and wait again (after any new commit the review must be re-run, and once it is clean again update the PR body with \`gh pr edit <n> --body\` so its Reviewed-clean line carries the new HEAD SHA). If the failure is a GitHub billing, payment or spending-limit problem (jobs never start), the factory stops the loop by itself; do not try to work around it. If you cannot get green after 5 fix rounds, write .factory/blocked/${item.id}.md, return to ${s.baseBranch} and stop.
 9. When CI is green: \`gh pr merge <n> --${s.mergeMethod} --delete-branch\`. The factory verifies the checks before it allows the merge.
 10. Finish on ${s.baseBranch}, up to date (\`git checkout ${s.baseBranch} && git pull --ff-only\`), working tree clean. Then end your turn with two lines: what merged, and anything the person should know. The factory will reset context and hand you the next item.
