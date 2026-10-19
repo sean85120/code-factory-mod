@@ -321,7 +321,7 @@ test('reviewer turns are counted as review tokens of the current item', async ($
   await $.tool.call({ tool: 'Agent', description: 'review', prompt: reviewAgentPrompt(parseSettings(fx.files['.factory/settings.json']!).settings, branchFor({ id: 'T-001', title: 'First' })), subagent_type: 'general-purpose' })
   await mainTurn($)
   fx.live.usd = 2.4
-  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}`, usage: usage('claude-sonnet-4-5', 200) })
+  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}`, usage: usage('claude-sonnet-4-5', 200) })
   const report = (await $.command.run({ command: 'factory-costs', args: '' } as never)).text
   expect(report).toMatch(/T-001\s+\$0\.40/)
   expect(report).toContain('sonnet-4-5 400')
@@ -742,7 +742,7 @@ for (const command of ['factory-pause', 'factory-stop']) {
     fx.live.usd = 3
     await mainTurn($)
     fx.live.usd = 6
-    await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` })
+    await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}` })
     expect(fx.state().autopilot).toBe(false)
     await handBack($, fx, 8)
     expect(await itemUsd($)).toMatch(/T-001\s+\$7\.00/)
@@ -755,7 +755,7 @@ test('a budget pause at the reviewer own turn keeps charging the hand-back turn,
   fx.live.usd = 2
   await mainTurn($)
   fx.live.usd = 6
-  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` })
+  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}` })
   expect(fx.state().autopilot).toBe(false)
   expect(fx.state().pausedReason).toContain('budget reached')
   await handBack($, fx, 9)
@@ -1796,7 +1796,7 @@ test('/factory-costs reset of this repo is refused while a factory turn or a rev
   expect(await resetText($)).toContain('Cannot reset acme/widget')
   await mainTurn($)
   expect(await resetText($)).toContain('Cannot reset acme/widget')
-  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` })
+  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}` })
   await $.prompt.submit({ text: 'review finished', origin: { kind: 'task-notification' } } as never)
   await mainTurn($)
   expect(await resetText($)).toContain('deleted')
@@ -1990,7 +1990,7 @@ test("with a review pending, the person's slash turn is cut out but the reviewer
   fx.live.usd = 9
   await mainTurn($, { turnId: 'tc' })
   fx.live.usd = 9.5
-  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` })
+  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}` })
   expect(fx.state().pausedReason ?? '').not.toContain('budget')
   expect(await itemUsd($)).toMatch(/T-001\s+\$1\.50/)
 })
@@ -2004,7 +2004,7 @@ test("a typed prompt during an open review mark closes it, so neither the person
   fx.live.usd = 9
   await mainTurn($)
   fx.live.usd = 9.5
-  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` })
+  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}` })
   expect(await itemUsd($)).toMatch(/T-001\s+\$1\.00/)
 })
 
@@ -2305,7 +2305,7 @@ test('a slash command that runs no model turn stops waiting for one after a shor
   fx.live.usd = 5
   await mainTurn($, { turnId: 'tx' })
   fx.live.usd = 5.5
-  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` })
+  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}` })
   expect(await itemUsd($)).toMatch(/T-001\s+\$4\.50/)
 })
 
@@ -2317,7 +2317,7 @@ test('a slash turn is cut out only when the completing turn is the one that star
   fx.live.usd = 5
   await mainTurn($, { turnId: 'other' })
   fx.live.usd = 5.5
-  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` })
+  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}` })
   expect(await itemUsd($)).toMatch(/T-001\s+\$4\.50/)
 })
 
@@ -2332,7 +2332,7 @@ test("another main turn completing while the person's slash turn runs is charged
   fx.live.usd = 9
   await mainTurn($, { turnId: 'tc' })
   fx.live.usd = 9.5
-  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` })
+  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}` })
   expect(await itemUsd($)).toMatch(/T-001\s+\$3\.50/)
 })
 
@@ -2361,7 +2361,7 @@ test("a hand-back that starts while the person's slash turn runs keeps the revie
   await $.prompt.submit({ text: '/compact', origin: { kind: 'composer' } } as never)
   await $.turn.start({ text: '/compact', turnId: 'tc' } as never)
   fx.live.usd = 3
-  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` })
+  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}` })
   await $.prompt.submit({ text: 'review finished', origin: { kind: 'task-notification' } } as never)
   fx.live.usd = 6
   await mainTurn($, { turnId: 'tc' })
@@ -2390,7 +2390,7 @@ test("a reviewer still spending while the person's slash turn ends under a hand-
   live.ticking = false
   const after = fx.live.usd
   fx.live.usd = after + 2
-  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}` })
+  await mainTurn($, { agentId: ID, answer: `FACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}` })
   await $.command.run({ command: 'factory-stop' } as never)
   const total = (after + 2 - 1).toFixed(2)
   expect(await itemUsd($)).toMatch(new RegExp(`T-001\\s+\\$${total.replace('.', '\\.')}`))

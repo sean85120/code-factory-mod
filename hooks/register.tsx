@@ -83,6 +83,10 @@ import {
   sanitizeDeclined,
   designFileSame,
   isReviewClean,
+  markClean,
+  markCounts,
+  markDetail,
+  rereviewSection,
   isReviewPending,
   reviewWindow,
   loopEventForBash,
@@ -172,7 +176,7 @@ async function readStateOnce($: Dollar): Promise<FactoryState | 'absent' | null>
   try {
     const raw = JSON.parse(text) as Partial<FactoryState>
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
-    return { ...DEFAULT_STATE, ...raw, events: sanitizeEvents(raw.events), reviewDeclined: sanitizeDeclined(raw.reviewDeclined), roadmapAsked: raw.roadmapAsked === true, unreadable: undefined }
+    return { ...DEFAULT_STATE, ...raw, events: sanitizeEvents(raw.events), reviewDeclined: sanitizeDeclined(raw.reviewDeclined), reviewOpen: sanitizeDeclined(raw.reviewOpen), roadmapAsked: raw.roadmapAsked === true, unreadable: undefined }
   } catch {
     return null
   }
@@ -957,7 +961,7 @@ async function advance($: Dollar): Promise<void> {
       }
       return
     }
-    state = { ...withEvent(state, now, { itemId: next.id, kind: 'started', detail: next.title }), current: next.id, attempts: 0, pausedReason: null, review: null, reviewRounds: 0, reviewDeclined: [] }
+    state = { ...withEvent(state, now, { itemId: next.id, kind: 'started', detail: next.title }), current: next.id, attempts: 0, pausedReason: null, review: null, reviewRounds: 0, reviewDeclined: [], reviewOpen: [] }
     if (!(await write(state))) return
     await refreshStatus($)
     if (hasMerged && (await live())) await resetContext($, settings)
@@ -1110,21 +1114,22 @@ async function guardWrite($: Dollar, path: string, agentId: string | undefined):
   return null
 }
 
-async function recordReview($: Dollar, itemId: string, mark: ReviewMark, maxRounds: number, declined: string[]): Promise<void> {
-  const isClean = mark.danger === 0 && mark.medium === 0
+async function recordReview($: Dollar, itemId: string, mark: ReviewMark, maxRounds: number, declined: string[], open: string[]): Promise<void> {
+  const isClean = markClean(mark)
   await markStage($, isClean ? 'reviewed' : 'commit')
   const ts = await stamp($)
   const saved = await patchState($, fresh => ({
-    ...withEvent(fresh, ts, { itemId, kind: 'review-verdict', detail: `danger=${mark.danger} medium=${mark.medium} sha=${mark.sha.slice(0, 7)}` }),
+    ...withEvent(fresh, ts, { itemId, kind: 'review-verdict', detail: markDetail(mark) }),
     review: mark,
     reviewDeclined: mergeDeclined(fresh.reviewDeclined, declined),
+    reviewOpen: isClean ? [] : mergeDeclined([], open),
     reviewRounds: isClean ? 0 : fresh.reviewRounds + 1,
     reviewAgentId: null,
     reviewAgentAt: 0,
   }))
   const rounds = saved?.reviewRounds ?? 0
   if (!isClean && rounds >= maxRounds) {
-    await $.fs.write(`${BLOCKED_DIR}/${itemId}.md`, `Review still found danger=${mark.danger} medium=${mark.medium} after ${rounds} rounds.\n`)
+    await $.fs.write(`${BLOCKED_DIR}/${itemId}.md`, `Review still found danger=${mark.danger} medium=${mark.medium} security=${mark.security ?? 'unreported'} after ${rounds} rounds.\n`)
     toast($, `factory: ${itemId} blocked, review never came back clean`, { timeoutMs: 8000 })
     await logEvent($, { itemId, kind: 'blocked', detail: `review not clean after ${rounds} rounds` })
   }
@@ -1145,7 +1150,7 @@ async function reviewerTurn($: Dollar, agentId: string, answer: string, final: b
       await pause($, snap.state, `${snap.settings.reviewCommand} is not available to the review agent`, false, { reviewAgentId: null, reviewAgentAt: 0 })
       return
     }
-    if (act.action === 'record') await recordReview($, item.id, act.mark, snap.settings.maxReviewRounds, act.declined)
+    if (act.action === 'record') await recordReview($, item.id, act.mark, snap.settings.maxReviewRounds, act.declined, act.open)
     else {
       const ts = await stamp($)
       const saved = await patchState($, fresh => ({
@@ -1778,7 +1783,7 @@ export const register: Register = (on, _options) => {
       }
       const mark = parseReviewMarker(text)
       if (mark) {
-        await recordReview($, item.id, mark, snap.settings.maxReviewRounds, declinedLines(text))
+        await recordReview($, item.id, mark, snap.settings.maxReviewRounds, declinedLines(text), declinedLines(text, 'OPEN'))
         return ran
       }
       if (/FACTORY-REVIEW:\s*unavailable/i.test(text)) {
@@ -1792,7 +1797,8 @@ export const register: Register = (on, _options) => {
 
   on('agent.spawn', async ($, e, next) => {
     if (!e.prompt.includes(REVIEW_TAG)) return next(e)
-    const extra = declinedSection((await readState($)).reviewDeclined)
+    const st = await readState($)
+    const extra = `${declinedSection(st.reviewDeclined)}${rereviewSection(st.review, st.reviewRounds, st.reviewOpen)}`
     return next(extra ? { ...e, prompt: `${e.prompt}${extra}` } : e)
   })
 
@@ -1889,7 +1895,7 @@ export const register: Register = (on, _options) => {
         const head = await headSha($)
         if (!isReviewClean(snap.state.review, head)) {
           const last = snap.state.review
-          return deny(`code-factory: no clean independent review for HEAD ${head.slice(0, 7)}${last ? ` (last review: danger=${last.danger} medium=${last.medium} at ${last.sha.slice(0, 7)})` : ''}. Run step 6: spawn the fresh review agent with the exact prompt from the work item and do not commit after it.`)
+          return deny(`code-factory: no clean independent review for HEAD ${head.slice(0, 7)}${last ? ` (last review: ${markCounts(last)} at ${last.sha.slice(0, 7)})` : ''}. Run step 6: spawn the fresh review agent with the exact prompt from the work item and do not commit after it.`)
         }
       }
       if (settings.buildCmd.length > 0) {

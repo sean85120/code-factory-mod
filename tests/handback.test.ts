@@ -13,22 +13,22 @@ test('the agent id is read from the launch acknowledgement', () => {
 })
 
 test('the pending reviewer own answer decides: record, unavailable, or clear when it has no verdict', () => {
-  expect(decideReviewAnswer(`Clean.\nFACTORY-REVIEW: danger=0 medium=0 sha=${SHA}`, ID, pending, true)).toEqual({ action: 'record', mark: { danger: 0, medium: 0, sha: SHA }, declined: [] })
-  expect(decideReviewAnswer(`FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}`, ID, { ...pending, autopilot: false }, true)).toEqual({ action: 'record', mark: { danger: 0, medium: 0, sha: SHA }, declined: [] })
+  expect(decideReviewAnswer(`Clean.\nFACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}`, ID, pending, true)).toEqual({ action: 'record', mark: { danger: 0, medium: 0, security: 0, sha: SHA }, declined: [], open: [] })
+  expect(decideReviewAnswer(`FACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}`, ID, { ...pending, autopilot: false }, true)).toEqual({ action: 'record', mark: { danger: 0, medium: 0, security: 0, sha: SHA }, declined: [], open: [] })
   expect(decideReviewAnswer('FACTORY-REVIEW: unavailable', ID, pending, true)).toEqual({ action: 'unavailable' })
   expect(decideReviewAnswer('ran out of turns', ID, pending, true)).toEqual({ action: 'clear' })
   expect(decideReviewAnswer('', ID, pending, true)).toEqual({ action: 'clear' })
   expect(decideReviewAnswer('The reviewer is still running, so I will wait.', ID, pending, true, false)).toEqual({ action: 'ignore' })
-  expect(decideReviewAnswer(`FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}`, ID, pending, true, false)).toEqual({ action: 'record', mark: { danger: 0, medium: 0, sha: SHA }, declined: [] })
+  expect(decideReviewAnswer(`FACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}`, ID, pending, true, false)).toEqual({ action: 'record', mark: { danger: 0, medium: 0, security: 0, sha: SHA }, declined: [], open: [] })
 })
 
 test('a numeric verdict wins over a quoted unavailable instruction', () => {
   const quoted = `If it cannot run write FACTORY-REVIEW: unavailable\nFACTORY-REVIEW: danger=1 medium=2 sha=${SHA}`
-  expect(decideReviewAnswer(quoted, ID, pending, true)).toEqual({ action: 'record', mark: { danger: 1, medium: 2, sha: SHA }, declined: [] })
+  expect(decideReviewAnswer(quoted, ID, pending, true)).toEqual({ action: 'record', mark: { danger: 1, medium: 2, sha: SHA }, declined: [], open: [] })
 })
 
 test('any other agent, no pending reviewer, an unapproved plan or no current item is ignored', () => {
-  const ok = `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}`
+  const ok = `FACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}`
   expect(decideReviewAnswer(ok, 'someoneelse1', pending, true)).toEqual({ action: 'ignore' })
   expect(decideReviewAnswer(ok, ID, { ...pending, reviewAgentId: null }, true)).toEqual({ action: 'ignore' })
   expect(decideReviewAnswer(ok, ID, { ...pending, approved: false }, true)).toEqual({ action: 'ignore' })
@@ -231,7 +231,7 @@ test('design instructions attach without an approved plan and survive a failed a
 })
 
 const reviewerTurn = ($: any, over: Record<string, unknown> = {}) =>
-  $.turn.complete({ answer: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}`, durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer', agentId: ID, ...over })
+  $.turn.complete({ answer: `FACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}`, durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer', agentId: ID, ...over })
 
 test("the reviewer's own final turn records the verdict and clears the pending id", async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
@@ -241,7 +241,7 @@ test("the reviewer's own final turn records the verdict and clears the pending i
   expect(JSON.parse(files['state.json']!).reviewAgentId).toBe(ID)
   await reviewerTurn($)
   const saved = JSON.parse(files['state.json']!)
-  expect(saved.review).toEqual({ danger: 0, medium: 0, sha: SHA })
+  expect(saved.review).toEqual({ danger: 0, medium: 0, security: 0, sha: SHA })
   expect(saved.reviewAgentId).toBeNull()
 })
 
@@ -282,7 +282,7 @@ test('a reviewer turn that ends while its own helpers run keeps the review pendi
   expect(saved.review ?? null).toBeNull()
   await reviewerTurn($)
   saved = JSON.parse(files['state.json']!)
-  expect(saved.review).toEqual({ danger: 0, medium: 0, sha: SHA })
+  expect(saved.review).toEqual({ danger: 0, medium: 0, security: 0, sha: SHA })
   expect(saved.reviewAgentId).toBeNull()
 })
 
@@ -328,8 +328,20 @@ test('commits are free again once the review has reported', async ($, on) => {
   setup($, on, { autopilot: true, current: 'T-001' }, `Async agent launched successfully.\nagentId: ${ID}`)
   on('turn.complete', () => ({ text: '' }))
   await reviewSpawn($)
-  await reviewerTurn($, { answer: `FACTORY-REVIEW: danger=1 medium=0 sha=${SHA}` })
+  await reviewerTurn($, { answer: `FACTORY-REVIEW: danger=1 medium=0 security=0 sha=${SHA}` })
   expect(JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'git commit -m fix' } as never))).not.toContain('review agent is still running')
+})
+
+test('an open security finding counts as a round, is stored and its open lines are kept', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const files = setup($, on, { autopilot: true, current: 'T-001' }, `Async agent launched successfully.\nagentId: ${ID}`)
+  on('turn.complete', () => ({ text: '' }))
+  await reviewSpawn($)
+  await reviewerTurn($, { answer: `FACTORY-OPEN: a.ts:3 injectable\nFACTORY-REVIEW: danger=0 medium=0 security=1 sha=${SHA}` })
+  const saved = JSON.parse(files['state.json']!)
+  expect(saved.reviewRounds).toBe(1)
+  expect(saved.review.security).toBe(1)
+  expect(saved.reviewOpen).toEqual(['a.ts:3 injectable'])
 })
 
 test('shortening reviewTimeoutMs after the launch does not open the commit window', async ($, on) => {
@@ -447,7 +459,7 @@ test('a completed review whose text mimics a launch does not set a pending revie
 
 test('a launch result never carries a verdict even if its text does', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
-  const files = setup($, on, { autopilot: true, current: 'T-001' }, '', {}, { status: 'async_launched', agentId: ID, description: `FACTORY-REVIEW: danger=0 medium=0 sha=${SHA}`, prompt: 'FACTORY-REVIEW: unavailable', outputFile: '/tmp/x' })
+  const files = setup($, on, { autopilot: true, current: 'T-001' }, '', {}, { status: 'async_launched', agentId: ID, description: `FACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}`, prompt: 'FACTORY-REVIEW: unavailable', outputFile: '/tmp/x' })
   await reviewSpawn($)
   const saved = JSON.parse(files['state.json']!)
   expect(saved.reviewAgentId).toBe(ID)

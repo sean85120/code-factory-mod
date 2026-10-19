@@ -61,7 +61,7 @@ function fixture($: any, on: any, toolIsError = false, branch = 'factory/t-001-f
   const files: Record<string, string> = {
     '.factory/settings.json': settings,
     '.factory/todo.md': TODO,
-    '.factory/state.json': JSON.stringify({ approved: true, approvedHash: hash, autopilot: true, current: 'T-001', approvedDone: ['T-002'], review: { sha: SHA, danger: 0, medium: 0 } }),
+    '.factory/state.json': JSON.stringify({ approved: true, approvedHash: hash, autopilot: true, current: 'T-001', approvedDone: ['T-002'], review: { sha: SHA, danger: 0, medium: 0, security: 0 } }),
   }
   const key = (path: string) => Object.keys(files).find(k => path.endsWith(`/${k}`))
   on('fs.exists', (_: unknown, e: { path: string }) => ({ value: key(e.path) !== undefined }))
@@ -135,14 +135,14 @@ const spawnReview = ($: any) =>
   })
 
 test('a clean review moves the band to PR', async ($, on) => {
-  fixture($, on, false, 'factory/t-001-first', `ok\nFACTORY-REVIEW: danger=0 medium=0 sha=${SHA}`)
+  fixture($, on, false, 'factory/t-001-first', `ok\nFACTORY-REVIEW: danger=0 medium=0 security=0 sha=${SHA}`)
   await $.command.run({ command: 'factory-status' } as never)
   await spawnReview($)
   expect(await stageIs($, 'PR')).toBe(true)
 })
 
 test('a review with findings sends the band back to build', async ($, on) => {
-  fixture($, on, false, 'factory/t-001-first', `no\nFACTORY-REVIEW: danger=1 medium=0 sha=${SHA}`)
+  fixture($, on, false, 'factory/t-001-first', `no\nFACTORY-REVIEW: danger=1 medium=0 security=0 sha=${SHA}`)
   await $.command.run({ command: 'factory-status' } as never)
   await $.tool.call({ tool: 'Bash', command: 'gh pr create --base main --title t --body b' })
   expect(await stageIs($, 'CI')).toBe(true)

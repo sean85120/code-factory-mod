@@ -1,13 +1,18 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
+  DEFAULT_SETTINGS,
   compareVersions,
+  declinedLines,
   isBillingProblem,
   isReviewClean,
+  markDetail,
   parseReviewMarker,
   parseSettings,
   parseTodo,
   pickNext,
+  reviewAgentPrompt,
+  rereviewSection,
   validateItems,
 } from '../hooks/lib'
 
@@ -86,12 +91,44 @@ test('billing failures are recognised, ordinary failures are not', () => {
 })
 
 test('the review marker must be clean and for the current HEAD', () => {
-  const text = 'Review done.\nFACTORY-REVIEW: danger=1 medium=2 sha=abc1234\nmore\nFACTORY-REVIEW: danger=0 medium=0 sha=ABC1234def'
+  const text = 'Review done.\nFACTORY-REVIEW: danger=1 medium=2 sha=abc1234\nmore\nFACTORY-REVIEW: danger=0 medium=0 security=0 sha=ABC1234def'
   const mark = parseReviewMarker(text)
-  expect(mark).toEqual({ danger: 0, medium: 0, sha: 'abc1234def' })
+  expect(mark).toEqual({ danger: 0, medium: 0, security: 0, sha: 'abc1234def' })
   expect(isReviewClean(mark, 'abc1234def5678')).toBe(true)
   expect(isReviewClean(mark, 'ffff000011112222')).toBe(false)
   expect(isReviewClean({ danger: 0, medium: 1, sha: 'abc1234def' }, 'abc1234def')).toBe(false)
   expect(isReviewClean(null, 'abc1234def')).toBe(false)
   expect(parseReviewMarker('FACTORY-REVIEW: danger=<n> medium=<n> sha=<HEAD sha>')).toBeNull()
+})
+
+test('a marker without the security count or with an open security finding is not clean', () => {
+  const legacy = parseReviewMarker('FACTORY-REVIEW: danger=0 medium=0 sha=abc1234def')
+  expect(legacy).toEqual({ danger: 0, medium: 0, sha: 'abc1234def' })
+  expect(isReviewClean(legacy, 'abc1234def')).toBe(false)
+  const open = parseReviewMarker('FACTORY-REVIEW: danger=0 medium=0 security=2 sha=abc1234def')
+  expect(open?.security).toBe(2)
+  expect(isReviewClean(open, 'abc1234def')).toBe(false)
+  expect(markDetail(open!)).toBe('danger=0 medium=0 security=2 sha=abc1234')
+})
+
+test('diff-only re-review section needs round 2, a valid sha and the open findings', () => {
+  const last = { danger: 0, medium: 1, security: 0, sha: 'abc1234def' }
+  const open = ['foo.ts:10 missing validation']
+  expect(rereviewSection(last, 1, open)).toBe('')
+  expect(rereviewSection(null, 3, open)).toBe('')
+  expect(rereviewSection({ ...last, sha: 'x; rm -rf' }, 3, open)).toBe('')
+  expect(rereviewSection(last, 3, [])).toBe('')
+  const s = rereviewSection(last, 2, open)
+  expect(s).toContain('git diff abc1234def..HEAD')
+  expect(s).toContain('- foo.ts:10 missing validation')
+  expect(s).toContain('Pre-existing')
+})
+
+test('FACTORY-OPEN lines are read from the answer', () => {
+  expect(declinedLines('x\nFACTORY-OPEN: a.ts:1 bad\n FACTORY-DECLINED: b.ts:2 ok', 'OPEN')).toEqual(['a.ts:1 bad'])
+})
+
+test('the reviewer prompt asks for the security count, verifier votes, tags and REVIEW.md', () => {
+  const p = reviewAgentPrompt(DEFAULT_SETTINGS, 'factory/t-001-x')
+  for (const needle of ['REVIEW.md', 'verifier', 'Pre-existing', '/security-review', 'FACTORY-REVIEW: danger=<n> medium=<n> security=<n> sha=']) expect(p).toContain(needle)
 })

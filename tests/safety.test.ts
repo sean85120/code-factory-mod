@@ -96,7 +96,7 @@ function setup($: any, on: any, fx: Fx): Record<string, string> {
     '.factory/settings.json': settingsText,
     '.factory/todo.md': TODO,
     '.factory/design.md': '# Design\n\n## Decisions\n- chose x\n',
-    '.factory/state.json': JSON.stringify({ approved: true, approvedHash: hash, autopilot: true, current: 'T-001', review: { sha: SHA, danger: 0, medium: 0 } }),
+    '.factory/state.json': JSON.stringify({ approved: true, approvedHash: hash, autopilot: true, current: 'T-001', review: { sha: SHA, danger: 0, medium: 0, security: 0 } }),
   }
   if (fx.lock !== undefined) files['.factory/lock.json'] = JSON.stringify(fx.lock)
   const writes: Record<string, string> = {}
