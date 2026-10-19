@@ -84,6 +84,7 @@ import {
   designFileSame,
   isReviewClean,
   markClean,
+  noteReview,
   markCounts,
   markDetail,
   rereviewSection,
@@ -151,6 +152,22 @@ async function run($: Dollar, argv: string[], timeoutMs = 60000): Promise<Run> {
   } catch (err) {
     return { exitCode: 127, stdout: '', stderr: `could not run ${argv.slice(0, 3).join(' ')} (not installed, or it ran past ${Math.round(timeoutMs / 1000)}s): ${String(err)}` }
   }
+}
+
+async function verifyBase($: Dollar, settings: Settings, live: () => Promise<boolean>): Promise<string | null> {
+  const base = settings.baseBranch
+  await run($, ['git', 'fetch', '--', 'origin', base])
+  const here = await run($, ['git', 'rev-parse', 'HEAD'])
+  const there = await run($, ['git', 'rev-parse', `origin/${base}`])
+  if (here.exitCode !== 0 || there.exitCode !== 0 || here.stdout.trim() !== there.stdout.trim()) return null
+  if (!(await live())) return null
+  if (settings.buildCmd.length > 0) {
+    const built = await run($, settings.buildCmd, settings.testTimeoutMs)
+    if (built.exitCode !== 0) return `the build fails (${settings.buildCmd.join(' ')}, exit ${built.exitCode})`
+    if (!(await live())) return null
+  }
+  const tests = await run($, settings.testCmd, settings.testTimeoutMs)
+  return tests.exitCode === 0 ? null : `the test suite fails (${settings.testCmd.join(' ')}, exit ${tests.exitCode})`
 }
 
 async function readText($: Dollar, path: string): Promise<string | null> {
@@ -821,7 +838,7 @@ async function advance($: Dollar): Promise<void> {
     const items = effectiveItems(snap)
     const base = settings.baseBranch
     let hasMerged = false
-    const now = await stamp($)
+    let now = await stamp($)
 
     if (state.current && state.reviewAgentId) {
       if (reviewWaiting(state, settings, await $.clock.now())) return
@@ -881,6 +898,9 @@ async function advance($: Dollar): Promise<void> {
             })
             hasMerged = true
             toast($, `factory: ${item.id} merged`)
+            const red = (await live()) ? await verifyBase($, settings, live) : null
+            if (red) return await halt(`${base} is red after ${item.id} merged: ${red}; fix ${base}, then /factory-start`)
+            now = await stamp($)
           } else why = `${item.id} is marked done but no merged PR from a factory/${item.id.toLowerCase()}-* branch exists.`
         }
         if (why) {
@@ -1127,6 +1147,7 @@ async function recordReview($: Dollar, itemId: string, mark: ReviewMark, maxRoun
     reviewAgentId: null,
     reviewAgentAt: 0,
   }))
+  await editCosts($, (rc, c) => ({ costs: noteReview(rc, itemId, c.now, mark), value: null }))
   const rounds = saved?.reviewRounds ?? 0
   if (!isClean && rounds >= maxRounds) {
     await $.fs.write(`${BLOCKED_DIR}/${itemId}.md`, `Review still found danger=${mark.danger} medium=${mark.medium} security=${mark.security ?? 'unreported'} after ${rounds} rounds.\n`)
