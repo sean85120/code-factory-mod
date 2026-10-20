@@ -326,6 +326,8 @@ test('reviewer turns are counted as review tokens of the current item', async ($
   expect(report).toMatch(/T-001\s+\$0\.40/)
   expect(report).toContain('sonnet-4-5 400')
   expect(report).toContain('review 100%')
+  expect(report).toContain('review: 1 verdict(s) over 1 item(s), 1.00 per item')
+  expect(report).toContain('0 security finding(s) reported')
   const kinds = fx.state().events.map((e: { kind: string }) => e.kind)
   expect(kinds).toContain('review-launched')
   expect(kinds).toContain('review-verdict')
@@ -1300,6 +1302,53 @@ test('a pause after advance() picked the next item skips the context reset', asy
   expect(fx.state().autopilot).toBe(false)
   expect(ran).not.toContain('clear')
   expect(prompts(fx).some(x => x.startsWith('CODE FACTORY: work item T-002'))).toBe(false)
+})
+
+async function mergedThenVerify($: any, on: any, failCmd: string | null, settings: Record<string, unknown> = {}) {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { todo: MERGED_TODO, merged: ['T-001'], settings, state: { autopilot: true, current: 'T-001' }, hook: (w: string) => (failCmd !== null && w === failCmd ? { exitCode: 1 } : undefined) })
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1500)
+  return fx
+}
+
+test('a merge that leaves the base branch red pauses the loop with that reason', async ($, on) => {
+  const fx = await mergedThenVerify($, on, 'unit')
+  expect(fx.state().autopilot).toBe(false)
+  expect(fx.state().pausedReason).toContain('main is red after T-001 merged')
+  expect(fx.state().pausedReason).toContain('test suite fails')
+  expect(fx.state().mergedIds).toContain('T-001')
+})
+
+test('a failing build on the base branch after a merge pauses too', async ($, on) => {
+  const fx = await mergedThenVerify($, on, 'make', { buildCmd: ['make'] })
+  expect(fx.state().pausedReason).toContain('the build fails')
+})
+
+test('a merge onto a green base branch runs the test suite and carries on', async ($, on) => {
+  const ok = await mergedThenVerify($, on, null)
+  expect(ok.state().pausedReason ?? '').not.toContain('is red')
+  expect(ok.live.ran).toContain('unit')
+})
+
+test('a stop that lands while the post-merge check starts runs no build or tests', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, {
+    todo: MERGED_TODO,
+    merged: ['T-001'],
+    settings: { buildCmd: ['make'] },
+    state: { autopilot: true, current: 'T-001' },
+    hook: async (w: string) => {
+      if (w.startsWith('git fetch')) await $.command.run({ command: 'factory-stop' } as never)
+      return undefined
+    },
+  })
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1500)
+  expect(fx.live.ran.some((c: string) => c.startsWith('git fetch -- origin'))).toBe(true)
+  expect(fx.live.ran).not.toContain('make')
+  expect(fx.live.ran).not.toContain('unit')
+  expect(fx.state().autopilot).toBe(false)
 })
 
 const VERSIONED = `## T-001 [chore] First

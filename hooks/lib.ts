@@ -1667,6 +1667,8 @@ export type ItemCost = {
   models: Record<string, number[]>
   phases: Partial<Record<CostPhase, number>>
   attempts: number
+  reviews: number
+  securityFound: number
   ms: number
   firstAt: number
   lastAt: number
@@ -1719,6 +1721,8 @@ export function normalizeRepoCosts(raw: unknown, repo: string): RepoCosts {
       models,
       phases,
       attempts: num(it.attempts),
+      reviews: num(it.reviews),
+      securityFound: num(it.securityFound),
       ms: num(it.ms),
       firstAt: num(it.firstAt),
       lastAt: num(it.lastAt),
@@ -1755,7 +1759,7 @@ function itemIn(rc: RepoCosts, key: string, title: string, now: number): ItemCos
     if (title && !have.title) have.title = cleanText(title)
     return have
   }
-  const fresh: ItemCost = { title: cleanText(title), usd: 0, models: {}, phases: {}, attempts: 0, ms: 0, firstAt: now, lastAt: now, outcome: '' }
+  const fresh: ItemCost = { title: cleanText(title), usd: 0, models: {}, phases: {}, attempts: 0, reviews: 0, securityFound: 0, ms: 0, firstAt: now, lastAt: now, outcome: '' }
   rc.items[key] = fresh
   return fresh
 }
@@ -1844,6 +1848,26 @@ export function noteItem(input: RepoCosts, key: string, title: string, now: numb
   return prune(rc, now)
 }
 
+export function noteReview(input: RepoCosts, key: string, now: number, mark: ReviewMark): RepoCosts {
+  const rc = clone(input)
+  const it = itemIn(rc, key, '', now)
+  it.reviews += 1
+  it.securityFound += mark.security ?? 0
+  it.lastAt = now
+  return prune(rc, now)
+}
+
+export function reviewStatsLine(rc: RepoCosts): string | null {
+  const rows = Object.values(rc.items).filter(it => it.reviews > 0)
+  if (rows.length === 0) return null
+  const verdicts = rows.reduce((a, it) => a + it.reviews, 0)
+  const merged = rows.filter(it => it.outcome === 'merged')
+  const first = merged.filter(it => it.reviews === 1).length
+  const security = rows.reduce((a, it) => a + it.securityFound, 0)
+  const firstPass = merged.length > 0 ? `${Math.round((first / merged.length) * 100)}% of ${merged.length} merged item(s) passed review on the first verdict` : 'no merged item yet'
+  return `  review: ${verdicts} verdict(s) over ${rows.length} item(s), ${(verdicts / rows.length).toFixed(2)} per item, ${firstPass}, ${security} security finding(s) reported`
+}
+
 export function rebaseMark(input: RepoCosts, owner: string, nowUsd: number | null, now: number): RepoCosts {
   const rc = clone(input)
   const mark = rc.marks[owner]
@@ -1919,7 +1943,8 @@ function repoBlock(rc: RepoCosts, isCurrent: boolean): string[] {
     .sort((a, b) => b[1].usd - a[1].usd)
     .slice(0, 3)
     .map(([k, it]) => `${itemLabel(k)} ${formatUsd(it.usd)} (${pct(it.usd, rc.usd)})${it.title ? ` ${it.title.slice(0, 40)}` : ''}`)
-  return [head, runLine, ...itemTable(rc), ...(top.length > 0 ? [`  most expensive: ${top.join('; ')}`] : [])]
+  const review = reviewStatsLine(rc)
+  return [head, runLine, ...(review ? [review] : []), ...itemTable(rc), ...(top.length > 0 ? [`  most expensive: ${top.join('; ')}`] : [])]
 }
 
 export function parseCostsArgs(args: string): { reset: string | null; filter: string } {

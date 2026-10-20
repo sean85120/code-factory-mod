@@ -15,6 +15,8 @@ import {
   liveSpend,
   normalizeRepoCosts,
   noteItem,
+  noteReview,
+  reviewStatsLine,
   parseCostsArgs,
   parseSettings,
   parseTodo,
@@ -151,7 +153,7 @@ test('a damaged ledger is read back as an empty one, never a crash', () => {
 
 test('the ledger stays bounded: old items, runs and stale marks are dropped', () => {
   let rc: RepoCosts = emptyRepoCosts('r')
-  for (let i = 0; i < MAX_COST_ITEMS + 5; i++) rc.items[`T-${i}`] = { title: '', usd: 0, models: {}, phases: {}, attempts: 0, ms: 0, firstAt: i, lastAt: i, outcome: '' }
+  for (let i = 0; i < MAX_COST_ITEMS + 5; i++) rc.items[`T-${i}`] = { title: '', usd: 0, models: {}, phases: {}, attempts: 0, reviews: 0, securityFound: 0, ms: 0, firstAt: i, lastAt: i, outcome: '' }
   for (let i = 0; i < 30; i++) rc = startRun(rc, i, TREE)
   rc.marks.stale = { ...item, usd: 0, at: 0, tree: TREE }
   rc = noteItem(rc, 'T-999', 'x', 3 * 86400000, { attempt: true })
@@ -313,4 +315,23 @@ test('legacy untagged runs are still capped to the last 20 when loaded', () => {
   expect(rc.runs.length).toBe(20)
   expect(rc.runs.map(r => r.startedAt)).toEqual(Array.from({ length: 20 }, (_, i) => i + 10))
   expect(rc.runs.every(r => r.tree === '')).toBe(true)
+})
+
+test('review verdicts are counted per item and summarised', () => {
+  let rc: RepoCosts = emptyRepoCosts('acme/widget')
+  const mark = (security: number) => ({ danger: 0, medium: 0, security, sha: 'abc1234' })
+  rc = noteReview(rc, 'T-001', 10, mark(0))
+  rc = noteItem(rc, 'T-001', 'First', 11, { outcome: 'merged' })
+  rc = noteReview(rc, 'T-002', 12, mark(2))
+  rc = noteReview(rc, 'T-002', 13, mark(0))
+  rc = noteItem(rc, 'T-002', 'Second', 14, { outcome: 'merged' })
+  expect(rc.items['T-002']).toMatchObject({ reviews: 2, securityFound: 2 })
+  const line = reviewStatsLine(rc)!
+  expect(line).toContain('3 verdict(s) over 2 item(s)')
+  expect(line).toContain('1.50 per item')
+  expect(line).toContain('50% of 2 merged item(s) passed review on the first verdict')
+  expect(line).toContain('2 security finding(s)')
+  expect(reviewStatsLine(emptyRepoCosts('x'))).toBeNull()
+  expect(normalizeRepoCosts(JSON.parse(JSON.stringify(rc)), 'acme/widget').items['T-002']!.reviews).toBe(2)
+  expect(normalizeRepoCosts({ items: { 'T-009': { title: 'old' } } }, 'r').items['T-009']).toMatchObject({ reviews: 0, securityFound: 0 })
 })
