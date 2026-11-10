@@ -47,6 +47,12 @@ import {
   isRoadmapDone,
   releasePending,
   roadmapPrompt,
+  triagePrompt,
+  triageFilter,
+  guideReport,
+  guideControls,
+  journey,
+  nextHint,
   sanitizeEvents,
   settleCost,
   shouldAskRoadmap,
@@ -246,13 +252,14 @@ async function stamp($: Dollar): Promise<number> {
 }
 
 function pressControl($: Dollar, c: Control): void {
-  if (c.command === 'factory-start' && mainTurnOpen && !isFactoryTurn) {
-    toast($, 'factory: a turn is still running; start after it finishes, or type /factory-start')
+  const submits = c.command === 'factory-design' || c.command === 'factory-triage' || c.command === 'factory-roadmap'
+  if (((c.command === 'factory-start' || c.command === 'factory-approve') && mainTurnOpen && !isFactoryTurn) || (submits && mainTurnOpen)) {
+    toast($, `factory: a turn is still running; press again after it finishes, or type /${c.command}`)
     return
   }
   const args = c.args ?? ''
   const out =
-    c.command === 'factory-start' ? startCmd($) : c.command === 'factory-pause' ? pauseCmd($) : c.command === 'factory-stop' ? stopCmd($) : c.command === 'factory-skip' ? skipCmd($, args) : c.command === 'factory-doctor' ? doctorCmd($) : c.command === 'factory-retry' ? retryCmd($, args) : Promise.resolve({ text: `factory: unknown control ${c.command}` })
+    c.command === 'factory-start' ? startCmd($) : c.command === 'factory-pause' ? pauseCmd($) : c.command === 'factory-stop' ? stopCmd($) : c.command === 'factory-skip' ? skipCmd($, args) : c.command === 'factory-doctor' ? doctorCmd($) : c.command === 'factory-retry' ? retryCmd($, args) : c.command === 'factory-design' ? designCmd($, args) : c.command === 'factory-approve' ? approveCmd($) : c.command === 'factory-triage' ? triageCmd($, args) : c.command === 'factory-roadmap' ? interviewCmd($, ROADMAP_INTERVIEW) : Promise.resolve({ text: `factory: unknown control ${c.command}` })
   void out.then(r => toast($, oneLine(r.text, 120))).catch(() => toast($, `factory: ${c.label} failed`))
 }
 
@@ -718,7 +725,7 @@ async function refreshOnce($: Dollar): Promise<void> {
         return JSON.stringify(prev) === JSON.stringify(next) ? prev : next
       })
     }
-    const text = snap.state.approved ? statusLine(shown) : snap.items.length > 0 ? 'factory: design not approved' : undefined
+    const text = snap.state.approved ? statusLine(shown) : snap.items.length > 0 ? 'factory: design drafted · /factory-approve when it is pushed · /factory for help' : undefined
     if (text !== lastStatusText) {
       lastStatusText = text
       status($, text)
@@ -977,7 +984,7 @@ async function advance($: Dollar): Promise<void> {
       await refreshStatus($)
       if (ask && epoch === loopEpoch && !(await lockedByOther($))) {
         if (hasMerged) await resetContext($, settings)
-        await startRoadmap($, items, state.mergedIds, settings, epoch)
+        await startInterview($, ROADMAP_INTERVIEW, items, state.mergedIds, settings, epoch)
       }
       return
     }
@@ -1002,20 +1009,20 @@ async function advance($: Dollar): Promise<void> {
   }
 }
 
-async function startRoadmap($: Dollar, items: readonly Item[], mergedIds: readonly string[], settings: Settings, epoch: number): Promise<void> {
+async function startInterview($: Dollar, iv: Interview, items: readonly Item[], mergedIds: readonly string[], settings: Settings, epoch: number): Promise<void> {
   if (epoch !== loopEpoch) return
   const costs = await readCosts($)
   if (epoch !== loopEpoch) return
-  await patchState($, s => ({ ...s, roadmapAsked: true }))
+  if (iv.markAsked) await patchState($, s => ({ ...s, roadmapAsked: true }))
   if (epoch !== loopEpoch) return
-  await drive($, { key: PLAN_KEY, kind: 'roadmap', title: 'next-phase interview' })
+  await drive($, { key: PLAN_KEY, kind: 'roadmap', title: iv.title })
   const at = await $.clock.now()
   if (epoch !== loopEpoch) {
     await settle($, false)
     return
   }
-  submit($, roadmapPrompt(items, mergedIds, costSummaryForPrompt(costs?.rc ?? null), settings), 'Code factory: the plan is done; next-phase interview', true, true, at)
-  void logEvent($, { itemId: null, kind: 'roadmap', detail: 'next-phase interview' })
+  submit($, iv.prompt(items, mergedIds, settings, costSummaryForPrompt(costs?.rc ?? null)), iv.label, true, true, at)
+  void logEvent($, { itemId: null, kind: 'roadmap', detail: iv.title })
 }
 
 // If a turn-complete never arrived (a failed advance, a swallowed error) the
@@ -1380,6 +1387,127 @@ async function doctorChecks($: Dollar): Promise<DoctorCheck[]> {
   return out
 }
 
+async function designCmd($: Dollar, args: string): Promise<{ text: string }> {
+  const running = await readState($)
+  if (running.autopilot) await pause($, running, 'design being amended; /factory-approve then /factory-start resumes')
+  await ensureGitignore($)
+  if ((await readText($, SETTINGS_PATH)) === null) {
+    await $.fs.write(SETTINGS_PATH, `${JSON.stringify(DEFAULT_SETTINGS, null, 2)}\n`)
+  }
+  if ((await readText($, TODO_PATH)) === null) await $.fs.write(TODO_PATH, SKELETON_TODO)
+  if ((await readText($, DESIGN_PATH)) === null) await $.fs.write(DESIGN_PATH, '# Design\n\n## Decisions\n')
+  const topic = (args ?? '').trim()
+  await drive($, { key: PLAN_KEY, kind: 'design', title: 'design interview' })
+  $.clock.after(300, () => submit($, topic ? `${DESIGN_PROMPT}\n\nThe person wants to focus on: ${topic}` : DESIGN_PROMPT, topic ? `Code factory: design interview (${topic})` : 'Code factory: design interview', true))
+  return { text: 'Code factory: design interview starting. Answer the questions; run /factory-approve when the design is complete.' }
+}
+
+async function approveCmd($: Dollar): Promise<{ text: string }> {
+  await ensureGitignore($)
+  const snap = await load($)
+  const raw = await readText($, TODO_PATH)
+  const designText = await readText($, DESIGN_PATH)
+  const baseOk = isSafeBranchName(snap.settings.baseBranch)
+  const protection = baseOk ? await branchProtectionWarnings($, snap.settings.baseBranch) : []
+  const problems = [
+    ...snap.settingsProblems,
+    ...(snap.settings.requireBranchProtection ? protection : []),
+    ...(raw === null ? [] : todoHeadingProblems(raw)),
+    ...validateItems(snap.items, snap.settings.stopAfterVersion),
+    ...(designText === null || !/^##\s+Decisions/im.test(designText) ? [`${DESIGN_PATH} needs a "## Decisions" section.`] : []),
+    ...(await preflight($)),
+    ...(baseOk ? await missingOnBase($, snap.settings.baseBranch) : [designPushSteps(snap.settings.baseBranch)]),
+    ...(snap.state.unreadable ? [STATE_UNREADABLE] : []),
+  ]
+  if (problems.length > 0) return { text: safeLines(`Not approved. Fix these first (/factory-design continues the interview):\n- ${problems.join('\n- ')}`) }
+  let promotedCount = 0
+  if (raw !== null) {
+    const { text, ids } = promoteProposed(raw)
+    promotedCount = ids.length
+    if (ids.length > 0) await $.fs.write(TODO_PATH, text)
+  }
+  loopEpoch++
+  const after = await load($)
+  const hash = decisionsHash(after.settings, after.items)
+  await writeState($, {
+    ...after.state,
+    approved: true,
+    approvedHash: hash,
+    approvedDone: after.items.filter(i => i.status === 'done').map(i => i.id),
+    pausedReason: after.state.autopilot ? null : 'approved, not started',
+    roadmapAsked: false,
+  })
+  if (instructions?.isDesign) instructions = null
+  await refreshStatus($)
+  const lines = after.items.filter(i => i.status === 'todo').map(i => `- ${i.id} [${i.type}] ${i.title}`)
+  const warn = !snap.settings.requireBranchProtection && protection.length > 0
+    ? `\nWarnings (set requireBranchProtection to make them blocking):\n- ${protection.join('\n- ')}\n`
+    : ''
+  const head = `Approved. ${warn}${promotedCount > 0 ? `${promotedCount} proposed item(s) promoted to todo.\n` : ''}Queue (in order):\n${lines.join('\n') || '(empty)'}\n`
+  if (after.state.autopilot || lines.length === 0) return { text: safeLines(`${head}${after.state.autopilot ? 'The loop is already running.' : 'Run /factory-start when items are ready.'}`) }
+  const started = await startCmd($)
+  return { text: safeLines(`${head}${started.text}`) }
+}
+
+type Interview = { what: string; noun: string; label: string; title: string; needsIdle: boolean; markAsked: boolean; prompt: (items: readonly Item[], mergedIds: readonly string[], settings: Settings, costSummary: string) => string }
+
+const ROADMAP_INTERVIEW: Interview = {
+  what: 'plan the next phase',
+  noun: 'next-phase interview',
+  label: 'Code factory: the plan is done; next-phase interview',
+  title: 'next-phase interview',
+  needsIdle: true,
+  markAsked: true,
+  prompt: (items, mergedIds, settings, costSummary) => roadmapPrompt(items, mergedIds, costSummary, settings),
+}
+
+// Both interviews share one launch path: approved plan, no other session, no
+// factory turn in flight, the loop paused first, then one armed turn.
+async function interviewCmd($: Dollar, iv: Interview): Promise<{ text: string }> {
+  const snap = await load($)
+  if (!snap.state.approved) return { text: `Cannot ${iv.what}: the design is not approved. /factory-design ${iv.needsIdle ? 'amends' : 'writes'} it${iv.needsIdle ? '' : ' first (the factory needs to know how this repo is built and tested), then /factory-approve'}.` }
+  if (await lockedByOther($)) return { text: `Cannot ${iv.what}: another session is running the factory in this repo (its lock was refreshed in the last two minutes).` }
+  if (roadmapPending || isAdvancing || (await turnBusy($))) {
+    return { text: `Cannot ${iv.what} now: a factory turn is still running or an interview is already starting. Let it finish (or /factory-stop it), then try again.` }
+  }
+  const items = effectiveItems(snap)
+  if (iv.needsIdle && (snap.state.current || pickNext(items, snap.blocked, snap.settings.stopAfterVersion))) {
+    return { text: `The plan still has runnable work (${summarize(items, snap.blocked)}${snap.state.current ? `, ${snap.state.current} in progress` : ''}). /factory-start runs it; /factory-design amends the plan.` }
+  }
+  roadmapPending = true
+  try {
+    if (snap.state.autopilot) await pause($, snap.state, `${iv.title} in progress; /factory-approve then /factory-start resumes`)
+  } catch (err) {
+    roadmapPending = false
+    throw err
+  }
+  const epoch = loopEpoch
+  $.clock.after(300, () => {
+    void startInterview($, iv, items, snap.state.mergedIds, snap.settings, epoch).finally(() => {
+      roadmapPending = false
+    })
+  })
+  return { text: `Code factory: ${iv.noun} starting. Answer the questions; run /factory-approve when the new items are pushed (it starts the loop).` }
+}
+
+async function triageCmd($: Dollar, args: string): Promise<{ text: string }> {
+  const filter = triageFilter(args ?? '')
+  return interviewCmd($, {
+    what: 'triage issues',
+    noun: 'issue triage',
+    label: filter ? `Code factory: issue triage (${filter})` : 'Code factory: issue triage',
+    title: 'issue triage',
+    needsIdle: false,
+    markAsked: false,
+    prompt: (items, _merged, settings) => triagePrompt(items, settings, filter),
+  })
+}
+
+async function guideCmd($: Dollar): Promise<{ text: string }> {
+  await refreshView($)
+  return { text: guideReport(await read($, view)) }
+}
+
 async function doctorCmd($: Dollar): Promise<{ text: string }> {
   const checks = await doctorChecks($)
   await update($, checksAtom, () => checks)
@@ -1389,6 +1517,8 @@ async function doctorCmd($: Dollar): Promise<{ text: string }> {
 export const register: Register = (on, _options) => {
   on('session.start', async ($, e, next) => {
     for (const [name, description, argumentHint, immediate] of [
+      ['factory', 'Code factory: where am I, what is the next step, and the commands', undefined, true],
+      ['factory-triage', 'Code factory: read the open GitHub issues with me and turn the ones worth doing into proposed items', '[search]', false],
       ['factory-design', 'Code factory: interview me and record the design, decisions and todo list', '[topic]', false],
       ['factory-approve', 'Code factory: validate the design and todo list, then unlock the build loop', undefined, false],
       ['factory-start', 'Code factory: run the build loop on the todo list', undefined, false],
@@ -1446,67 +1576,15 @@ export const register: Register = (on, _options) => {
 
   // ---- commands --------------------------------------------------------
 
-  on('command.run', { command: 'factory-design' }, async ($, e) => {
-    const running = await readState($)
-    if (running.autopilot) await pause($, running, 'design being amended; /factory-approve then /factory-start resumes')
-    await ensureGitignore($)
-    if ((await readText($, SETTINGS_PATH)) === null) {
-      await $.fs.write(SETTINGS_PATH, `${JSON.stringify(DEFAULT_SETTINGS, null, 2)}\n`)
-    }
-    if ((await readText($, TODO_PATH)) === null) await $.fs.write(TODO_PATH, SKELETON_TODO)
-    if ((await readText($, DESIGN_PATH)) === null) await $.fs.write(DESIGN_PATH, '# Design\n\n## Decisions\n')
-    const topic = e.args.trim()
-    await drive($, { key: PLAN_KEY, kind: 'design', title: 'design interview' })
-    $.clock.after(300, () => submit($, topic ? `${DESIGN_PROMPT}\n\nThe person wants to focus on: ${topic}` : DESIGN_PROMPT, topic ? `Code factory: design interview (${topic})` : 'Code factory: design interview', true))
-    return { text: 'Code factory: design interview starting. Answer the questions; run /factory-approve when the design is complete.' }
-  })
+  on('command.run', { command: 'factory' }, async $ => guideCmd($))
 
-  on('command.run', { command: 'factory-approve' }, async $ => {
-    await ensureGitignore($)
-    const snap = await load($)
-    const raw = await readText($, TODO_PATH)
-    const designText = await readText($, DESIGN_PATH)
-    const baseOk = isSafeBranchName(snap.settings.baseBranch)
-    const protection = baseOk ? await branchProtectionWarnings($, snap.settings.baseBranch) : []
-    const problems = [
-      ...snap.settingsProblems,
-      ...(snap.settings.requireBranchProtection ? protection : []),
-      ...(raw === null ? [] : todoHeadingProblems(raw)),
-      ...validateItems(snap.items, snap.settings.stopAfterVersion),
-      ...(designText === null || !/^##\s+Decisions/im.test(designText) ? [`${DESIGN_PATH} needs a "## Decisions" section.`] : []),
-      ...(await preflight($)),
-      ...(baseOk ? await missingOnBase($, snap.settings.baseBranch) : [designPushSteps(snap.settings.baseBranch)]),
-      ...(snap.state.unreadable ? [STATE_UNREADABLE] : []),
-    ]
-    if (problems.length > 0) return { text: safeLines(`Not approved. Fix these first (/factory-design continues the interview):\n- ${problems.join('\n- ')}`) }
-    let promotedCount = 0
-    if (raw !== null) {
-      const { text, ids } = promoteProposed(raw)
-      promotedCount = ids.length
-      if (ids.length > 0) await $.fs.write(TODO_PATH, text)
-    }
-    loopEpoch++
-    const after = await load($)
-    const hash = decisionsHash(after.settings, after.items)
-    await writeState($, {
-      ...after.state,
-      approved: true,
-      approvedHash: hash,
-      approvedDone: after.items.filter(i => i.status === 'done').map(i => i.id),
-      pausedReason: after.state.autopilot ? null : 'approved, not started',
-      roadmapAsked: false,
-    })
-    if (instructions?.isDesign) instructions = null
-    await refreshStatus($)
-    const lines = after.items.filter(i => i.status === 'todo').map(i => `- ${i.id} [${i.type}] ${i.title}`)
-    const warn = !snap.settings.requireBranchProtection && protection.length > 0
-      ? `\nWarnings (set requireBranchProtection to make them blocking):\n- ${protection.join('\n- ')}\n`
-      : ''
-    const head = `Approved. ${warn}${promotedCount > 0 ? `${promotedCount} proposed item(s) promoted to todo.\n` : ''}Queue (in order):\n${lines.join('\n') || '(empty)'}\n`
-    if (after.state.autopilot || lines.length === 0) return { text: safeLines(`${head}${after.state.autopilot ? 'The loop is already running.' : 'Run /factory-start when items are ready.'}`) }
-    const started = await startCmd($)
-    return { text: safeLines(`${head}${started.text}`) }
-  })
+  on('command.run', { command: 'factory-design' }, async ($, e) => designCmd($, e.args))
+
+  on('command.run', { command: 'factory-approve' }, async $ => approveCmd($))
+
+  on('command.run', { command: 'factory-roadmap' }, async $ => interviewCmd($, ROADMAP_INTERVIEW))
+
+  on('command.run', { command: 'factory-triage' }, async ($, e) => triageCmd($, e.args))
 
   on('command.run', { command: 'factory-start' }, async $ => startCmd($))
 
@@ -1599,33 +1677,6 @@ export const register: Register = (on, _options) => {
       current = null
     }
     return { text: costsReport(all, filter, current) }
-  })
-
-  on('command.run', { command: 'factory-roadmap' }, async $ => {
-    const snap = await load($)
-    if (!snap.state.approved) return { text: 'Cannot plan the next phase: the design is not approved. /factory-design amends it.' }
-    if (await lockedByOther($)) return { text: 'Cannot plan the next phase: another session is running the factory in this repo (its lock was refreshed in the last two minutes).' }
-    if (roadmapPending || isAdvancing || (await turnBusy($))) {
-      return { text: 'Cannot plan the next phase now: a factory turn is still running or the next-phase interview is already starting. Let it finish (or /factory-stop it), then run /factory-roadmap again.' }
-    }
-    const items = effectiveItems(snap)
-    if (snap.state.current || pickNext(items, snap.blocked, snap.settings.stopAfterVersion)) {
-      return { text: `The plan still has runnable work (${summarize(items, snap.blocked)}${snap.state.current ? `, ${snap.state.current} in progress` : ''}). /factory-start runs it; /factory-design amends the plan.` }
-    }
-    roadmapPending = true
-    try {
-      if (snap.state.autopilot) await pause($, snap.state, 'next phase being planned; /factory-approve then /factory-start resumes')
-    } catch (err) {
-      roadmapPending = false
-      throw err
-    }
-    const roadmapEpoch = loopEpoch
-    $.clock.after(300, () => {
-      void startRoadmap($, items, snap.state.mergedIds, snap.settings, roadmapEpoch).finally(() => {
-        roadmapPending = false
-      })
-    })
-    return { text: 'Code factory: next-phase interview starting. Answer the questions; run /factory-approve and /factory-start when the new items are committed.' }
   })
 
   // ---- the loop --------------------------------------------------------
@@ -1985,9 +2036,24 @@ export const register: Register = (on, _options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const v = await read($, view)
-    if (e.props.hasSurvey || !v || !v.approved) return next(e)
+    if (e.props.hasSurvey || !v || (!v.approved && Object.keys(v.marks).length === 0)) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     const compact = isCompact(e.props.bodyColumns)
+    if (!v.approved) {
+      return (
+        <Box gap={1} paddingX={1}>
+          <Text bold>factory ✎ design drafted</Text>
+          {!compact && (
+            <Text dimColor wrap="truncate-end">
+              next: push the design files, then /factory-approve
+            </Text>
+          )}
+          <Button plain dimColor key="details" onPress={() => void $.ui.open({ id: PANE, title: 'Code factory', focus: true })}>
+            [panel]
+          </Button>
+        </Box>
+      )
+    }
     const total = v.total ?? v.doneCount + v.rows.length + v.more
     const agents = v.agents ?? []
     const steps = v.steps ?? []
@@ -2071,13 +2137,37 @@ export const register: Register = (on, _options) => {
     const open = await read($, openAgent)
     const skipping = await read($, skipTarget)
     const checks = await read($, checksAtom)
+    const guide = journey(v)
+    const guideRows = guide.map((st, i) => (
+      <Box key={`guide-${st.label}`} gap={1}>
+        <Text color={STEP_COLOR[st.state]} bold={st.state === 'doing'} dimColor={st.state === 'todo'}>
+          {STEP_GLYPH[st.state]} {i + 1} {st.label}
+        </Text>
+        <Text dimColor wrap="truncate-end">
+          {st.detail}
+        </Text>
+      </Box>
+    ))
+    const guideButtons = guideControls(v).map(c => (
+      <Button plain key={`guide-${c.key}`} onPress={() => pressControl($, c)}>
+        [{c.label}]
+      </Button>
+    ))
     if (!v || !v.approved) {
       return (
         <Box flexDirection="column" paddingX={1}>
-          <Text dimColor>The design is not approved yet. Run /factory-approve.</Text>
-          <Button plain key="doctor" onPress={() => pressControl($, { key: 'doctor', label: '✔ check', command: 'factory-doctor' })}>
-            [✔ check setup]
-          </Button>
+          <Text bold>Code factory · getting started</Text>
+          <Text dimColor>Design once; then it builds, reviews, merges and keeps going.</Text>
+          <Text> </Text>
+          {guideRows}
+          <Text> </Text>
+          <Text wrap="wrap">➜ {nextHint(v)}</Text>
+          <Box gap={1}>
+            {guideButtons}
+            <Button plain key="doctor" onPress={() => pressControl($, { key: 'doctor', label: '✔ check', command: 'factory-doctor' })}>
+              [✔ check setup]
+            </Button>
+          </Box>
           {(checks ?? []).map((c, i) => (
             <Text key={`chk-${i}`} color={c.status === 'fail' ? 'red' : c.status === 'warn' ? 'yellow' : 'green'} wrap="truncate-end">
               {checksLine(c)}
@@ -2102,9 +2192,20 @@ export const register: Register = (on, _options) => {
               [{c.label}]
             </Button>
           ))}
+          {guideButtons}
           <Button plain key="doctor" onPress={() => pressControl($, { key: 'doctor', label: '✔ check', command: 'factory-doctor' })}>
             [✔ check setup]
           </Button>
+        </Box>
+        <Text dimColor wrap="wrap">
+          ➜ {nextHint(v)}
+        </Text>
+        <Box gap={1}>
+          {guide.map((st, i) => (
+            <Text key={`guide-${st.label}`} color={STEP_COLOR[st.state]} bold={st.state === 'doing'} dimColor={st.state === 'todo'}>
+              {STEP_GLYPH[st.state]} {i + 1} {st.label}
+            </Text>
+          ))}
         </Box>
         <Text> </Text>
         <Text bold>Plan {progressBar(v.doneCount, total, 20)} {v.doneCount}/{total}</Text>

@@ -150,13 +150,13 @@ test('statusLine shortens a long pause reason to one line and drops the stage of
 const ok = (stdout: string) => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 const SETTINGS = JSON.stringify({ testCmd: ['unit'], baseBranch: 'main', requireReview: false, requireTestChanges: false, allowTestRemoval: true })
 
-function fixture($: any, on: any, o: { runs?: string[][]; autopilot?: boolean; blocked?: string[]; writes?: { path: string; text: string }[]; agents?: any[]; messages?: Record<string, any[]>; statuses?: (string | undefined)[]; rosterFails?: boolean; reads?: { n: number } } = {}) {
+function fixture($: any, on: any, o: { runs?: string[][]; autopilot?: boolean; blocked?: string[]; writes?: { path: string; text: string }[]; agents?: any[]; messages?: Record<string, any[]>; statuses?: (string | undefined)[]; rosterFails?: boolean; reads?: { n: number }; approved?: boolean } = {}) {
   const clock = mock.clock(on, { now: 1_000_000 })
   const hash = decisionsHash(parseSettings(SETTINGS).settings, parseTodo(TODO))
   const files: Record<string, string> = {
     '.factory/settings.json': SETTINGS,
     '.factory/todo.md': TODO,
-    '.factory/state.json': JSON.stringify({ approved: true, approvedHash: hash, autopilot: o.autopilot ?? true, current: o.autopilot === false ? null : 'T-002', approvedDone: ['T-001'], events: [{ ts: 999_000, itemId: 'T-002', kind: 'started', detail: '' }] }),
+    '.factory/state.json': JSON.stringify({ approved: o.approved ?? true, approvedHash: hash, autopilot: o.autopilot ?? true, current: o.autopilot === false ? null : 'T-002', approvedDone: ['T-001'], events: [{ ts: 999_000, itemId: 'T-002', kind: 'started', detail: '' }] }),
   }
   for (const id of o.blocked ?? []) files[`.factory/blocked/${id}.md`] = 'Skipped by you: needs a product decision. /factory-retry makes it eligible again.\n'
   const key = (path: string) => Object.keys(files).find(k => path.endsWith(`/${k}`))
@@ -500,4 +500,33 @@ test('a narrow band keeps only the run controls, not a retry per blocked item', 
   expect(await narrow.find({ key: 'retry-T-003' })).toBeUndefined()
   expect(await narrow.find({ key: 'pause' })).toBeDefined()
   await narrow.unmount()
+})
+
+test('before approval the pane is a getting-started guide and the band is one line', async ($, on) => {
+  fixture($, on, { approved: false, autopilot: false })
+  await $.command.run({ command: 'factory-status' } as never)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const pane = await $.ui.mount({ plugin: 'code-factory', surface, component: 'Pane', requestId: 'factory', props: {} } as never)
+    expect(await pane.find({ text: /getting started/ })).toBeDefined()
+    expect(await pane.find({ text: /✓ 1 Design/ })).toBeDefined()
+    expect(await pane.find({ text: /● 2 Approve/ })).toBeDefined()
+    expect(await pane.find({ text: /\/factory-approve/ })).toBeDefined()
+    expect(await pane.find({ text: /✔ approve/ })).toBeDefined()
+    expect(await pane.find({ text: /check setup/ })).toBeDefined()
+    await pane.unmount()
+    const ui = await band($, surface)
+    expect(await ui.find({ text: /design drafted/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('a paused dashboard says what to do next and offers issue triage', async ($, on) => {
+  fixture($, on, { autopilot: false })
+  await $.command.run({ command: 'factory-status' } as never)
+  const pane = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'Pane', requestId: 'factory', props: {} } as never)
+  expect(await pane.find({ text: /\/factory-start carries on/ })).toBeDefined()
+  expect(await pane.find({ text: /triage issues/ })).toBeDefined()
+  expect(await pane.find({ text: /● 3 Build/ })).toBeDefined()
+  expect(await pane.find({ text: /next phase/ })).toBeUndefined()
+  await pane.unmount()
 })
