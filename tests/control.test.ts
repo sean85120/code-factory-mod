@@ -2548,3 +2548,39 @@ test('the declined-findings ledger survives a pause', async ($, on) => {
   await $.command.run({ command: 'factory-pause' } as never)
   expect(fx.state().reviewDeclined).toEqual(['src/b.ts:9 reason'])
 })
+
+test('/factory-triage starts an armed issue triage even with work queued, and does not use up the next-phase interview', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on)
+  const r = await $.command.run({ command: 'factory-triage', args: "label:bug 'x' $(reboot)" } as never)
+  expect(r.text).toContain('issue triage starting')
+  expect((await $.command.run({ command: 'factory-triage' } as never)).text).toContain('already starting')
+  await clock.advance(1000)
+  const text = await instructionsOf($)
+  expect(text).toContain('ISSUE TRIAGE')
+  expect(text).toContain("--search 'label:bug x (reboot)'")
+  expect(fx.state().roadmapAsked).not.toBe(true)
+  expect(fx.live.submitted.some(t => t.includes('issue triage'))).toBe(true)
+  expect(fx.state().events.some((e: { kind: string; detail: string }) => e.kind === 'roadmap' && e.detail === 'issue triage')).toBe(true)
+})
+
+test('/factory-triage refuses an unapproved plan and another session\'s loop', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  setup($, on, { state: { approved: false } })
+  expect((await $.command.run({ command: 'factory-triage' } as never)).text).toContain('not approved')
+})
+
+test('/factory-triage is refused while another session holds the lock', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  setup($, on, { lockedBy: 'someone-else' })
+  expect((await $.command.run({ command: 'factory-triage' } as never)).text).toContain('another session')
+})
+
+test('/factory shows the journey and the next step', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  setup($, on)
+  const text = (await $.command.run({ command: 'factory' } as never)).text
+  expect(text).toContain('● 3 Build')
+  expect(text).toContain('Next: Paused')
+  expect(text).toContain('/factory-triage')
+})

@@ -325,3 +325,32 @@ test('agent.spawn from round 3 adds the diff-only paragraph with the still-open 
   expect(seen[0]).toContain(`git diff ${SHA}..HEAD`)
   expect(seen[0]).toContain('- foo.ts:10 missing validation')
 })
+
+for (const [stat, size, expected, absent] of [
+  [' 1 file changed, 3 insertions(+), 1 deletion(-)\n', 'light', 'Do a focused pass', 'Review it in parallel'],
+  [' 2 files changed, 1200 insertions(+), 3 deletions(-)\n', 'deep', 'Review it in parallel', 'Do a focused pass'],
+  [' 7 files changed, 200 insertions(+)\n', 'standard', 'normal pass', 'Do a focused pass'],
+] as const) {
+  test(`agent.spawn scales the review to the size of the change (${size})`, async ($, on) => {
+    setup($, on, { diff: stat })
+    const seen: string[] = []
+    on('agent.spawn', (_: unknown, e: { prompt: string }) => {
+      seen.push(e.prompt)
+      return { model: 'm' }
+    })
+    await ($ as any).agent.spawn({ prompt: reviewPrompt() })
+    expect(seen[0]).toContain(expected)
+    expect(seen[0]).not.toContain(absent)
+  })
+}
+
+test('agent.spawn adds no size paragraph when the diff size cannot be read', async ($, on) => {
+  setup($, on, { failing: ['git'] })
+  const seen: string[] = []
+  on('agent.spawn', (_: unknown, e: { prompt: string }) => {
+    seen.push(e.prompt)
+    return { model: 'm' }
+  })
+  await ($ as any).agent.spawn({ prompt: reviewPrompt() })
+  expect(seen[0]).toBe(reviewPrompt())
+})
