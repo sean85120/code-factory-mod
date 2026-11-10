@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { DEFAULT_SETTINGS, DEFAULT_STATE, ROADMAP_DONE, buildView, decisionsHash, guideControls, guidePhase, guideReport, journey, nextHint, parseIssueRef, parseTodo, promoteProposed, roadmapPrompt, statusReport, triageFilter, triagePrompt, workPrompt } from '../hooks/lib'
+import { DEFAULT_SETTINGS, DEFAULT_STATE, ROADMAP_DONE, depthSection, parseReviewMarker, parseShortstat, reviewAgentPrompt, reviewDepth, validateItems, buildView, decisionsHash, guideControls, guidePhase, guideReport, journey, nextHint, parseIssueRef, parseTodo, promoteProposed, roadmapPrompt, statusReport, triageFilter, triagePrompt, workPrompt } from '../hooks/lib'
 
 const settings = { ...DEFAULT_SETTINGS, testCmd: ['unit'] }
 const block = (id: string, status: string, extra = '') => `## ${id} [bug] Fix ${id}
@@ -14,11 +14,15 @@ const view = (todo: string, state = {}, blocked: string[] = []) => buildView(par
 test('an item can name the GitHub issue it resolves', () => {
   expect(parseIssueRef('#12')).toBe(12)
   expect(parseIssueRef(' 12 ')).toBe(12)
-  expect(parseIssueRef('https://github.com/o/r/issues/7')).toBe(7)
-  for (const bad of ['', '#0', 'abc', '#12; rm -rf /', '12 13', 'https://evil.example/issues/7', '#1234567890']) expect(parseIssueRef(bad)).toBe(null)
+  for (const bad of ['', '#0', 'abc', '#12; rm -rf /', '12 13', '#12 - login crash', '#12, #13', 'https://github.com/o/r/issues/7', '#1234567890']) expect(parseIssueRef(bad)).toBe(null)
   const [a, b] = parseTodo(`${block('T-001', 'todo', '- issue: #42\n')}\n${block('T-002', 'todo')}`)
   expect(a!.issue).toBe(42)
   expect(b!.issue ?? null).toBe(null)
+})
+
+test('an issue value that is not one number of this repository is a problem at approval', () => {
+  const [bad, good] = parseTodo(`${block('T-001', 'todo', '- issue: https://github.com/up/lib/issues/7\n')}\n${block('T-002', 'todo', '- issue: #8\n')}`)
+  expect(validateItems([bad!, good!]).filter(p => p.includes('issue'))).toEqual([expect.stringContaining('T-001')])
 })
 
 test('the issue link is an approved decision, and plans without one keep their hash', () => {
@@ -56,7 +60,7 @@ test('the triage prompt lists linked issues, never builds, and treats issue text
 })
 
 test('the triage filter cannot leave its single quotes', () => {
-  expect(triageFilter("  label:bug\n'; rm -rf / `id` $(x) \"q\" \\ ")).toBe('label:bug ; rm -rf / id (x) q')
+  expect(triageFilter("  label:bug\n'; rm -rf / `id` $(x) \"q r\" \\ ")).toBe('label:bug ; rm -rf / id (x) "q r"')
   expect(triageFilter('a'.repeat(500)).length).toBe(200)
   expect(triageFilter('‮label\u0007')).toBe('label')
 })
@@ -111,4 +115,26 @@ test('the guide is one screen: journey, next step, commands, no control characte
   expect(g).not.toContain('\u001b')
   expect(g).toContain('/factory-triage [search]')
   expect(guideReport(null)).toContain('● 1 Design')
+})
+
+test('review depth follows the size of the change', () => {
+  expect(parseShortstat(' 3 files changed, 120 insertions(+), 5 deletions(-)\n')).toEqual({ files: 3, lines: 125 })
+  expect(parseShortstat(' 1 file changed, 1 deletion(-)')).toEqual({ files: 1, lines: 1 })
+  expect(parseShortstat('src/a.ts\n')).toBe(null)
+  expect(reviewDepth({ files: 1, lines: 49 })).toBe('light')
+  expect(reviewDepth({ files: 8, lines: 40 })).toBe('standard')
+  expect(reviewDepth({ files: 4, lines: 999 })).toBe('standard')
+  expect(reviewDepth({ files: 4, lines: 1000 })).toBe('deep')
+  expect(reviewDepth({ files: 30, lines: 100 })).toBe('deep')
+  expect(depthSection(null)).toBe('')
+})
+
+test('the reviewer reports pre-existing bugs apart from its counts and the worker files them as proposals', () => {
+  const rp = reviewAgentPrompt(settings, 'factory/t-001-x')
+  expect(rp).toContain('FACTORY-PREEXISTING: <file:line>')
+  expect(rp).toContain('never count toward danger, medium or security')
+  expect(parseReviewMarker('FACTORY-PREEXISTING: a.ts:1 x\nFACTORY-REVIEW: danger=0 medium=0 security=0 sha=abcdef1')).toMatchObject({ danger: 0, medium: 0, security: 0 })
+  const wp = workPrompt(parseTodo(block('T-001', 'todo'))[0]!, settings, null)
+  expect(wp).toContain('## Review')
+  expect(wp).toContain('FACTORY-PREEXISTING lines')
 })

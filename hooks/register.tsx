@@ -48,6 +48,8 @@ import {
   releasePending,
   roadmapPrompt,
   triagePrompt,
+  parseShortstat,
+  depthSection,
   triageFilter,
   guideReport,
   guideControls,
@@ -260,7 +262,7 @@ function pressControl($: Dollar, c: Control): void {
   const args = c.args ?? ''
   const out =
     c.command === 'factory-start' ? startCmd($) : c.command === 'factory-pause' ? pauseCmd($) : c.command === 'factory-stop' ? stopCmd($) : c.command === 'factory-skip' ? skipCmd($, args) : c.command === 'factory-doctor' ? doctorCmd($) : c.command === 'factory-retry' ? retryCmd($, args) : c.command === 'factory-design' ? designCmd($, args) : c.command === 'factory-approve' ? approveCmd($) : c.command === 'factory-triage' ? triageCmd($, args) : c.command === 'factory-roadmap' ? interviewCmd($, ROADMAP_INTERVIEW) : Promise.resolve({ text: `factory: unknown control ${c.command}` })
-  void out.then(r => toast($, oneLine(r.text, 120))).catch(() => toast($, `factory: ${c.label} failed`))
+  void out.then(r => toast($, c.command === 'factory-approve' && r.text.startsWith('Not approved') ? 'factory: not approved yet; type /factory-approve to see what to fix' : oneLine(r.text, 120))).catch(() => toast($, `factory: ${c.label} failed`))
 }
 
 function toast($: Dollar, text: string, options?: Parameters<Dollar['ui']['toast']>[1]): void {
@@ -1467,6 +1469,7 @@ async function interviewCmd($: Dollar, iv: Interview): Promise<{ text: string }>
   const snap = await load($)
   if (!snap.state.approved) return { text: `Cannot ${iv.what}: the design is not approved. /factory-design ${iv.needsIdle ? 'amends' : 'writes'} it${iv.needsIdle ? '' : ' first (the factory needs to know how this repo is built and tested), then /factory-approve'}.` }
   if (await lockedByOther($)) return { text: `Cannot ${iv.what}: another session is running the factory in this repo (its lock was refreshed in the last two minutes).` }
+  if (launchedHere !== null) return { text: `Cannot ${iv.what} now: this session's review agent is still reporting. Let it finish, then try again.` }
   if (roadmapPending || isAdvancing || (await turnBusy($))) {
     return { text: `Cannot ${iv.what} now: a factory turn is still running or an interview is already starting. Let it finish (or /factory-stop it), then try again.` }
   }
@@ -1770,7 +1773,7 @@ export const register: Register = (on, _options) => {
       isArmed = false
       expectReport = false
     }
-    if (['composer', 'bridge', 'sdk'].includes(e.origin.kind) && e.text.trimStart().startsWith('/') && !e.text.trimStart().startsWith('/factory-') && markOwner !== null) {
+    if (['composer', 'bridge', 'sdk'].includes(e.origin.kind) && e.text.trimStart().startsWith('/') && !/^\/factory(-|\s|$)/.test(e.text.trimStart()) && markOwner !== null) {
       await settle($, true)
       personSlash = true
       slashTurnId = null
@@ -1870,7 +1873,17 @@ export const register: Register = (on, _options) => {
   on('agent.spawn', async ($, e, next) => {
     if (!e.prompt.includes(REVIEW_TAG)) return next(e)
     const st = await readState($)
-    const extra = `${declinedSection(st.reviewDeclined)}${rereviewSection(st.review, st.reviewRounds, st.reviewOpen)}`
+    let stat: { files: number; lines: number } | null = null
+    try {
+      const base = parseSettings(await readText($, SETTINGS_PATH)).settings.baseBranch
+      if (isSafeBranchName(base)) {
+        const r = await run($, ['git', 'diff', '--shortstat', `origin/${base}...HEAD`], 20000)
+        if (r.exitCode === 0) stat = parseShortstat(r.stdout)
+      }
+    } catch {
+      stat = null
+    }
+    const extra = `${declinedSection(st.reviewDeclined)}${rereviewSection(st.review, st.reviewRounds, st.reviewOpen)}${depthSection(stat)}`
     return next(extra ? { ...e, prompt: `${e.prompt}${extra}` } : e)
   })
 

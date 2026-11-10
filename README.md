@@ -104,6 +104,11 @@ have approved the item it became.
   build, full test suite, end-to-end tests.
 - **Gates before a merge:** every CI check green, the reviewed commit is the
   PR head, no `--admin`, no force push, no commits on the base branch.
+- **Review that scales:** the independent reviewer does a quick pass on a
+  one-line fix and fans out to parallel agents on a large change, verifies each
+  finding before it counts, runs a separate security pass, and reports bugs it
+  finds in neighbouring code apart, so they become proposed items instead of
+  widening the PR. Each PR gets a short `## Review` section as its overview.
 - **Budget:** `budgetUsd` in `.factory/settings.json` pauses a run when its
   spend reaches the limit.
 - **Stuck is not fatal:** an item that cannot be finished is marked blocked
