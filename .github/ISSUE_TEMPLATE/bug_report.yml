@@ -1,0 +1,45 @@
+name: Bug report
+description: Something the factory did that it should not have, or did not do
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. If this could be a **security problem** (a way around a guard, the approval hash or the review gate), do not post it here: see [SECURITY.md](https://github.com/sean85120/code-factory/blob/main/SECURITY.md).
+        Do not paste secrets, tokens or private repository contents.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The commands you ran (`/factory-...`), and the relevant part of `.factory/settings.json` and the todo item, with anything private removed.
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The reply of `/factory-status` and `/factory-log`, and `/factory-doctor` if setup may be the cause.
+      render: text
+  - type: input
+    id: plugin
+    attributes:
+      label: code-factory version
+      description: From `.claude-plugin/plugin.json`.
+    validations:
+      required: true
+  - type: input
+    id: claude
+    attributes:
+      label: Claude Code version and surface
+      description: For example `claude --version`, and terminal, desktop app, IDE or cloud session.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system

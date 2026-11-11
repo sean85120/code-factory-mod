@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem privately
+    url: https://github.com/sean85120/code-factory/security/advisories/new
+    about: A way around a guard, the approval hash or the review gate. Please do not open a public issue.
