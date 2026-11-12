@@ -36,13 +36,15 @@ turns the ones worth doing into new items, and goes again.
 ## Requirements
 
 - **Claude Code 2.1.275 or later** (a terminal session, for the install command).
+  The test suite is run against 2.1.295 in CI and was also run on 2.1.322.
 - `git`, with a repository whose `origin` is on **GitHub**.
 - The [`gh` CLI](https://cli.github.com), signed in (`gh auth login`) with
   permission to open and merge pull requests in that repository.
 - A **test command** for the repository. A build command and end-to-end tests are
   used when you configure them. CI on GitHub Actions (or any check that reports
   on the pull request) is what the factory waits for before it merges.
-- A **review command**: the independent reviewer runs the slash command in the
+- A **review command**, unless you set `requireReview` to `false` (not
+  recommended): the independent reviewer runs the slash command in the
   `reviewCommand` setting, which defaults to `/review-fix`. That is a skill many
   people will not have. The design interview asks which command to use; point it
   at any slash command or skill that reviews the changes of a branch and fixes
@@ -159,7 +161,7 @@ default and `askNextPhase` at its default are the exceptions).
 | `requireReview` | `true` | Require a clean independent review for the exact commit. |
 | `reviewCommand` | `"/review-fix"` | Slash command the reviewer runs. See [Requirements](#requirements). |
 | `maxReviewRounds` | `5` | Review passes before an item is marked blocked. |
-| `reviewTimeoutMs` | `1800000` | How long to wait for the reviewer's verdict. |
+| `reviewTimeoutMs` | `1800000` | How long to wait for the reviewer's verdict (at least 60000, at most 6 hours). |
 | `contextReset` | `"clear"` | `clear`, `compact` or `none` between items. |
 | `stopAfterVersion` | `null` | The loop stops after this version's items are done. |
 | `tagRelease` | `false` | Cut a GitHub release when that version is complete. |
@@ -216,8 +218,8 @@ see [`SECURITY.md`](SECURITY.md).
 The factory spends model tokens on its own: one or more turns per item, an
 independent review (more on large changes) and CI-fix rounds. Spend is tracked per
 item (`/factory-costs`, the band and the dashboard). Set `budgetUsd` to stop a
-run at an amount you choose; it never interrupts a turn already running, and it
-pauses rather than run unmetered if the spend cannot be read.
+run at an amount you choose; it never interrupts a turn already running, and with a
+budget set it pauses rather than run unmetered if the spend cannot be read.
 
 ## Contributing
 

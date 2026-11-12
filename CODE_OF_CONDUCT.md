@@ -17,10 +17,12 @@ want to contribute to:
 ## Enforcement
 
 Maintainers may edit or remove comments, close issues and pull requests, and
-block people who break these rules. To report a problem, open the repository's
-**Security** tab and choose **Report a vulnerability** (it is a private channel
-to the maintainers), or contact a maintainer through their GitHub profile.
-Reports are handled privately.
+block people who break these rules. To report a problem, contact a maintainer
+through the contact details on their GitHub profile. If you cannot find one,
+open an issue that says only that you have a conduct report and asks for a
+private way to send it, with no details. (The repository's private
+vulnerability reporting is meant for security problems, but it also reaches the
+maintainers if nothing else works.) Reports are handled privately.
 
 This code of conduct applies in the project's issues, pull requests, discussions
 and any space where someone represents the project.

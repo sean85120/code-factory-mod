@@ -10,6 +10,9 @@ Please **do not open a public issue** for a security problem. Use GitHub's
 private reporting instead: open the repository's **Security** tab and choose
 **Report a vulnerability**
 (<https://github.com/sean85120/code-factory/security/advisories/new>).
+If that option is not available, open an issue that says only that you have a
+security report and asks for a private way to send it. Put no details in the
+issue.
 
 Include what you found, the steps or input that trigger it, the version
 (`.claude-plugin/plugin.json`) and the Claude Code version. You can expect an

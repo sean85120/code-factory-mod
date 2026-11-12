@@ -60,9 +60,14 @@ short:
    `isSafeBranchName` for names) so it cannot carry escape sequences or break out
    of a quoted shell command.
 5. **Adding a setting** means updating the `Settings` type, `DEFAULT_SETTINGS`,
-   `parseSettings`, the JSON example inside `DESIGN_PROMPT`, and the settings
-   table in the README. Settings are part of the approval hash, so a new one
-   should leave the hash of existing plans unchanged when it has its default.
+   `parseSettings`, the JSON example inside `DESIGN_PROMPT`, the settings table
+   in the README, the "Settings" section of `CLAUDE.md`, and the tests
+   (`parseSettings` and the hash). Settings are part of the approval hash, so a
+   new one must leave the hash of existing plans unchanged while it has its
+   default: add it to `decisionsHash` only when it differs from the default, as
+   `budgetUsd` and `askNextPhase` do, and add a test that pins both cases. A
+   setting that should never invalidate an approval (like `reviewTimeoutMs`) is
+   left out of the hash entirely.
 6. **Changing a prompt** (`DESIGN_PROMPT`, `workPrompt`, `reviewAgentPrompt`,
    `triagePrompt`, ...) needs a test that pins the part you rely on, and a
    mention of the trade-off in the pull request, because prompts are
