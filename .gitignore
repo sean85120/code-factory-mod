@@ -1,0 +1,19 @@
+# Editors and operating systems
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Logs and dependencies, in case someone adds tooling
+*.log
+node_modules/
+
+# Written by the Claude Code plugin runtime (the engine ignores it too)
+.claude-plugin/types/
+
+# The factory's runtime files when this repo is built with the factory itself
+.factory/state.json
+.factory/lock.json
+.factory/blocked/
+.factory/evidence/

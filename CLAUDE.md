@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```
-claude plugin test .                 # every tests/*.test.ts, a few seconds; takes only the dir, no per-file filter
+claude plugin test .                 # every tests/*.test.ts, about 40 seconds; takes only the dir, no per-file filter
 claude plugin validate .             # manifest + hooks/calls check
 ```
 
