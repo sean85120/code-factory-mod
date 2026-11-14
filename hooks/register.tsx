@@ -8,6 +8,7 @@ import {
   PLAN_KEY,
   addTokens,
   agentActions,
+  agentTranscript,
   appendEvent,
   cleanText,
   applyChanges,
@@ -664,7 +665,17 @@ async function recentActions($: Dollar, agentId?: string): Promise<string[]> {
   }
 }
 
-async function collectAgents($: Dollar, mainBusy: boolean, current: string | null, now: number): Promise<AgentRow[]> {
+async function readTranscript($: Dollar, agentId?: string): Promise<string[]> {
+  try {
+    const m = agentId === undefined ? await $.session.messages() : await $.session.messages({ agentId })
+    if ('deny' in m) return []
+    return agentTranscript(m)
+  } catch {
+    return []
+  }
+}
+
+async function collectAgents($: Dollar, mainBusy: boolean, current: string | null, now: number, open: string | null = null): Promise<AgentRow[]> {
   const rows: AgentRow[] = []
   try {
     if (mainBusy) {
@@ -704,7 +715,9 @@ async function collectAgents($: Dollar, mainBusy: boolean, current: string | nul
   } catch {
     return rows
   }
-  return [...rows.filter(r => ACTIVE_AGENT.has(r.status)), ...rows.filter(r => !ACTIVE_AGENT.has(r.status)).slice(-2)]
+  const shown = [...rows.filter(r => ACTIVE_AGENT.has(r.status)), ...rows.filter(r => !ACTIVE_AGENT.has(r.status)).slice(-2)]
+  if (open === null) return shown
+  return Promise.all(shown.map(async r => (r.id === open ? { ...r, transcript: await readTranscript($, r.id === 'main' ? undefined : r.id) } : r)))
 }
 
 async function refreshOnce($: Dollar): Promise<void> {
@@ -715,7 +728,7 @@ async function refreshOnce($: Dollar): Promise<void> {
     const spend = { runUsd: spent?.runUsd ?? null, itemUsd: spent?.itemUsd ?? null, budgetUsd: snap.settings.budgetUsd }
     const running = snap.state.autopilot && !snap.state.unreadable
     const now = await stamp($)
-    const agents = snap.state.approved ? await collectAgents($, running && isFactoryTurn, snap.state.current, now) : []
+    const agents = snap.state.approved ? await collectAgents($, running && isFactoryTurn, snap.state.current, now, await read($, openAgent)) : []
     const extra = { maxAttempts: snap.settings.maxAttempts, maxReviewRounds: snap.settings.maxReviewRounds, agents, now, notes: await blockedNotes($, snap.blocked) }
     const build = (prev: FactoryView | null): FactoryView => buildView(items, snap.state, snap.blocked, snap.settings.stopAfterVersion, prev, spend, extra)
     const before = await read($, view)
@@ -2074,7 +2087,7 @@ export const register: Register = (on, _options) => {
       void $.ui.open({ id: PANE, title: 'Code factory', focus: true })
     }
     const pick = (id: string): void => {
-      void update($, openAgent, () => id)
+      void update($, openAgent, () => id).then(() => refreshOnce($))
       openPane()
     }
 
@@ -2314,7 +2327,7 @@ export const register: Register = (on, _options) => {
         <Text bold>Agents{agents.length === 0 ? ' · none running' : ` · ${agents.length}`}</Text>
         {agents.map(a => (
           <Box key={a.id} flexDirection="column">
-            <Button plain dimColor={!ACTIVE_AGENT.has(a.status)} key={`agent-${a.id}`} onPress={() => void update($, openAgent, cur => (cur === a.id ? null : a.id))}>
+            <Button plain dimColor={!ACTIVE_AGENT.has(a.status)} key={`agent-${a.id}`} onPress={() => void update($, openAgent, cur => (cur === a.id ? null : a.id)).then(() => refreshOnce($))}>
               {`${open === a.id ? '▾' : '▸'} ${agentLine(a)}`}
             </Button>
             {open === a.id && (
@@ -2323,12 +2336,19 @@ export const register: Register = (on, _options) => {
                   {a.kind}
                   {a.parent ? ` · spawned by ${a.parent}` : ''}
                 </Text>
-                {a.recent.length === 0 && <Text dimColor>No activity read yet.</Text>}
-                {a.recent.map((line, i) => (
-                  <Text key={`${a.id}-${i}`} dimColor={i < a.recent.length - 1} wrap="truncate-end">
-                    {i === a.recent.length - 1 ? '→' : '·'} {line}
-                  </Text>
-                ))}
+                {(a.transcript ?? []).length > 0
+                  ? (a.transcript ?? []).map((line, i, all) => (
+                      <Text key={`${a.id}-t${i}`} dimColor={line.startsWith('  ') || line.startsWith('⚙') || i < all.length - 1} color={line.startsWith('  ✗') ? 'red' : undefined} wrap="truncate-end">
+                        {line}
+                      </Text>
+                    ))
+                  : a.recent.length === 0
+                    ? <Text dimColor>No activity read yet.</Text>
+                    : a.recent.map((line, i) => (
+                        <Text key={`${a.id}-${i}`} dimColor={i < a.recent.length - 1} wrap="truncate-end">
+                          {i === a.recent.length - 1 ? '→' : '·'} {line}
+                        </Text>
+                      ))}
               </Box>
             )}
           </Box>
