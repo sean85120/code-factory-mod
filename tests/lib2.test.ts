@@ -11,7 +11,11 @@ import {
   parseSettings,
   parseTodo,
   pickNext,
+  DESIGN_PROMPT,
+  branchFor,
+  depthSection,
   reviewAgentPrompt,
+  workPrompt,
   rereviewSection,
   validateItems,
 } from '../hooks/lib'
@@ -126,6 +130,27 @@ test('diff-only re-review section needs round 2, a valid sha and the open findin
 
 test('FACTORY-OPEN lines are read from the answer', () => {
   expect(declinedLines('x\nFACTORY-OPEN: a.ts:1 bad\n FACTORY-DECLINED: b.ts:2 ok', 'OPEN')).toEqual(['a.ts:1 bad'])
+})
+
+test('the reviewer prompt carries the review-fix severity rubric, conditional security pass and circuit breaker', () => {
+  const p = reviewAgentPrompt({ ...DEFAULT_SETTINGS, maxReviewRounds: 3 }, 'factory/t-001-x')
+  for (const needle of ['whether or not /review-fix exists', 'do the review and the fixes yourself', 'Critical/High, counted as danger', 'a finding with no severity or no scenario is Low', 'unverified', 'declined by default', 'only when the diff touches auth, privacy, deletion, payment, CI workflows or installers', 'report security=0', 'larger than about 50 lines', 'more than about 150 lines', 'Circuit breaker: after 3 passes', 'two consecutive passes']) expect(p).toContain(needle)
+  expect(DESIGN_PROMPT).toContain('"maxReviewRounds":3')
+  expect(p).toContain('a pass is one round of steps 1-3')
+  expect(p).toContain('Low security hardening is declined')
+})
+
+test('the work prompt embeds the reviewer prompt verbatim, updates the branch without rewriting pushed commits and names a risk tier', () => {
+  const item = parseTodo(TODO)[0]!
+  const s = { ...DEFAULT_SETTINGS, maxReviewRounds: 3 }
+  const wp = workPrompt(item, s, null)
+  expect(wp).toContain(reviewAgentPrompt(s, branchFor(item)))
+  expect(wp).toContain('never rewrite pushed commits')
+  expect(wp).toContain('git merge origin/main')
+  expect(wp).toContain('risk tier: low')
+  expect(wp).toContain('with its risk tier')
+  expect(depthSection({ files: 1, lines: 5 })).toContain('only if the diff touches')
+  expect(depthSection({ files: 30, lines: 5 })).toContain('if it touches auth')
 })
 
 test('the reviewer prompt asks for the security count, verifier votes, tags and REVIEW.md', () => {
