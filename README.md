@@ -160,7 +160,7 @@ default and `askNextPhase` at its default are the exceptions).
 | `allowTestRemoval` | `false` | Allow a pull request to delete tests. |
 | `requireReview` | `true` | Require a clean independent review for the exact commit. |
 | `reviewCommand` | `"/review-fix"` | Slash command the reviewer runs. See [Requirements](#requirements). |
-| `maxReviewRounds` | `5` | Review passes before an item is marked blocked. |
+| `maxReviewRounds` | `5` | Review passes before the reviewer stops and the item is marked blocked. `/factory-design` writes `3`. |
 | `reviewTimeoutMs` | `1800000` | How long to wait for the reviewer's verdict (at least 60000, at most 6 hours). |
 | `contextReset` | `"clear"` | `clear`, `compact` or `none` between items. |
 | `stopAfterVersion` | `null` | The loop stops after this version's items are done. |
@@ -190,8 +190,9 @@ Claude Code configuration directory (`/factory-costs`).
   how, acceptance, tests or settings change, the loop pauses until you approve
   again. New work the model discovers is only ever `proposed`.
 - **Gates before a pull request opens:** tests changed, no test weakened or
-  deleted, a clean independent review (including a security pass) for the exact
-  commit, build, full test suite, end-to-end tests.
+  deleted, a clean independent review for the exact commit (a security pass runs when
+  the change touches auth, privacy, deletion, payment, CI workflows or
+  installers), build, full test suite, end-to-end tests.
 - **Gates before a merge:** every CI check green, the reviewed commit is the pull
   request head, no `--admin`, no force push, no commits on the base branch.
 - **Review that scales:** the independent reviewer does a quick pass on a

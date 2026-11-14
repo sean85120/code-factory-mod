@@ -11,6 +11,7 @@ import {
   parseSettings,
   parseTodo,
   pickNext,
+  DESIGN_PROMPT,
   reviewAgentPrompt,
   rereviewSection,
   validateItems,
@@ -126,6 +127,12 @@ test('diff-only re-review section needs round 2, a valid sha and the open findin
 
 test('FACTORY-OPEN lines are read from the answer', () => {
   expect(declinedLines('x\nFACTORY-OPEN: a.ts:1 bad\n FACTORY-DECLINED: b.ts:2 ok', 'OPEN')).toEqual(['a.ts:1 bad'])
+})
+
+test('the reviewer prompt carries the review-fix severity rubric, conditional security pass and circuit breaker', () => {
+  const p = reviewAgentPrompt({ ...DEFAULT_SETTINGS, maxReviewRounds: 3 }, 'factory/t-001-x')
+  for (const needle of ['Critical/High, counted as danger', 'a finding with no severity or no scenario is Low', 'unverified', 'declined by default', 'only when the diff touches auth, privacy, deletion, payment, CI workflows or installers', 'report security=0', 'larger than about 50 lines', 'more than about 150 lines', 'Circuit breaker: after 3 passes', 'two consecutive passes']) expect(p).toContain(needle)
+  expect(DESIGN_PROMPT).toContain('"maxReviewRounds":3')
 })
 
 test('the reviewer prompt asks for the security count, verifier votes, tags and REVIEW.md', () => {

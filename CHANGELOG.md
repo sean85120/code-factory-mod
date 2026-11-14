@@ -7,6 +7,19 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+### Changed
+
+- The reviewer follows the `review-fix` rules: a Critical/High, Medium and Low
+  severity rubric with a failure scenario per finding (Low is declined by
+  default, an unproven High counts as Low), the security pass only when the
+  change touches auth, privacy, deletion, payment, CI workflows or installers,
+  fixes re-reviewed by a fresh agent only above about 50 lines or on those
+  paths, a final full pass only above about 150 lines, and a circuit breaker.
+- `/factory-design` writes `maxReviewRounds: 3` (three fix cycles). The built-in
+  default stays 5, so existing approvals keep their hash.
+- The pull request Risk section names a risk tier, the work prompt rebases on
+  the base branch before the review, and the hand-back names the tier.
+
 ### Added
 
 - MIT license, contributing guide, code of conduct, security policy, issue and
