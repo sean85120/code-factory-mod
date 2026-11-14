@@ -1190,7 +1190,7 @@ export function reviewAgentPrompt(s: Settings, branch: string): string {
 Repository branch: ${branch}, to be merged into ${s.baseBranch}. Read .factory/design.md and the item's acceptance criteria in .factory/todo.md for intent. Read CLAUDE.md and REVIEW.md (repo root, and next to the files the diff touches) when they exist and apply REVIEW.md: what failure means here, paths to skip, a cap on nits. Every finding cites file:line as evidence.
 
 Loop until clean:
-1. Run the slash command ${s.reviewCommand} on the changes of this branch against origin/${s.baseBranch} (use the Skill tool if it is not directly runnable) so it reviews and fixes them. A finding counts only after a separate verifier (a fresh agent that sees just the finding and the code) failed to refute it by running or tracing it; drop what the verifier refutes. Tag each surviving finding Important (a real defect this change introduces or exposes), Nit (style or preference, at most 3 in total), or Pre-existing (code the diff does not touch and does not make reachable). Only Important findings count; Nit and Pre-existing are listed once and never chased.
+1. Review the changes of this branch against origin/${s.baseBranch} by the rules below, which apply whether or not ${s.reviewCommand} exists. Run the slash command ${s.reviewCommand} on them if it is available (use the Skill tool if it is not directly runnable) and hold its findings to these rules; if it is missing or cannot run, do the review and the fixes yourself with fresh verifier agents instead. A finding counts only after a separate verifier (a fresh agent that sees just the finding and the code) failed to refute it by running or tracing it; drop what the verifier refutes. Tag each surviving finding Important (a real defect this change introduces or exposes), Nit (style or preference, at most 3 in total), or Pre-existing (code the diff does not touch and does not make reachable). Only Important findings count; Nit and Pre-existing are listed once and never chased.
    Severity, with the concrete failure scenario behind every finding (a finding with no severity or no scenario is Low):
    - Critical/High, counted as danger: wrong output, crash, security hole, or data loss reachable on real inputs by a normal user or an unprivileged attacker. Cite the code path and a failing test or an exact input trace; a claim you cannot show is "unverified" and counts as Low until one cheap probe confirms it.
    - Medium, counted as medium: a real bug with narrow or latent blast radius, or a missing test on a delete, privacy, security or payment path.
@@ -1204,7 +1204,7 @@ Also write one line \`FACTORY-PREEXISTING: <file:line> <one-line summary>\` for 
 Also write one line \`FACTORY-OPEN: <file:line> <one-line summary>\` for every danger, medium or security finding still unresolved in your last pass (the same findings your counts report). The factory hands that list to the next reviewer so a later diff-only pass still re-checks them.
 Finish your answer with exactly one final line, using the output of \`git rev-parse HEAD\` after your last commit and the counts of unresolved findings from your last pass:
 FACTORY-REVIEW: danger=<n> medium=<n> security=<n> sha=<HEAD sha>
-If ${s.reviewCommand} does not exist or cannot run, instead write exactly: FACTORY-REVIEW: unavailable`
+Only if you cannot review the branch at all (no agents, no git, no tests), instead write exactly: FACTORY-REVIEW: unavailable`
 }
 
 // ----------------------------------------------------------------- prompts

@@ -131,7 +131,7 @@ test('FACTORY-OPEN lines are read from the answer', () => {
 
 test('the reviewer prompt carries the review-fix severity rubric, conditional security pass and circuit breaker', () => {
   const p = reviewAgentPrompt({ ...DEFAULT_SETTINGS, maxReviewRounds: 3 }, 'factory/t-001-x')
-  for (const needle of ['Critical/High, counted as danger', 'a finding with no severity or no scenario is Low', 'unverified', 'declined by default', 'only when the diff touches auth, privacy, deletion, payment, CI workflows or installers', 'report security=0', 'larger than about 50 lines', 'more than about 150 lines', 'Circuit breaker: after 3 passes', 'two consecutive passes']) expect(p).toContain(needle)
+  for (const needle of ['whether or not /review-fix exists', 'do the review and the fixes yourself', 'Critical/High, counted as danger', 'a finding with no severity or no scenario is Low', 'unverified', 'declined by default', 'only when the diff touches auth, privacy, deletion, payment, CI workflows or installers', 'report security=0', 'larger than about 50 lines', 'more than about 150 lines', 'Circuit breaker: after 3 passes', 'two consecutive passes']) expect(p).toContain(needle)
   expect(DESIGN_PROMPT).toContain('"maxReviewRounds":3')
 })
 

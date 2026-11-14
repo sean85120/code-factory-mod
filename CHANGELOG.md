@@ -20,6 +20,9 @@ minor version may change behavior).
 - The pull request Risk section names a risk tier, the work prompt rebases on
   the base branch before the review, and the hand-back names the tier.
 
+- The reviewer applies those rules itself: a missing `reviewCommand` no longer
+  pauses the loop, the reviewer reviews and fixes with fresh verifier agents.
+
 ### Added
 
 - MIT license, contributing guide, code of conduct, security policy, issue and
