@@ -1177,7 +1177,7 @@ async function reviewerTurn($: Dollar, agentId: string, answer: string, final: b
     launchedHere = null
     if (act.action === 'unavailable') {
       expectReport = true
-      await pause($, snap.state, `${snap.settings.reviewCommand} is not available to the review agent`, false, { reviewAgentId: null, reviewAgentAt: 0 })
+      await pause($, snap.state, `the review agent could not review the branch`, false, { reviewAgentId: null, reviewAgentAt: 0 })
       return
     }
     if (act.action === 'record') await recordReview($, item.id, act.mark, snap.settings.maxReviewRounds, act.declined, act.open)
@@ -1862,7 +1862,7 @@ export const register: Register = (on, _options) => {
         return ran
       }
       if (/FACTORY-REVIEW:\s*unavailable/i.test(text)) {
-        await pause($, await readState($), `${snap.settings.reviewCommand} is not available to the review agent`)
+        await pause($, await readState($), `the review agent could not review the branch`)
       }
       return ran
     } finally {

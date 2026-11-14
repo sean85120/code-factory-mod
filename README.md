@@ -43,14 +43,13 @@ turns the ones worth doing into new items, and goes again.
 - A **test command** for the repository. A build command and end-to-end tests are
   used when you configure them. CI on GitHub Actions (or any check that reports
   on the pull request) is what the factory waits for before it merges.
-- A **review command**, unless you set `requireReview` to `false` (not
-  recommended): the independent reviewer runs the slash command in the
-  `reviewCommand` setting, which defaults to `/review-fix`. That is a skill many
-  people will not have. The design interview asks which command to use; point it
-  at any slash command or skill that reviews the changes of a branch and fixes
-  what it finds, such as a review skill of your own or one of Claude Code's
-  built-in review commands. If the command does not exist the reviewer reports
-  `unavailable` and the loop pauses instead of merging unreviewed code.
+- A **review command** is optional, unless you set `requireReview` to `false`
+  (not recommended): the independent reviewer runs the slash command in the
+  `reviewCommand` setting (default `/review-fix`) when it exists, and holds its
+  findings to the review rules built into the plugin (severity rubric, security
+  pass on sensitive paths, size thresholds, circuit breaker). If the command
+  does not exist the reviewer reviews and fixes the branch itself; it reports
+  `unavailable`, and the loop pauses, only when it cannot review at all.
 
 `/factory-doctor` checks the setup (git, `gh`, the design files, a clean tree)
 and says what to fix.
@@ -159,7 +158,7 @@ default and `askNextPhase` at its default are the exceptions).
 | `requireTestChanges` | `true` | A pull request must change test files. |
 | `allowTestRemoval` | `false` | Allow a pull request to delete tests. |
 | `requireReview` | `true` | Require a clean independent review for the exact commit. |
-| `reviewCommand` | `"/review-fix"` | Slash command the reviewer runs. See [Requirements](#requirements). |
+| `reviewCommand` | `"/review-fix"` | Slash command the reviewer runs when it exists; the reviewer follows the built-in review rules either way. See [Requirements](#requirements). |
 | `maxReviewRounds` | `5` | Review passes before the reviewer stops and the item is marked blocked. `/factory-design` writes `3`. |
 | `reviewTimeoutMs` | `1800000` | How long to wait for the reviewer's verdict (at least 60000, at most 6 hours). |
 | `contextReset` | `"clear"` | `clear`, `compact` or `none` between items. |

@@ -771,7 +771,7 @@ test('a pause for an unavailable reviewer keeps charging the hand-back turn, the
   await mainTurn($)
   fx.live.usd = 6
   await mainTurn($, { agentId: ID, answer: 'FACTORY-REVIEW: unavailable' })
-  expect(fx.state().pausedReason).toContain('not available')
+  expect(fx.state().pausedReason).toContain('could not review the branch')
   await handBack($, fx, 9)
   expect(await itemUsd($)).toMatch(/T-001\s+\$8\.00/)
   expect(await resetText($)).toContain('deleted')

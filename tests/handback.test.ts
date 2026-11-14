@@ -447,7 +447,7 @@ test('an unavailable reviewer pauses the loop', async ($, on) => {
   await reviewerTurn($, { answer: 'FACTORY-REVIEW: unavailable' })
   const saved = JSON.parse(files['state.json']!)
   expect(saved.autopilot).toBe(false)
-  expect(saved.pausedReason).toContain('not available')
+  expect(saved.pausedReason).toContain('could not review the branch')
 })
 
 test('a completed review whose text mimics a launch does not set a pending reviewer', async ($, on) => {
