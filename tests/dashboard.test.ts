@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { DEFAULT_STATE, agentActions, checksReport, controlsFor, isCompact, agentSummary, buildView, decisionsHash, itemSteps, parseSettings, parseTodo, progressBar, statusLine } from '../hooks/lib'
+import { DEFAULT_STATE, agentActions, agentTranscript, checksReport, controlsFor, isCompact, agentSummary, buildView, decisionsHash, itemSteps, parseSettings, parseTodo, progressBar, statusLine } from '../hooks/lib'
 import type { FactoryEvent, FactoryView } from '../hooks/lib'
 
 const TODO = `## T-001 [feature] First
@@ -237,6 +237,21 @@ test('the dashboard pane lists the steps of the item and an agent opens to its r
   expect(await ui.find({ text: /Bash: bun test/ })).toBeDefined()
   await ui.press({ key: 'agent-rev1' })
   expect(await ui.find({ text: /Read: \/repo\/src\/title\.ts/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('an opened agent shows its transcript: task, words, tool calls with results and errors', async ($, on) => {
+  const log = [
+    { role: 'user', text: 'Review the branch for T-002', toolUses: [] },
+    { role: 'assistant', text: 'Reading the diff first', toolUses: [{ tool: 'Bash', input: { command: 'git diff' }, text: '3 files changed' }] },
+    { role: 'assistant', text: '', toolUses: [{ tool: 'Read', input: { file_path: 'nope.ts' }, isError: true, text: 'no such file' }] },
+  ]
+  fixture($, on, { agents: [REVIEWER], messages: { rev1: log } })
+  await $.command.run({ command: 'factory-status' } as never)
+  const ui = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'Pane', requestId: 'factory', props: {} } as never)
+  expect(await ui.find({ text: /» task: Review the branch/ })).toBeUndefined()
+  await ui.press({ key: 'agent-rev1' })
+  for (const re of [/» task: Review the branch for T-002/, /› Reading the diff first/, /⚙ Bash: git diff/, /↳ 3 files changed/, /✗ no such file/]) expect(await ui.find({ text: re })).toBeDefined()
   await ui.unmount()
 })
 
@@ -529,4 +544,16 @@ test('a paused dashboard says what to do next and offers issue triage', async ($
   expect(await pane.find({ text: /● 3 Build/ })).toBeDefined()
   expect(await pane.find({ text: /next phase/ })).toBeUndefined()
   await pane.unmount()
+})
+
+test('an agent transcript lists its task, its words, each tool call with its result or error, newest lines last', () => {
+  const lines = agentTranscript([
+    { role: 'user', text: 'Review the branch', toolUses: [] },
+    { role: 'assistant', text: 'Reading the diff\n\nand the tests', toolUses: [{ tool: 'Bash', input: { command: 'git diff' }, text: '3 files changed\nmore' }, { tool: 'Read', input: { file_path: 'a.ts' }, isError: true, text: 'no such file' }] },
+    { role: 'user', text: 'ignored later user text', toolUses: [] },
+  ])
+  expect(lines).toEqual(['» task: Review the branch', '› Reading the diff', '› and the tests', '⚙ Bash: git diff', '  ↳ 3 files changed', '⚙ Read: a.ts', '  ✗ no such file'])
+  expect(agentTranscript([{ role: 'assistant', text: 'a\nb\nc', toolUses: [] }], 2)).toEqual(['› b', '› c'])
+  expect(agentTranscript([], 5)).toEqual([])
+  expect(agentTranscript([{ role: 'assistant', text: 'x\u001b[31my', toolUses: [] }])).toEqual(['› x[31my'])
 })
