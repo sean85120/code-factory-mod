@@ -1339,6 +1339,8 @@ export type Theme = {
   changeMark: string
   arrow: string
   fold: { open: string; closed: string }
+  face: (state: VoxState) => string
+  vox: Record<VoxState, string | undefined>
   running: string | undefined
   ok: string | undefined
   warn: string | undefined
@@ -1370,6 +1372,8 @@ export const CLASSIC_THEME: Theme = {
   changeMark: 'Δ',
   arrow: '➜',
   fold: { open: '▾', closed: '▸' },
+  face: () => '',
+  vox: { run: undefined, review: undefined, done: undefined, hold: undefined, blocked: undefined, budget: undefined, idle: undefined },
   running: 'green',
   ok: 'green',
   warn: 'yellow',
@@ -1487,6 +1491,8 @@ export function hackerTheme(caps: ThemeCaps, ascii = !caps.utf8): Theme {
     changeMark: g.changeMark,
     arrow: g.arrow,
     fold: g.fold,
+    face: voxFace,
+    vox: { run: p.primary, review: p.agent, done: p.primary, hold: p.dim, blocked: p.error, budget: p.warn, idle: p.accent },
     running: p.primary,
     ok: p.primary,
     warn: p.warn,
@@ -1512,6 +1518,71 @@ export function loopBadge(v: Pick<FactoryView, 'running' | 'current' | 'rows' | 
   if (!left && (v.blockedCount ?? 0) > 0) return 'FAIL'
   if (!left && (v.total ?? v.doneCount) > 0) return 'DONE'
   return 'HOLD'
+}
+
+export type VoxState = 'run' | 'review' | 'done' | 'hold' | 'blocked' | 'budget' | 'idle'
+
+export const VOX_STATES: readonly VoxState[] = ['run', 'review', 'done', 'hold', 'blocked', 'budget', 'idle']
+
+export function voxState(v: Pick<FactoryView, 'approved' | 'running' | 'stage' | 'current' | 'rows' | 'more' | 'blockedCount' | 'doneCount' | 'total' | 'pausedReason'>): VoxState {
+  if (!v.approved) return 'idle'
+  if (v.running) return v.current !== null && v.stage === 'review' ? 'review' : 'run'
+  const badge = loopBadge(v)
+  if (badge === 'FAIL') return 'blocked'
+  if (/budget/i.test(v.pausedReason ?? '')) return 'budget'
+  return badge === 'DONE' ? 'done' : 'hold'
+}
+
+const VOX_FACES: Record<VoxState, string> = { run: '(o_o)', review: '(o_O)', done: '(^_^)', hold: '(-_-)', blocked: '(x_x)', budget: '($_$)', idle: '(o_o)' }
+
+export function voxFace(state: VoxState): string {
+  return VOX_FACES[state]
+}
+
+export const VOX_WIDTH = 17
+
+export const VOX_PANE_COLUMNS = 60
+
+const VOX_PARTS: Record<VoxState, { top: string; brows: string; eyes: string; cheeks: string; mouth: string }> = {
+  run: { top: '*', brows: '    _     _    ', eyes: '   (o)   (o)   ', cheeks: '   ..     ..   ', mouth: '\\___/' },
+  review: { top: '?', brows: '    _     ^    ', eyes: '   (o)   (O)   ', cheeks: '   ..     ..   ', mouth: '\\_._/' },
+  done: { top: '+', brows: '    _     _    ', eyes: '   (^)   (^)   ', cheeks: '   **     **   ', mouth: '\\_v_/' },
+  hold: { top: 'z', brows: '               ', eyes: '   (-)   (-)   ', cheeks: '               ', mouth: '\\---/' },
+  blocked: { top: '!', brows: '    \\     /    ', eyes: '   (x)   (x)   ', cheeks: '               ', mouth: '/---\\' },
+  budget: { top: '$', brows: '    _     _    ', eyes: '   ($)   ($)   ', cheeks: '   ..     ..   ', mouth: '\\___/' },
+  idle: { top: '.', brows: '               ', eyes: '   (o)   (o)   ', cheeks: '               ', mouth: '\\___/' },
+}
+
+export function voxArt(state: VoxState): string[] {
+  const p = VOX_PARTS[state]
+  return [
+    `    .-""${p.top}""-.`,
+    "  .'         '.",
+    ' /             \\',
+    `|${p.brows}|`,
+    `|${p.eyes}|`,
+    `|${p.cheeks}|`,
+    ` \\    ${p.mouth}    /`,
+    "  '.         .'",
+    "    '-.....-'",
+  ].map(row => row.padEnd(VOX_WIDTH))
+}
+
+export function voxSpeech(v: Pick<FactoryView, 'approved' | 'running' | 'stage' | 'current' | 'rows' | 'more' | 'blockedCount' | 'doneCount' | 'total' | 'pausedReason' | 'runUsd' | 'budgetUsd' | 'reviewRound' | 'maxReviewRounds'>): string[] {
+  const state = voxState(v)
+  const next = v.rows.find(r => r.mark === 'todo')
+  const blocked = v.rows.find(r => r.mark === 'blocked')
+  const total = v.total ?? v.doneCount
+  const lines: Record<VoxState, string[]> = {
+    run: [v.current === null ? 'picking the next item' : `working on ${v.current}`, ...(v.current !== null && v.stage !== null ? [`stage: ${v.stage}`] : []), ...(next ? [`next: ${next.id}`] : [])],
+    review: [`reviewing ${v.current}`, `round ${v.reviewRound ?? 1}/${v.maxReviewRounds ?? '?'}`, ...(next ? [`next: ${next.id}`] : [])],
+    done: ['all done', `${v.doneCount}/${total} items merged`],
+    hold: ['paused', '/factory-start resumes'],
+    blocked: [`${v.blockedCount ?? 1} blocked`, ...(blocked ? [`${blocked.id} needs you`] : []), '/factory-retry <ID>'],
+    budget: ['budget reached', ...(v.runUsd != null && v.budgetUsd > 0 ? [`${formatUsd(v.runUsd)} of ${formatUsd(v.budgetUsd)}`] : []), '/factory-start renews it'],
+    idle: ['not approved yet', '/factory shows the next step'],
+  }
+  return lines[state].map(l => oneLine(l, 40))
 }
 
 function luminance(hex: string): number {
@@ -1651,6 +1722,7 @@ export function checksReport(checks: readonly DoctorCheck[]): string {
 }
 
 export function statusLine(v: FactoryView, t: Theme = CLASSIC_THEME): string {
+  const face = v.approved ? t.face(voxState(v)) : ''
   if (!v.approved) return 'factory: design not approved'
   const parts: string[] = []
   const at = v.stage === null ? -1 : STAGES.indexOf(v.stage)
@@ -1671,7 +1743,7 @@ export function statusLine(v: FactoryView, t: Theme = CLASSIC_THEME): string {
   const active = (v.agents ?? []).filter(a => a.id !== 'main' && (a.status === 'running' || a.status === 'waiting' || a.status === 'pending'))
   if (active.length > 0) parts.push(`${active.length} agent${active.length === 1 ? '' : 's'}`)
   if (v.running && v.elapsedMs != null && v.current !== null) parts.push(formatDuration(v.elapsedMs))
-  return parts.join(' · ')
+  return face === '' ? parts.join(' · ') : `${face} ${parts.join(' · ')}`
 }
 
 export function buildView(

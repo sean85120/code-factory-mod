@@ -36,6 +36,10 @@ import {
   budgetColor,
   checkColor,
   loopBadge,
+  voxArt,
+  voxSpeech,
+  voxState,
+  VOX_PANE_COLUMNS,
   checksLine,
   checksReport,
   controlsFor,
@@ -2139,6 +2143,7 @@ export const register: Register = (on, _options) => {
     const total = v.total ?? v.doneCount + v.rows.length + v.more
     const agents = v.agents ?? []
     const steps = v.steps ?? []
+    const vs = voxState(v)
     const openPane = (): void => {
       void $.ui.open({ id: PANE, title: 'Code factory', focus: true })
     }
@@ -2150,6 +2155,7 @@ export const register: Register = (on, _options) => {
     return (
       <Box flexDirection="column" paddingX={1}>
         <Box gap={1}>
+          {t.face(vs) !== '' && <Text color={t.vox[vs]}>{t.face(vs)}</Text>}
           <Text bold color={v.running ? t.running : undefined} dimColor={!v.running} wrap="truncate-end">
             {v.running ? `${t.head('RUN')} ${v.current ?? 'picking next'}` : `${t.head(loopBadge(v))} ${oneLine(v.pausedReason ?? 'stopped', compact ? 24 : 60)}`}
           </Text>
@@ -2264,9 +2270,29 @@ export const register: Register = (on, _options) => {
     const steps = v.steps ?? []
     const agents = v.agents ?? []
     const blocked = v.blocked ?? []
+    const vs = voxState(v)
+    const showVox = t.name === 'hacker' && (e.props.bodyColumns === undefined || e.props.bodyColumns >= VOX_PANE_COLUMNS)
 
     return (
       <Box flexDirection="column" paddingX={1}>
+        {showVox && (
+          <Box gap={2}>
+            <Box flexDirection="column">
+              {voxArt(vs).map((row, i) => (
+                <Text key={`vox-${i}`} color={t.vox[vs]}>
+                  {row}
+                </Text>
+              ))}
+            </Box>
+            <Box flexDirection="column">
+              {voxSpeech(v).map((line, i) => (
+                <Text key={`say-${i}`} color={i === 0 ? t.vox[vs] : undefined} dimColor={i > 0} wrap="truncate-end">
+                  {t.arrow} {line}
+                </Text>
+              ))}
+            </Box>
+          </Box>
+        )}
         <Text bold color={v.running ? t.running : undefined}>
           {statusLine(v, t)}
         </Text>
