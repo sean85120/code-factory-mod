@@ -27,7 +27,9 @@ import {
   mergeEvents,
   normalizeRepoCosts,
   oneLine,
-  progressBar,
+  theme,
+  budgetColor,
+  checkColor,
   checksLine,
   checksReport,
   controlsFor,
@@ -119,7 +121,7 @@ import {
   validateItems,
   workPrompt,
 } from './lib'
-import type { AgentRow, Control, DoctorCheck, Drive, EventKind, FactoryEvent, FactoryState, FactoryView, Item, LoopEvent, Mark, RepoCosts, ReviewMark, Settings, Stage, Step, Usage } from './lib'
+import type { AgentRow, Control, DoctorCheck, Drive, EventKind, FactoryEvent, FactoryState, FactoryView, Item, LoopEvent, RepoCosts, ReviewMark, Settings, Stage, Step, Theme, Usage } from './lib'
 
 type Dollar = EngineInterface
 
@@ -645,8 +647,6 @@ const openAgent = atom({ plugin: 'code-factory', key: 'openAgent' } as const, nu
 const skipTarget = atom({ plugin: 'code-factory', key: 'skipTarget' } as const, null)
 const checksAtom = atom({ plugin: 'code-factory', key: 'checks' } as const, null)
 let mainTurnOpen = false
-const GLYPH: Record<Mark, string> = { done: '✓', doing: '▶', todo: '○', blocked: '✗', proposed: '·' }
-const COLOR: Record<Mark, string | undefined> = { done: 'green', doing: 'yellow', todo: undefined, blocked: 'red', proposed: undefined }
 const PANE = 'factory'
 let viewTimer: Timer | null = null
 let lastStatusText: string | undefined | null = null
@@ -2053,17 +2053,13 @@ export const register: Register = (on, _options) => {
     return next(e)
   })
 
-  const AGENT_GLYPH: Record<string, string> = { running: '●', waiting: '◐', pending: '○', idle: '◌', completed: '✓', failed: '✗', killed: '✗' }
-  const STEP_GLYPH = { done: '✓', doing: '●', todo: '○' } as const
-  const STEP_COLOR = { done: 'green', doing: 'yellow', todo: undefined } as const
-  const budgetColor = (v: FactoryView): string | undefined =>
-    v.runUsd == null || v.budgetUsd <= 0 ? undefined : v.runUsd >= v.budgetUsd ? 'red' : v.runUsd >= v.budgetUsd * 0.8 ? 'yellow' : undefined
-  const agentLine = (a: AgentRow): string => oneLine(`${AGENT_GLYPH[a.status] ?? '·'} ${a.label} · ${a.status} · ${a.summary}`, 110)
+  const agentLine = (t: Theme, a: AgentRow): string => oneLine(`${t.agentGlyph(a.status)} ${a.label} · ${a.status} · ${a.summary}`, 110)
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const v = await read($, view)
     if (e.props.hasSurvey || !v || (!v.approved && Object.keys(v.marks).length === 0)) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
+    const t = theme()
     const compact = isCompact(e.props.bodyColumns)
     if (!v.approved) {
       return (
@@ -2094,13 +2090,13 @@ export const register: Register = (on, _options) => {
     return (
       <Box flexDirection="column" paddingX={1}>
         <Box gap={1}>
-          <Text bold color={v.running ? 'green' : undefined} dimColor={!v.running} wrap="truncate-end">
+          <Text bold color={v.running ? t.running : undefined} dimColor={!v.running} wrap="truncate-end">
             {v.running ? `factory ▶ ${v.current ?? 'picking next'}` : `factory ⏸ ${oneLine(v.pausedReason ?? 'stopped', compact ? 24 : 60)}`}
           </Text>
-          <Text dimColor>{`${v.doneCount}/${total} done ${progressBar(v.doneCount, total, compact ? 4 : 8)}${(v.blockedCount ?? 0) > 0 ? ` · ${v.blockedCount} blocked` : ''}`}</Text>
+          <Text dimColor>{`${v.doneCount}/${total} done ${t.bar(v.doneCount, total, compact ? 4 : 8)}${(v.blockedCount ?? 0) > 0 ? ` · ${v.blockedCount} blocked` : ''}`}</Text>
           {!compact && v.runUsd != null && (
-            <Text dimColor={budgetColor(v) === undefined} color={budgetColor(v)}>
-              {`${v.budgetUsd > 0 ? `${formatUsd(v.runUsd)}/${formatUsd(v.budgetUsd)} ${progressBar(v.runUsd, v.budgetUsd, 6)}` : `${formatUsd(v.runUsd)} run`}${v.current !== null && v.itemUsd != null ? ` · item ${formatUsd(v.itemUsd)}` : ''}`}
+            <Text dimColor={budgetColor(t, v) === undefined} color={budgetColor(t, v)}>
+              {`${v.budgetUsd > 0 ? `${formatUsd(v.runUsd)}/${formatUsd(v.budgetUsd)} ${t.bar(v.runUsd, v.budgetUsd, 6)}` : `${formatUsd(v.runUsd)} run`}${v.current !== null && v.itemUsd != null ? ` · item ${formatUsd(v.itemUsd)}` : ''}`}
             </Text>
           )}
           {!compact && v.running && v.elapsedMs != null && v.current !== null && <Text dimColor>{formatDuration(v.elapsedMs)}</Text>}
@@ -2116,8 +2112,8 @@ export const register: Register = (on, _options) => {
         {!compact && v.running && steps.length > 0 && (
           <Box gap={1}>
             {steps.map(st => (
-              <Text key={st.label} bold={st.state === 'doing'} color={STEP_COLOR[st.state]} dimColor={st.state === 'todo'}>
-                {STEP_GLYPH[st.state]} {st.label}
+              <Text key={st.label} bold={st.state === 'doing'} color={t.step[st.state].color} dimColor={st.state === 'todo'}>
+                {t.step[st.state].glyph} {st.label}
                 {st.state === 'doing' ? ` (${st.detail})` : ''}
               </Text>
             ))}
@@ -2125,8 +2121,8 @@ export const register: Register = (on, _options) => {
         )}
         {v.rows.slice(0, compact ? 2 : v.rows.length).map(r => (
           <Box key={r.id} gap={1}>
-            <Text color={COLOR[r.mark]} bold={r.mark === 'doing'} dimColor={r.mark === 'proposed'}>
-              {GLYPH[r.mark]} {r.id}
+            <Text color={t.mark[r.mark].color} bold={r.mark === 'doing'} dimColor={r.mark === 'proposed'}>
+              {t.mark[r.mark].glyph} {r.id}
             </Text>
             <Text dimColor={r.mark !== 'doing'} wrap="truncate-end">
               [{r.type}] {r.title}
@@ -2142,7 +2138,7 @@ export const register: Register = (on, _options) => {
         )}
         {agents.slice(0, compact ? 2 : 4).map(a => (
           <Button plain dimColor={!ACTIVE_AGENT.has(a.status)} key={`agent-${a.id}`} onPress={() => pick(a.id)}>
-            {oneLine(agentLine(a), compact ? 60 : 110)}
+            {oneLine(agentLine(t, a), compact ? 60 : 110)}
           </Button>
         ))}
         {!compact && v.changes.length > 0 && <Text dimColor>Δ {v.changes.join(' · ')}</Text>}
@@ -2158,6 +2154,7 @@ export const register: Register = (on, _options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
+    const t = theme()
     const Input = 'Input' in els ? els.Input : null
     const v = await read($, view)
     const open = await read($, openAgent)
@@ -2166,8 +2163,8 @@ export const register: Register = (on, _options) => {
     const guide = journey(v)
     const guideRows = guide.map((st, i) => (
       <Box key={`guide-${st.label}`} gap={1}>
-        <Text color={STEP_COLOR[st.state]} bold={st.state === 'doing'} dimColor={st.state === 'todo'}>
-          {STEP_GLYPH[st.state]} {i + 1} {st.label}
+        <Text color={t.step[st.state].color} bold={st.state === 'doing'} dimColor={st.state === 'todo'}>
+          {t.step[st.state].glyph} {i + 1} {st.label}
         </Text>
         <Text dimColor wrap="truncate-end">
           {st.detail}
@@ -2195,7 +2192,7 @@ export const register: Register = (on, _options) => {
             </Button>
           </Box>
           {(checks ?? []).map((c, i) => (
-            <Text key={`chk-${i}`} color={c.status === 'fail' ? 'red' : c.status === 'warn' ? 'yellow' : 'green'} wrap="truncate-end">
+            <Text key={`chk-${i}`} color={checkColor(t, c.status)} wrap="truncate-end">
               {checksLine(c)}
             </Text>
           ))}
@@ -2209,7 +2206,7 @@ export const register: Register = (on, _options) => {
 
     return (
       <Box flexDirection="column" paddingX={1}>
-        <Text bold color={v.running ? 'green' : undefined}>
+        <Text bold color={v.running ? t.running : undefined}>
           {statusLine(v)}
         </Text>
         <Box gap={1}>
@@ -2228,17 +2225,17 @@ export const register: Register = (on, _options) => {
         </Text>
         <Box gap={1}>
           {guide.map((st, i) => (
-            <Text key={`guide-${st.label}`} color={STEP_COLOR[st.state]} bold={st.state === 'doing'} dimColor={st.state === 'todo'}>
-              {STEP_GLYPH[st.state]} {i + 1} {st.label}
+            <Text key={`guide-${st.label}`} color={t.step[st.state].color} bold={st.state === 'doing'} dimColor={st.state === 'todo'}>
+              {t.step[st.state].glyph} {i + 1} {st.label}
             </Text>
           ))}
         </Box>
         <Text> </Text>
-        <Text bold>Plan {progressBar(v.doneCount, total, 20)} {v.doneCount}/{total}</Text>
+        <Text bold>Plan {t.bar(v.doneCount, total, 20)} {v.doneCount}/{total}</Text>
         {v.rows.map(r => (
           <Box key={r.id} gap={1}>
-            <Text color={COLOR[r.mark]} bold={r.mark === 'doing'} dimColor={r.mark === 'proposed'}>
-              {GLYPH[r.mark]} {r.id}
+            <Text color={t.mark[r.mark].color} bold={r.mark === 'doing'} dimColor={r.mark === 'proposed'}>
+              {t.mark[r.mark].glyph} {r.id}
             </Text>
             <Text dimColor={r.mark !== 'doing'} wrap="truncate-end">
               [{r.type}] {r.title}
@@ -2271,13 +2268,13 @@ export const register: Register = (on, _options) => {
         {blocked.length > 0 && (
           <Box flexDirection="column">
             <Text> </Text>
-            <Text bold color="red">
+            <Text bold color={t.error}>
               Blocked · {v.blockedCount ?? blocked.length}
             </Text>
             {blocked.map(b => (
               <Box key={`blocked-${b.id}`} flexDirection="column">
                 <Box gap={1}>
-                  <Text color="red">✗ {b.id}</Text>
+                  <Text color={t.error}>✗ {b.id}</Text>
                   <Text dimColor wrap="truncate-end">
                     {b.title}
                   </Text>
@@ -2299,14 +2296,14 @@ export const register: Register = (on, _options) => {
           <Box flexDirection="column">
             <Text> </Text>
             <Text bold>
-              {v.current} {progressBar(steps.filter(s => s.state === 'done').length + (steps.some(s => s.state === 'doing') ? 0.5 : 0), steps.length, 20)}
+              {v.current} {t.bar(steps.filter(s => s.state === 'done').length + (steps.some(s => s.state === 'doing') ? 0.5 : 0), steps.length, 20)}
               {v.running && v.elapsedMs != null ? ` · ${formatDuration(v.elapsedMs)}` : ''}
               {v.runUsd != null && v.itemUsd != null ? ` · ${formatUsd(v.itemUsd)}` : ''}
             </Text>
             {steps.map(st => (
               <Box key={st.label} gap={1}>
-                <Text color={STEP_COLOR[st.state]} bold={st.state === 'doing'} dimColor={st.state === 'todo'}>
-                  {STEP_GLYPH[st.state]} {st.label}
+                <Text color={t.step[st.state].color} bold={st.state === 'doing'} dimColor={st.state === 'todo'}>
+                  {t.step[st.state].glyph} {st.label}
                 </Text>
                 <Text dimColor wrap="truncate-end">
                   {st.detail}
@@ -2318,8 +2315,8 @@ export const register: Register = (on, _options) => {
         {v.runUsd != null && (
           <Box flexDirection="column">
             <Text> </Text>
-            <Text bold color={budgetColor(v)}>
-              Spend {v.budgetUsd > 0 ? `${formatUsd(v.runUsd)} of ${formatUsd(v.budgetUsd)} ${progressBar(v.runUsd, v.budgetUsd, 20)}` : `${formatUsd(v.runUsd)} this run (no budget set)`}
+            <Text bold color={budgetColor(t, v)}>
+              Spend {v.budgetUsd > 0 ? `${formatUsd(v.runUsd)} of ${formatUsd(v.budgetUsd)} ${t.bar(v.runUsd, v.budgetUsd, 20)}` : `${formatUsd(v.runUsd)} this run (no budget set)`}
             </Text>
           </Box>
         )}
@@ -2328,7 +2325,7 @@ export const register: Register = (on, _options) => {
         {agents.map(a => (
           <Box key={a.id} flexDirection="column">
             <Button plain dimColor={!ACTIVE_AGENT.has(a.status)} key={`agent-${a.id}`} onPress={() => void update($, openAgent, cur => (cur === a.id ? null : a.id)).then(() => refreshOnce($))}>
-              {`${open === a.id ? '▾' : '▸'} ${agentLine(a)}`}
+              {`${open === a.id ? '▾' : '▸'} ${agentLine(t, a)}`}
             </Button>
             {open === a.id && (
               <Box flexDirection="column" paddingLeft={3}>
@@ -2338,7 +2335,7 @@ export const register: Register = (on, _options) => {
                 </Text>
                 {(a.transcript ?? []).length > 0
                   ? (a.transcript ?? []).map((line, i, all) => (
-                      <Text key={`${a.id}-t${i}`} dimColor={line.startsWith('  ') || line.startsWith('⚙') || i < all.length - 1} color={line.startsWith('  ✗') ? 'red' : undefined} wrap="truncate-end">
+                      <Text key={`${a.id}-t${i}`} dimColor={line.startsWith('  ') || line.startsWith('⚙') || i < all.length - 1} color={line.startsWith('  ✗') ? t.error : undefined} wrap="truncate-end">
                         {line}
                       </Text>
                     ))
@@ -2358,7 +2355,7 @@ export const register: Register = (on, _options) => {
             <Text> </Text>
             <Text bold>Checks</Text>
             {checks.map((c, i) => (
-              <Text key={`chk-${i}`} color={c.status === 'fail' ? 'red' : c.status === 'warn' ? 'yellow' : 'green'} wrap="truncate-end">
+              <Text key={`chk-${i}`} color={checkColor(t, c.status)} wrap="truncate-end">
                 {checksLine(c)}
               </Text>
             ))}

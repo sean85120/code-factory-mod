@@ -1323,6 +1323,52 @@ export function progressBar(done: number, total: number, width = 10): string {
   return '█'.repeat(full) + '░'.repeat(w - full)
 }
 
+export type ThemeName = 'classic' | 'hacker'
+export type ThemeGlyph = { glyph: string; color: string | undefined }
+export type Theme = {
+  name: ThemeName
+  mark: Record<Mark, ThemeGlyph>
+  step: Record<StepState, ThemeGlyph>
+  agentGlyph: (status: string) => string
+  bar: (done: number, total: number, width?: number) => string
+  running: string | undefined
+  ok: string | undefined
+  warn: string | undefined
+  error: string | undefined
+}
+
+const CLASSIC_AGENT_GLYPH: Record<string, string> = { running: '●', waiting: '◐', pending: '○', idle: '◌', completed: '✓', failed: '✗', killed: '✗' }
+
+export const CLASSIC_THEME: Theme = {
+  name: 'classic',
+  mark: {
+    done: { glyph: '✓', color: 'green' },
+    doing: { glyph: '▶', color: 'yellow' },
+    todo: { glyph: '○', color: undefined },
+    blocked: { glyph: '✗', color: 'red' },
+    proposed: { glyph: '·', color: undefined },
+  },
+  step: { done: { glyph: '✓', color: 'green' }, doing: { glyph: '●', color: 'yellow' }, todo: { glyph: '○', color: undefined } },
+  agentGlyph: status => CLASSIC_AGENT_GLYPH[status] ?? '·',
+  bar: progressBar,
+  running: 'green',
+  ok: 'green',
+  warn: 'yellow',
+  error: 'red',
+}
+
+export function theme(): Theme {
+  return CLASSIC_THEME
+}
+
+export function budgetColor(t: Theme, v: Pick<FactoryView, 'runUsd' | 'budgetUsd'>): string | undefined {
+  return v.runUsd == null || v.budgetUsd <= 0 ? undefined : v.runUsd >= v.budgetUsd ? t.error : v.runUsd >= v.budgetUsd * 0.8 ? t.warn : undefined
+}
+
+export function checkColor(t: Theme, status: string): string | undefined {
+  return status === 'fail' ? t.error : status === 'warn' ? t.warn : t.ok
+}
+
 export const oneLine = (t: string, max: number): string => {
   const c = cleanText(t).replace(/\s+/g, ' ').trim()
   return c.length > max ? `${c.slice(0, max - 1)}…` : c
