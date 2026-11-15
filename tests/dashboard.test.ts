@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { DEFAULT_STATE, agentActions, agentTranscript, checksReport, controlsFor, isCompact, agentSummary, buildView, decisionsHash, itemSteps, parseSettings, parseTodo, progressBar, statusLine } from '../hooks/lib'
+import { DEFAULT_STATE, hackerTheme, DEFAULT_THEME_CAPS, agentActions, agentTranscript, checksReport, controlsFor, isCompact, agentSummary, buildView, decisionsHash, itemSteps, parseSettings, parseTodo, progressBar, statusLine } from '../hooks/lib'
 import type { FactoryEvent, FactoryView } from '../hooks/lib'
 
 const TODO = `## T-001 [feature] First
@@ -561,7 +561,7 @@ test('an agent transcript lists its task, its words, each tool call with its res
   expect(agentTranscript([{ role: 'assistant', text: 'x\u001b[31my', toolUses: [] }])).toEqual(['› x[31my'])
 })
 
-const doingColor = async (ui: any) => (await ui.find({ text: /^▶ T-002$/ }))?.props.color
+const doingColor = async (ui: any) => (await ui.find({ text: /^[▶▸] T-002$/ }))?.props.color
 
 test('the classic look is the default and the hacker look recolors the band and pane from the stored choice', async ($, on) => {
   fixture($, on, { store: { 'ui/theme': { name: 'hacker' } } })
@@ -587,7 +587,7 @@ for (const [claudeTheme, env, want] of [['light', {}, '#9A5B00'], ['dark-ansi', 
     await $.command.run({ command: 'factory-status' } as never)
     await $.command.run({ command: 'factory-theme' } as never)
     const ui = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false } } as never)
-    expect(await ui.find({ text: /^▶ T-002$/ })).toBeDefined()
+    expect(await ui.find({ text: /^▸ T-002$/ })).toBeDefined()
     expect(await doingColor(ui)).toBe(want)
     await ui.unmount()
   })
@@ -604,4 +604,94 @@ test('/factory-theme saves the choice in the store only, reports it, refuses unk
   expect(JSON.stringify(await run(''))).toContain('Look: hacker')
   expect(JSON.stringify(await run('classic'))).toContain('Look: classic')
   expect(writes.filter(w => w.path.includes('.factory/'))).toEqual([])
+})
+
+const mountBand = (ui: any, bodyColumns?: number) => ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, ...(bodyColumns === undefined ? {} : { bodyColumns }) } } as never)
+const mountPane = (ui: any, bodyColumns?: number) => ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'Pane', requestId: 'factory', props: { ...(bodyColumns === undefined ? {} : { bodyColumns }) } } as never)
+
+test('the hacker band draws the sigil, a state badge, hacker glyphs and swapped control glyphs, and pressing a control still works', async ($, on) => {
+  const toasts: string[] = []
+  const clock = fixture($, on, { store: { 'ui/theme': { name: 'hacker' } } })
+  on('ui.toast', (_: unknown, e: { text: string }) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.command.run({ command: 'factory-status' } as never)
+  await $.command.run({ command: 'factory-theme' } as never)
+  const ui = await mountBand($.ui, 140)
+  expect(await ui.find({ text: /^❯ factory \[RUN\] T-002$/ })).toBeDefined()
+  expect(await ui.find({ text: /▸ build/ })).toBeDefined()
+  expect(await ui.find({ text: /‖ pause/ })).toBeDefined()
+  expect(await ui.find({ text: /■ stop/ })).toBeDefined()
+  expect(await ui.find({ text: /◆ 1 done/ })).toBeDefined()
+  expect(await ui.find({ text: /»/ })).toBeDefined()
+  expect(await ui.find({ text: /⏸|▶ T-002|✓|⋯/ })).toBeUndefined()
+  await ui.press({ key: 'pause' })
+  await clock.advance(2000)
+  expect(toasts).toContain('factory paused: paused by you; /factory-start resumes')
+  await ui.unmount()
+})
+
+test('a paused hacker band shows the HOLD badge and the start control', async ($, on) => {
+  fixture($, on, { autopilot: false, store: { 'ui/theme': { name: 'hacker' } } })
+  await $.command.run({ command: 'factory-status' } as never)
+  await $.command.run({ command: 'factory-theme' } as never)
+  const ui = await mountBand($.ui)
+  expect(await ui.find({ text: /^❯ factory \[HOLD\]/ })).toBeDefined()
+  expect(await ui.find({ text: /▸ start/ })).toBeDefined()
+  expect(await ui.find({ text: /⏸|▶ start/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the narrow hacker band still drops the step row and events', async ($, on) => {
+  fixture($, on, { store: { 'ui/theme': { name: 'hacker' } } })
+  await $.command.run({ command: 'factory-status' } as never)
+  await $.command.run({ command: 'factory-theme' } as never)
+  const narrow = await mountBand($.ui, 60)
+  expect(await narrow.find({ text: /\[RUN\]/ })).toBeDefined()
+  expect(await narrow.find({ text: /▸ build/ })).toBeUndefined()
+  expect(await narrow.find({ text: /»/ })).toBeUndefined()
+  await narrow.unmount()
+})
+
+test('the hacker pane draws section rules sized to the pane and the ascii tier uses only ASCII glyphs', async ($, on) => {
+  fixture($, on, { store: { 'ui/theme': { name: 'hacker' } } })
+  await $.command.run({ command: 'factory-status' } as never)
+  await $.command.run({ command: 'factory-theme' } as never)
+  const pane = await mountPane($.ui, 60)
+  const found = async (ui: any, res: RegExp[]) => Object.fromEntries(await Promise.all(res.map(async r => [String(r), (await ui.find({ text: r })) !== undefined])))
+  expect(await found(pane, [/^── Plan /, /^── Agents/, /^── Recent/, /^── T-002 /, /▸ T-002/])).toEqual({ '/^── Plan /': true, '/^── Agents/': true, '/^── Recent/': true, '/^── T-002 /': true, '/▸ T-002/': true })
+  await pane.unmount()
+  await $.command.run({ command: 'factory-theme', args: 'ascii' } as never)
+  const ascii = await mountPane($.ui, 60)
+  expect(await found(ascii, [/^-- Plan /, /^-- Agents/, /^-- Recent/, /> T-002/])).toEqual({ '/^-- Plan /': true, '/^-- Agents/': true, '/^-- Recent/': true, '/> T-002/': true })
+  expect(await ascii.find({ text: /[‖■▸◆◇✖▰▱─]/ })).toBeUndefined()
+  await ascii.unmount()
+})
+
+test('a non-UTF-8 locale picks the ascii tier on its own and the classic look ignores it', async ($, on) => {
+  fixture($, on, { store: { 'ui/theme': { name: 'hacker' } }, env: { LANG: 'C' } })
+  await $.command.run({ command: 'factory-status' } as never)
+  expect(JSON.stringify(await $.command.run({ command: 'factory-theme' } as never))).toContain('ascii glyphs, the locale is not UTF-8')
+  const ui = await mountBand($.ui, 140)
+  expect(await ui.find({ text: /^> factory \[RUN\] T-002$/ })).toBeDefined()
+  await ui.unmount()
+  expect(JSON.stringify(await $.command.run({ command: 'factory-theme', args: 'classic' } as never))).toContain('Look: classic.')
+  const classic = await mountBand($.ui, 140)
+  expect(await classic.find({ text: /^factory ▶ T-002$/ })).toBeDefined()
+  await classic.unmount()
+})
+
+test('the status line under the hacker look carries the sigil and badge and none of the emoji-width glyphs', () => {
+  const items = parseTodo(TODO)
+  const running = buildView(items, { ...DEFAULT_STATE, approved: true, autopilot: true, current: 'T-002', approvedDone: ['T-001'] }, new Set(), null, null)
+  const paused = buildView(items, { ...DEFAULT_STATE, approved: true, autopilot: false, pausedReason: 'paused by you', approvedDone: ['T-001'] }, new Set(), null, null)
+  const t = hackerTheme(DEFAULT_THEME_CAPS)
+  expect(statusLine(running, t)).toMatch(/^❯ factory \[RUN\] T-002 · /)
+  expect(statusLine(running, t)).toContain('▰')
+  expect(statusLine(paused, t)).toMatch(/^❯ factory \[HOLD\] paused by you/)
+  for (const line of [statusLine(running, t), statusLine(paused, t)]) expect(line).not.toMatch(/[⏸▶█░]/)
+  expect(statusLine(running)).toMatch(/^factory ▶ T-002/)
+  expect(statusLine(paused)).toMatch(/^factory ⏸ paused by you/)
+  expect(statusLine(running, hackerTheme(DEFAULT_THEME_CAPS, true))).toMatch(/^> factory \[RUN\] T-002 · /)
 })
