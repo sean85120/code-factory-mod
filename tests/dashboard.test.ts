@@ -150,8 +150,11 @@ test('statusLine shortens a long pause reason to one line and drops the stage of
 const ok = (stdout: string) => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 const SETTINGS = JSON.stringify({ testCmd: ['unit'], baseBranch: 'main', requireReview: false, requireTestChanges: false, allowTestRemoval: true })
 
-function fixture($: any, on: any, o: { runs?: string[][]; autopilot?: boolean; blocked?: string[]; writes?: { path: string; text: string }[]; agents?: any[]; messages?: Record<string, any[]>; statuses?: (string | undefined)[]; rosterFails?: boolean; reads?: { n: number }; approved?: boolean } = {}) {
+function fixture($: any, on: any, o: { runs?: string[][]; autopilot?: boolean; blocked?: string[]; writes?: { path: string; text: string }[]; agents?: any[]; store?: Record<string, unknown>; env?: Record<string, string>; claudeTheme?: string; messages?: Record<string, any[]>; statuses?: (string | undefined)[]; rosterFails?: boolean; reads?: { n: number }; approved?: boolean } = {}) {
   const clock = mock.clock(on, { now: 1_000_000 })
+  if (o.store) mock.store(on, o.store)
+  if (o.env) mock.env(on, o.env)
+  if (o.claudeTheme) on('config.list', () => ({ value: [{ key: 'theme', label: 'Theme', kind: 'choice', value: o.claudeTheme, provider: { plugin: 'engine' }, isLocked: false }] as never }))
   const hash = decisionsHash(parseSettings(SETTINGS).settings, parseTodo(TODO))
   const files: Record<string, string> = {
     '.factory/settings.json': SETTINGS,
@@ -556,4 +559,49 @@ test('an agent transcript lists its task, its words, each tool call with its res
   expect(agentTranscript([{ role: 'assistant', text: 'a\nb\nc', toolUses: [] }], 2)).toEqual(['› b', '› c'])
   expect(agentTranscript([], 5)).toEqual([])
   expect(agentTranscript([{ role: 'assistant', text: 'x\u001b[31my', toolUses: [] }])).toEqual(['› x[31my'])
+})
+
+const doingColor = async (ui: any) => (await ui.find({ text: /^▶ T-002$/ }))?.props.color
+
+test('the classic look is the default and the hacker look recolors the band and pane from the stored choice', async ($, on) => {
+  fixture($, on, { store: { 'ui/theme': { name: 'hacker' } } })
+  await $.command.run({ command: 'factory-status' } as never)
+  const before = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false } } as never)
+  expect(await doingColor(before)).toBe('yellow')
+  await before.unmount()
+  await $.command.run({ command: 'factory-theme' } as never)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'code-factory', surface, component: 'AbovePrompt', props: { hasSurvey: false } } as never)
+    expect(await doingColor(ui)).toBe('#FFB000')
+    await ui.unmount()
+  }
+  const pane = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'Pane', requestId: 'factory', props: {} } as never)
+  expect((await pane.find({ text: /Plan/ }))?.props.color).toBeUndefined()
+  expect(await doingColor(pane)).toBe('#FFB000')
+  await pane.unmount()
+})
+
+for (const [claudeTheme, env, want] of [['light', {}, '#9A5B00'], ['dark-ansi', {}, 'yellow'], ['dark', { NO_COLOR: '1' }, undefined]] as const) {
+  test(`the hacker look follows the Claude theme "${claudeTheme}" and NO_COLOR ${JSON.stringify(env)}`, async ($, on) => {
+    fixture($, on, { store: { 'ui/theme': { name: 'hacker' } }, claudeTheme, env: { ...env } })
+    await $.command.run({ command: 'factory-status' } as never)
+    await $.command.run({ command: 'factory-theme' } as never)
+    const ui = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false } } as never)
+    expect(await ui.find({ text: /^▶ T-002$/ })).toBeDefined()
+    expect(await doingColor(ui)).toBe(want)
+    await ui.unmount()
+  })
+}
+
+test('/factory-theme saves the choice in the store only, reports it, refuses unknown words and never writes the repo', async ($, on) => {
+  const writes: { path: string; text: string }[] = []
+  fixture($, on, { writes, store: {} })
+  const run = async (args: string) => (await $.command.run({ command: 'factory-theme', args } as never)) as any
+  expect(JSON.stringify(await run(''))).toContain('Look: classic')
+  expect(JSON.stringify(await run('hacker'))).toContain('Look: hacker (dark)')
+  expect(JSON.stringify(await run(''))).toContain('Look: hacker')
+  expect(JSON.stringify(await run('neon'))).toContain('Usage: /factory-theme')
+  expect(JSON.stringify(await run(''))).toContain('Look: hacker')
+  expect(JSON.stringify(await run('classic'))).toContain('Look: classic')
+  expect(writes.filter(w => w.path.includes('.factory/'))).toEqual([])
 })

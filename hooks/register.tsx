@@ -28,6 +28,11 @@ import {
   normalizeRepoCosts,
   oneLine,
   theme,
+  themeCaps,
+  themeReport,
+  parseThemeArg,
+  parseThemePrefs,
+  DEFAULT_THEME_PREFS,
   budgetColor,
   checkColor,
   checksLine,
@@ -121,7 +126,7 @@ import {
   validateItems,
   workPrompt,
 } from './lib'
-import type { AgentRow, Control, DoctorCheck, Drive, EventKind, FactoryEvent, FactoryState, FactoryView, Item, LoopEvent, RepoCosts, ReviewMark, Settings, Stage, Step, Theme, Usage } from './lib'
+import type { AgentRow, Control, DoctorCheck, Drive, EventKind, FactoryEvent, FactoryState, FactoryView, Item, LoopEvent, RepoCosts, ReviewMark, Settings, Stage, Step, Theme, ThemePrefs, Usage } from './lib'
 
 type Dollar = EngineInterface
 
@@ -646,6 +651,30 @@ const view = atom({ plugin: 'code-factory', key: 'view' } as const, null)
 const openAgent = atom({ plugin: 'code-factory', key: 'openAgent' } as const, null)
 const skipTarget = atom({ plugin: 'code-factory', key: 'skipTarget' } as const, null)
 const checksAtom = atom({ plugin: 'code-factory', key: 'checks' } as const, null)
+const themeAtom = atom({ plugin: 'code-factory', key: 'theme' } as const, null)
+const THEME_KEY = 'ui/theme'
+
+async function loadTheme($: Dollar): Promise<void> {
+  let prefs: ThemePrefs = DEFAULT_THEME_PREFS
+  let noColor: string | undefined
+  let claudeTheme: string | undefined
+  try {
+    prefs = parseThemePrefs(await $.store.get(THEME_KEY))
+  } catch {}
+  try {
+    noColor = await $.env.get('NO_COLOR')
+  } catch {}
+  try {
+    const row = (await $.config.list()).find(r => r.key === 'theme')
+    if (typeof row?.value === 'string') claudeTheme = row.value
+  } catch {}
+  await update($, themeAtom, () => ({ prefs, caps: themeCaps(noColor, claudeTheme) }))
+}
+
+async function currentTheme($: Dollar): Promise<Theme> {
+  const tc = await read($, themeAtom)
+  return theme(tc?.prefs, tc?.caps)
+}
 let mainTurnOpen = false
 const PANE = 'factory'
 let viewTimer: Timer | null = null
@@ -1542,6 +1571,7 @@ export const register: Register = (on, _options) => {
       ['factory-pause', 'Code factory: stop advancing after the current turn, keeping the item, attempts and pending review', undefined, true],
       ['factory-status', 'Code factory: show progress, the current item, spend and blocked items', undefined, false],
       ['factory-log', 'Code factory: show the event timeline, for one item or all', '[ID]', true],
+      ['factory-theme', 'Code factory: choose the look of the band and pane, hacker or classic', '[hacker|classic]', true],
       ['factory-skip', 'Code factory: mark an item blocked so the loop moves on', '<ID> [reason]', false],
       ['factory-retry', 'Code factory: unblock an item and reset its attempts', '<ID>', false],
       ['factory-costs', 'Code factory: show spend per repo and per item', '[repo|all] | reset <repo>', true],
@@ -1553,6 +1583,7 @@ export const register: Register = (on, _options) => {
     }
 
     lastStatusText = null
+    await loadTheme($)
     startWatchdog($)
     await startView($)
     // A new session resumes the loop by itself when the repo is approved and running.
@@ -1630,6 +1661,21 @@ export const register: Register = (on, _options) => {
     const { id } = parseItemArg(e.args)
     if (e.args.trim() && !id) return { text: 'Usage: /factory-log [ID], for example /factory-log T-003.' }
     return { text: formatLog((await readState($)).events, id) }
+  })
+
+  on('command.run', { command: 'factory-theme' }, async ($, e) => {
+    const arg = parseThemeArg(e.args ?? '')
+    if (arg.problem) return { text: arg.problem }
+    if (arg.prefs) {
+      try {
+        await $.store.set(THEME_KEY, { ...parseThemePrefs(await $.store.get(THEME_KEY)), ...arg.prefs })
+      } catch {
+        return { text: 'Could not save the look; it stays as it was.' }
+      }
+    }
+    await loadTheme($)
+    const tc = await read($, themeAtom)
+    return { text: themeReport(tc?.prefs ?? DEFAULT_THEME_PREFS, tc?.caps ?? themeCaps(undefined, undefined)) }
   })
 
   on('command.run', { command: 'factory-skip' }, async ($, e) => skipCmd($, e.args))
@@ -2059,7 +2105,7 @@ export const register: Register = (on, _options) => {
     const v = await read($, view)
     if (e.props.hasSurvey || !v || (!v.approved && Object.keys(v.marks).length === 0)) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
-    const t = theme()
+    const t = await currentTheme($)
     const compact = isCompact(e.props.bodyColumns)
     if (!v.approved) {
       return (
@@ -2154,7 +2200,7 @@ export const register: Register = (on, _options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
-    const t = theme()
+    const t = await currentTheme($)
     const Input = 'Input' in els ? els.Input : null
     const v = await read($, view)
     const open = await read($, openAgent)

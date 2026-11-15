@@ -4,6 +4,9 @@ export type ViewRow = { id: string; type: 'feature' | 'bug' | 'chore' | 'docs'; 
 export type StepState = 'done' | 'doing' | 'todo'
 export type Step = { label: string; state: StepState; detail: string }
 export type AgentRow = { id: string; label: string; kind: string; status: string; summary: string; recent: string[]; parent: string | null; transcript?: string[] }
+export type ThemeName = 'classic' | 'hacker'
+export type ThemePrefs = { name: ThemeName }
+export type ThemeCaps = { noColor: boolean; scheme: 'dark' | 'light'; ansi: boolean }
 export type BlockedRow = { id: string; title: string; reason: string }
 export type DoctorCheck = { name: string; status: 'ok' | 'warn' | 'fail'; detail: string }
 export type FactoryView = {
@@ -37,6 +40,6 @@ export type FactoryView = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'code-factory': { view: FactoryView | null; openAgent: string | null; skipTarget: string | null; checks: DoctorCheck[] | null }
+    'code-factory': { view: FactoryView | null; openAgent: string | null; skipTarget: string | null; checks: DoctorCheck[] | null; theme: { prefs: ThemePrefs; caps: ThemeCaps } | null }
   }
 }
