@@ -731,7 +731,7 @@ const blitsOf = ($: any, on: any, answer: () => unknown = () => ({})) => {
   return blits
 }
 
-test('a wide hacker terminal pane draws a Raster face with decodable cells and the desktop keeps the ASCII face', async ($, on) => {
+test('a wide hacker terminal pane draws a Raster face with decodable cells and the desktop draws the Svg face', async ($, on) => {
   fixture($, on, { store: { 'ui/theme': { name: 'hacker' } } })
   await $.command.run({ command: 'factory-status' } as never)
   await $.command.run({ command: 'factory-theme' } as never)
@@ -748,7 +748,7 @@ test('a wide hacker terminal pane draws a Raster face with decodable cells and t
   expect(await pane.find({ text: /\.-""/ })).toBeUndefined()
   await pane.unmount()
   const desktop = await $.ui.mount({ plugin: 'code-factory', surface: 'desktop', component: 'Pane', requestId: 'factory', props: { bodyColumns: 80 } } as never)
-  expect({ raster: (await desktop.find({ type: 'Raster' })) !== undefined, art: (await desktop.find({ text: /\.-""\*""-\./ })) !== undefined, any: (await desktop.find({ text: /factory/ })) !== undefined }).toEqual({ raster: false, art: true, any: true })
+  expect({ raster: (await desktop.find({ type: 'Raster' })) !== undefined, svg: (await desktop.find({ type: 'Svg' })) !== undefined, art: (await desktop.find({ text: /\.-""\*""-\./ })) !== undefined, any: (await desktop.find({ text: /factory/ })) !== undefined }).toEqual({ raster: false, svg: true, art: false, any: true })
   await desktop.unmount()
 })
 
@@ -803,4 +803,46 @@ test('a refused blit cancels the timer, and the next refresh starts it again', a
   await $.command.run({ command: 'factory-status' } as never)
   await clock.advance(1000)
   expect(blits.length).toBeGreaterThan(1)
+})
+
+const mountDesk = (ui: any, component: 'Pane' | 'AbovePrompt', bodyColumns = 100) => ui.mount({ plugin: 'code-factory', surface: 'desktop', component, ...(component === 'Pane' ? { requestId: 'factory' } : {}), props: { hasSurvey: false, bodyColumns } } as never)
+
+test('the desktop pane under the hacker look is a dark console with a pipeline and the Vox drawing; the terminal pane has none of it', async ($, on) => {
+  fixture($, on, { store: { 'ui/theme': { name: 'hacker' } }, claudeTheme: 'light' })
+  await $.command.run({ command: 'factory-status' } as never)
+  await $.command.run({ command: 'factory-theme' } as never)
+  const desk = await mountDesk($.ui, 'Pane')
+  const svgs = await desk.findAll({ type: 'Svg' })
+  expect(svgs.length).toBe(2)
+  expect(svgs.every((s: any) => typeof s.props.alt === 'string' && s.props.alt.length > 0 && s.props.isInteractive === true)).toBe(true)
+  expect(svgs.some((s: any) => String(s.props.alt).startsWith('Pipeline:'))).toBe(true)
+  expect((await desk.findAll({ type: 'Box' })).some((b: any) => b.props.backgroundColor === '#0B0F0C')).toBe(true)
+  expect(await desk.find({ type: 'Box', key: 'T-002' })).toBeDefined()
+  expect(svgs.find((s: any) => !String(s.props.alt).startsWith('Pipeline:'))?.props.source).toContain('prefers-reduced-motion')
+  expect(JSON.stringify(await desk.findAll({ type: 'Svg' }))).not.toContain('<script')
+  await desk.unmount()
+  const term = await mountPane($.ui, 100)
+  expect((await term.findAll({ type: 'Svg' })).length).toBe(0)
+  expect((await term.findAll({ type: 'Box' })).some((b: any) => b.props.backgroundColor === '#0B0F0C')).toBe(false)
+  await term.unmount()
+})
+
+test('the desktop pane under the classic look stays unfilled and has no Svg', async ($, on) => {
+  fixture($, on)
+  await $.command.run({ command: 'factory-status' } as never)
+  const desk = await mountDesk($.ui, 'Pane')
+  expect((await desk.findAll({ type: 'Svg' })).length).toBe(0)
+  expect((await desk.findAll({ type: 'Box' })).some((b: any) => b.props.backgroundColor !== undefined)).toBe(false)
+  await desk.unmount()
+})
+
+test('motion off draws the desktop Vox without an animation block', async ($, on) => {
+  fixture($, on, { store: { 'ui/theme': { name: 'hacker', motion: 'off' } } })
+  await $.command.run({ command: 'factory-status' } as never)
+  await $.command.run({ command: 'factory-theme' } as never)
+  const desk = await mountDesk($.ui, 'Pane')
+  const vox = (await desk.findAll({ type: 'Svg' })).find((s: any) => !String(s.props.alt).startsWith('Pipeline:'))
+  expect(vox?.props.source).toBeDefined()
+  expect(String(vox?.props.source)).not.toContain('<style>')
+  await desk.unmount()
 })

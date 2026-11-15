@@ -1516,6 +1516,16 @@ export function theme(prefs: ThemePrefs = DEFAULT_THEME_PREFS, caps: ThemeCaps =
   return prefs.name === 'hacker' ? hackerTheme(caps, prefs.glyphs === 'ascii' || !caps.utf8, prefs.motion !== 'off') : CLASSIC_THEME
 }
 
+export function desktopLook(prefs: ThemePrefs | undefined, caps: ThemeCaps | undefined): { t: Theme; surface: string | undefined } {
+  const c = caps ?? DEFAULT_THEME_CAPS
+  if (prefs?.name !== 'hacker' || c.noColor) return { t: theme(prefs, caps), surface: undefined }
+  return { t: theme(prefs, { ...c, scheme: 'dark', ansi: false }), surface: HACKER_BACKGROUND.dark }
+}
+
+export function pipelineStates(steps: readonly { label: string; state: StepState }[]): StepState[] {
+  return STAGES.map(s => steps.find(x => x.label === s)?.state ?? 'todo')
+}
+
 export function themeReport(prefs: ThemePrefs, caps: ThemeCaps): string {
   const parts = prefs.name === 'classic' ? [] : [caps.noColor ? 'no color, NO_COLOR is set' : caps.ansi ? '16 colors' : caps.scheme, ...(prefs.glyphs === 'ascii' ? ['ascii glyphs'] : !caps.utf8 ? ['ascii glyphs, the locale is not UTF-8'] : []), ...(prefs.motion === 'off' ? ['motion off'] : [])]
   return `Look: ${prefs.name}${parts.length > 0 ? ` (${parts.join(', ')})` : ''}. ${prefs.name === 'classic' ? '/factory-theme hacker switches to the hacker look.' : '/factory-theme classic switches back; /factory-theme ascii forces plain ASCII glyphs and auto undoes it; /factory-theme motion off keeps the mascot still.'} The choice is yours alone, kept outside the repo, and never needs a re-approval.`
@@ -1754,6 +1764,73 @@ export function unpackCells(cells: string): number[] {
   const bin = atob(cells)
   const bytes = Uint8Array.from(bin, c => c.charCodeAt(0))
   return Array.from(new Uint32Array(bytes.buffer))
+}
+
+export const HACKER_HOVER = '#14281C'
+
+const STEP_WORD: Record<StepState, string> = { done: 'done', doing: 'running', todo: 'waiting' }
+
+export function pipelineSvg(states: readonly StepState[]): { source: string; alt: string } {
+  const P = HACKER_PALETTE.dark
+  const gap = 76
+  const width = 40 + gap * (STAGES.length - 1)
+  const parts = STAGES.map((label, i) => {
+    const st = states[i] ?? 'todo'
+    const prev = states[i - 1] ?? 'todo'
+    const cx = 20 + i * gap
+    const color = st === 'done' ? P.primary : st === 'doing' ? P.warn : P.dim
+    const line = i > 0 ? `<line x1="${cx - gap + 10}" y1="20" x2="${cx - 10}" y2="20" stroke="${prev === 'done' ? P.primary : P.dim}" stroke-width="2"/>` : ''
+    return `${line}<circle cx="${cx}" cy="20" r="9" fill="${st === 'todo' ? 'none' : color}" stroke="${color}" stroke-width="2"${st === 'doing' ? ' class="pulse"' : ''}/><text x="${cx}" y="46" fill="${color}" font-family="ui-monospace,Menlo,monospace" font-size="11" text-anchor="middle">${label}</text>`
+  })
+  const style = '<style>@media (prefers-reduced-motion: no-preference){.pulse{animation:p 1.4s ease-in-out infinite}}@keyframes p{50%{opacity:.35}}</style>'
+  return { source: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} 56" width="${width}" height="56">${style}${parts.join('')}</svg>`, alt: `Pipeline: ${STAGES.map((l, i) => `${l} ${STEP_WORD[states[i] ?? 'todo']}`).join(', ')}` }
+}
+
+const VOX_ALT: Record<VoxState, string> = {
+  run: 'Vox, the factory mascot, is working',
+  review: 'Vox is reviewing',
+  done: 'Vox is celebrating, the plan is done',
+  hold: 'Vox is asleep, the loop is paused',
+  blocked: 'Vox looks worried, something is blocked',
+  budget: 'Vox has dollar-sign eyes, the budget is reached',
+  idle: 'Vox is waiting',
+}
+
+export function voxSvg(state: VoxState, color: string | undefined, animate = true): { source: string; alt: string } {
+  const c = isHexColor(color) ? color : HACKER_PALETTE.dark.primary
+  const ink = '#E8FFF1'
+  const eye = (x: number): string => {
+    if (state === 'hold') return `<rect x="${x}" y="49" width="10" height="3" rx="1.5" fill="${ink}"/>`
+    if (state === 'done') return `<path d="M${x - 1} 52 q6 -11 12 0" fill="none" stroke="${ink}" stroke-width="3" stroke-linecap="round"/>`
+    if (state === 'blocked') return `<path d="M${x} 42 l10 12 M${x + 10} 42 l-10 12" stroke="${ink}" stroke-width="3" stroke-linecap="round"/>`
+    if (state === 'budget') return `<ellipse class="coin" cx="${x + 5}" cy="48" rx="6" ry="7" fill="#FFB000"/>`
+    return `<rect class="eye" x="${x}" y="${state === 'review' ? 38 : 41}" width="10" height="${state === 'review' ? 18 : 14}" rx="3" fill="${ink}"/>`
+  }
+  const mouth: Record<VoxState, string> = {
+    run: `<path d="M37 68 q13 11 26 0" fill="none" stroke="${ink}" stroke-width="3" stroke-linecap="round"/>`,
+    review: `<path d="M40 70 h20" stroke="${ink}" stroke-width="3" stroke-linecap="round"/>`,
+    done: `<path d="M35 64 h30 q-3 15 -15 15 q-12 0 -15 -15z" fill="${ink}"/>`,
+    hold: `<path d="M40 70 h20" stroke="${ink}" stroke-width="3" stroke-linecap="round"/>`,
+    blocked: `<path d="M37 74 q13 -11 26 0" fill="none" stroke="${ink}" stroke-width="3" stroke-linecap="round"/>`,
+    budget: `<path d="M40 70 h20" stroke="${ink}" stroke-width="3" stroke-linecap="round"/>`,
+    idle: `<path d="M40 70 h20" stroke="${ink}" stroke-width="3" stroke-linecap="round"/>`,
+  }
+  const cheeks = state === 'run' || state === 'done' ? '<circle cx="28" cy="62" r="4" fill="#FF6FA0" fill-opacity=".6"/><circle cx="72" cy="62" r="4" fill="#FF6FA0" fill-opacity=".6"/>' : ''
+  const brow = state === 'review' ? `<path d="M57 34 h12" stroke="${ink}" stroke-width="3" stroke-linecap="round"/>` : state === 'blocked' ? `<path d="M30 33 l10 4 M70 33 l-10 4" stroke="${ink}" stroke-width="3" stroke-linecap="round"/>` : ''
+  const z = state === 'hold' ? `<text class="z" x="78" y="30" fill="${c}" font-family="ui-monospace,Menlo,monospace" font-size="16">z</text>` : ''
+  const motion: Record<VoxState, string> = {
+    run: '.eye{transform-box:fill-box;transform-origin:center;animation:b 4s infinite}.spark{animation:s 1s infinite}',
+    review: '.eye{transform-box:fill-box;transform-origin:center;animation:b 5s infinite}',
+    done: '.head{animation:h .8s 2}',
+    hold: '.head{animation:br 3s ease-in-out infinite}.z{animation:f 3s linear infinite}',
+    blocked: '.head{animation:k .12s 6}',
+    budget: '.coin{transform-box:fill-box;transform-origin:center;animation:c 1s 2}',
+    idle: '.eye{transform-box:fill-box;transform-origin:center;animation:b 4s infinite}',
+  }
+  const frames = '@keyframes b{0%,94%,100%{transform:scaleY(1)}97%{transform:scaleY(.1)}}@keyframes s{50%{opacity:.2}}@keyframes h{40%{transform:translateY(-8px)}}@keyframes br{50%{opacity:.55}}@keyframes f{to{transform:translateY(-14px);opacity:0}}@keyframes k{50%{transform:translateX(3px)}}@keyframes c{50%{transform:scaleX(.1)}}'
+  const style = animate ? `<style>@media (prefers-reduced-motion: no-preference){${motion[state]}${frames}}</style>` : ''
+  const source = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="96" height="96">${style}<g class="head"><line x1="50" y1="12" x2="50" y2="18" stroke="${c}" stroke-width="3"/><circle class="spark" cx="50" cy="9" r="4" fill="${c}"/><circle cx="50" cy="56" r="38" fill="${c}" fill-opacity=".12" stroke="${c}" stroke-width="3"/>${brow}${eye(30)}${eye(60)}${cheeks}${mouth[state]}</g>${z}</svg>`
+  return { source, alt: VOX_ALT[state] }
 }
 
 function luminance(hex: string): number {

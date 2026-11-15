@@ -9,6 +9,13 @@ minor version may change behavior).
 
 ### Added
 
+- The hacker look on the Claude desktop app draws the pane as a dark console
+  (a fixed dark fill and the dark palette, whatever your Claude theme is), shows
+  Vox as an animated SVG face that honors the OS reduced-motion setting, adds a
+  stage pipeline drawing for the current item, and gives plan rows a hover
+  highlight. The terminal is unchanged. The drawings hold only fixed words, so
+  no repo or model text reaches their markup. Bordered sections are not drawn:
+  which `borderStyle` strings the desktop paints is not verified.
 - `/factory-theme hacker` recolors the band and pane in a phosphor palette that
   follows your Claude theme (dark, light or 16-color) and honors `NO_COLOR`.
   The choice is stored in your plugin store, outside the repo, so it never
