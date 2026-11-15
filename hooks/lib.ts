@@ -1340,6 +1340,7 @@ export type Theme = {
   arrow: string
   fold: { open: string; closed: string }
   face: (state: VoxState) => string
+  motion: boolean
   vox: Record<VoxState, string | undefined>
   running: string | undefined
   ok: string | undefined
@@ -1373,6 +1374,7 @@ export const CLASSIC_THEME: Theme = {
   arrow: '➜',
   fold: { open: '▾', closed: '▸' },
   face: () => '',
+  motion: false,
   vox: { run: undefined, review: undefined, done: undefined, hold: undefined, blocked: undefined, budget: undefined, idle: undefined },
   running: 'green',
   ok: 'green',
@@ -1431,21 +1433,27 @@ export const DEFAULT_THEME_PREFS: ThemePrefs = { name: 'classic', glyphs: 'auto'
 export const DEFAULT_THEME_CAPS: ThemeCaps = { noColor: false, scheme: 'dark', ansi: false, utf8: true }
 
 export function parseThemePrefs(raw: unknown): ThemePrefs {
-  const o = raw !== null && typeof raw === 'object' ? (raw as { name?: unknown; glyphs?: unknown }) : {}
-  return { name: o.name === 'hacker' ? 'hacker' : 'classic', glyphs: o.glyphs === 'ascii' ? 'ascii' : 'auto' }
+  const o = raw !== null && typeof raw === 'object' ? (raw as { name?: unknown; glyphs?: unknown; motion?: unknown }) : {}
+  return { name: o.name === 'hacker' ? 'hacker' : 'classic', glyphs: o.glyphs === 'ascii' ? 'ascii' : 'auto', ...(o.motion === 'off' ? { motion: 'off' as const } : {}) }
 }
 
-const THEME_USAGE = 'Usage: /factory-theme [hacker|classic] [ascii|auto]. With no argument it shows the current look.'
+const THEME_USAGE = 'Usage: /factory-theme [hacker|classic] [ascii|auto] [motion on|off]. With no argument it shows the current look.'
 
 export function parseThemeArg(args: string): { prefs?: Partial<ThemePrefs>; problem?: string } {
   const words = args.trim().toLowerCase().split(/\s+/).filter(Boolean)
-  const prefs: Partial<ThemePrefs> = {}
-  for (const w of words) {
+  const prefs: Partial<ThemePrefs> & { motionSet?: boolean } = {}
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
     if ((w === 'hacker' || w === 'classic') && prefs.name === undefined) prefs.name = w
     else if ((w === 'ascii' || w === 'auto') && prefs.glyphs === undefined) prefs.glyphs = w
-    else return { problem: THEME_USAGE }
+    else if (w === 'motion' && prefs.motionSet === undefined && (words[i + 1] === 'on' || words[i + 1] === 'off')) {
+      prefs.motionSet = true
+      prefs.motion = words[++i] === 'off' ? 'off' : undefined
+    } else return { problem: THEME_USAGE }
   }
-  return words.length === 0 ? {} : { prefs }
+  if (words.length === 0) return {}
+  const { motionSet, ...rest } = prefs
+  return { prefs: motionSet ? { ...rest, motion: rest.motion } : rest }
 }
 
 export function themeCaps(noColor: string | undefined, claudeTheme: string | undefined, locale?: string, term?: string): ThemeCaps {
@@ -1462,7 +1470,7 @@ function hackerLabel(ascii: boolean): (text: string) => string {
   }
 }
 
-export function hackerTheme(caps: ThemeCaps, ascii = !caps.utf8): Theme {
+export function hackerTheme(caps: ThemeCaps, ascii = !caps.utf8, motion = true): Theme {
   const p: Palette = caps.noColor ? HACKER_PALETTE.none : caps.ansi ? HACKER_PALETTE.ansi : HACKER_PALETTE[caps.scheme]
   const g = ascii ? HACKER_GLYPHS.ascii : HACKER_GLYPHS.unicode
   return {
@@ -1492,6 +1500,7 @@ export function hackerTheme(caps: ThemeCaps, ascii = !caps.utf8): Theme {
     arrow: g.arrow,
     fold: g.fold,
     face: voxFace,
+    motion,
     vox: { run: p.primary, review: p.agent, done: p.primary, hold: p.dim, blocked: p.error, budget: p.warn, idle: p.accent },
     running: p.primary,
     ok: p.primary,
@@ -1504,12 +1513,12 @@ export function hackerTheme(caps: ThemeCaps, ascii = !caps.utf8): Theme {
 }
 
 export function theme(prefs: ThemePrefs = DEFAULT_THEME_PREFS, caps: ThemeCaps = DEFAULT_THEME_CAPS): Theme {
-  return prefs.name === 'hacker' ? hackerTheme(caps, prefs.glyphs === 'ascii' || !caps.utf8) : CLASSIC_THEME
+  return prefs.name === 'hacker' ? hackerTheme(caps, prefs.glyphs === 'ascii' || !caps.utf8, prefs.motion !== 'off') : CLASSIC_THEME
 }
 
 export function themeReport(prefs: ThemePrefs, caps: ThemeCaps): string {
-  const parts = prefs.name === 'classic' ? [] : [caps.noColor ? 'no color, NO_COLOR is set' : caps.ansi ? '16 colors' : caps.scheme, ...(prefs.glyphs === 'ascii' ? ['ascii glyphs'] : !caps.utf8 ? ['ascii glyphs, the locale is not UTF-8'] : [])]
-  return `Look: ${prefs.name}${parts.length > 0 ? ` (${parts.join(', ')})` : ''}. ${prefs.name === 'classic' ? '/factory-theme hacker switches to the hacker look.' : '/factory-theme classic switches back; /factory-theme ascii forces plain ASCII glyphs and auto undoes it.'} The choice is yours alone, kept outside the repo, and never needs a re-approval.`
+  const parts = prefs.name === 'classic' ? [] : [caps.noColor ? 'no color, NO_COLOR is set' : caps.ansi ? '16 colors' : caps.scheme, ...(prefs.glyphs === 'ascii' ? ['ascii glyphs'] : !caps.utf8 ? ['ascii glyphs, the locale is not UTF-8'] : []), ...(prefs.motion === 'off' ? ['motion off'] : [])]
+  return `Look: ${prefs.name}${parts.length > 0 ? ` (${parts.join(', ')})` : ''}. ${prefs.name === 'classic' ? '/factory-theme hacker switches to the hacker look.' : '/factory-theme classic switches back; /factory-theme ascii forces plain ASCII glyphs and auto undoes it; /factory-theme motion off keeps the mascot still.'} The choice is yours alone, kept outside the repo, and never needs a re-approval.`
 }
 
 export function loopBadge(v: Pick<FactoryView, 'running' | 'current' | 'rows' | 'more' | 'blockedCount' | 'doneCount' | 'total'>): LoopBadge {
@@ -1583,6 +1592,168 @@ export function voxSpeech(v: Pick<FactoryView, 'approved' | 'running' | 'stage' 
     idle: ['not approved yet', '/factory shows the next step'],
   }
   return lines[state].map(l => oneLine(l, 40))
+}
+
+export const VOX_FRAME_MS = 83
+export const VOX_CELL_COLUMNS = 22
+export const VOX_CELL_ROWS = 8
+export const VOX_RASTER_COLUMNS = 70
+
+export type VoxPose = {
+  eyes: 'open' | 'closed' | 'wide' | 'happy' | 'x' | 'coin'
+  coin: number
+  look: -1 | 0 | 1
+  brow: 'none' | 'raised' | 'angry'
+  mouth: 'smile' | 'flat' | 'frown' | 'grin'
+  cheeks: boolean
+  lift: 0 | 1 | 2
+  shake: -1 | 0 | 1
+  glow: number
+  spark: boolean
+  z: number | null
+  glint: number | null
+  sparkle: number | null
+}
+
+const VOX_BASE: VoxPose = { eyes: 'open', coin: 0, look: 0, brow: 'none', mouth: 'smile', cheeks: false, lift: 0, shake: 0, glow: 0.8, spark: false, z: null, glint: null, sparkle: null }
+
+const blinking = (t: number, period: number): boolean => (t + 2000) % period < 160
+
+export function poseAt(state: VoxState, tickMs: number, sinceMs: number): VoxPose {
+  const t = Math.max(0, tickMs)
+  const since = Number.isFinite(sinceMs) ? Math.max(0, sinceMs) : Number.POSITIVE_INFINITY
+  const drift = ([0, 1, 0, -1] as const)[Math.floor(t / 1200) % 4]!
+  const scan = ([-1, 0, 1, 0] as const)[Math.floor(t / 250) % 4]!
+  switch (state) {
+    case 'run':
+      return { ...VOX_BASE, eyes: blinking(t, 3500) ? 'closed' : 'open', look: drift, cheeks: true, spark: t % 1000 < 250 }
+    case 'review':
+      return { ...VOX_BASE, eyes: blinking(t, 5000) ? 'closed' : 'wide', look: scan, brow: 'raised', mouth: 'flat', glow: 0.9, glint: Math.floor(t / 60) % (VOX_CELL_COLUMNS + VOX_CELL_ROWS * 2 + 24) }
+    case 'done': {
+      const h = since % 800
+      return { ...VOX_BASE, eyes: 'happy', mouth: 'grin', cheeks: true, glow: since < 3000 ? 1 : 0.9, lift: since < 1600 ? (h < 200 ? 1 : h < 400 ? 2 : h < 600 ? 1 : 0) : 0, sparkle: since < 3000 ? Math.floor(since / 150) % 4 + 1 : null }
+    }
+    case 'hold':
+      return { ...VOX_BASE, eyes: 'closed', mouth: 'flat', glow: ([0.45, 0.55, 0.65, 0.55] as const)[Math.floor(t / 700) % 4]!, z: Math.floor((t % 3000) / 500) }
+    case 'blocked':
+      return { ...VOX_BASE, eyes: 'x', mouth: 'frown', brow: 'angry', glow: ([0.6, 0.8, 1, 0.8] as const)[Math.floor(t / 500) % 4]!, shake: since < 800 ? ([-1, 1] as const)[Math.floor(since / 60) % 2]! : 0 }
+    case 'budget':
+      return { ...VOX_BASE, eyes: 'coin', coin: since < 2000 ? Math.floor(since / 100) % 4 : 0, mouth: 'flat' }
+    case 'idle':
+      return { ...VOX_BASE, eyes: blinking(t, 4000) ? 'closed' : 'open', mouth: 'flat', glow: 0.6 }
+  }
+}
+
+export function isHexColor(c: string | undefined): c is string {
+  return c !== undefined && /^#[0-9A-Fa-f]{6}$/.test(c)
+}
+
+const rgb = (hex: string): [number, number, number] => [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]
+const pack = (c: [number, number, number]): number => (Math.round(c[0]) << 16) | (Math.round(c[1]) << 8) | Math.round(c[2])
+const mix = (a: [number, number, number], b: [number, number, number], k: number): [number, number, number] => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k]
+
+const DEFAULT_COLOR = 0x01000000
+
+export function faceCells(pose: VoxPose, tone: string): { columns: number; rows: number; cells: string } {
+  const W = VOX_CELL_COLUMNS
+  const H = VOX_CELL_ROWS * 2
+  const base = rgb(tone)
+  const black: [number, number, number] = [0, 0, 0]
+  const white: [number, number, number] = [255, 255, 255]
+  const glow = Math.min(1, Math.max(0, pose.glow))
+  const rim = pack(mix(black, base, 0.55 + 0.45 * glow))
+  const shade = pack(mix(black, base, 0.3 * glow + 0.1))
+  const fill = pack(mix(black, base, 0.1))
+  const ink = pack(mix(base, white, 0.85))
+  const pink = pack(mix([255, 111, 160], base, 0.15))
+  const gold = pack([255, 176, 0])
+  const px = new Array<number | null>(W * H).fill(null)
+  const set = (x: number, y: number, c: number): void => {
+    if (x >= 0 && x < W && y >= 0 && y < H) px[y * W + x] = c
+  }
+  const ox = 3 + pose.shake
+  const oy = 2 - pose.lift
+  const inside = (x: number, y: number): boolean => ((x - 7.5) / 7.6) ** 2 + ((y - 7.5) / 6.3) ** 2 <= 1
+  for (let y = 0; y < 16; y++) {
+    for (let x = 0; x < 16; x++) {
+      if (!inside(x, y)) continue
+      const edge = !inside(x - 1, y) || !inside(x + 1, y) || !inside(x, y - 1) || !inside(x, y + 1)
+      const next = !edge && (!inside(x - 2, y) || !inside(x + 2, y) || !inside(x, y - 2) || !inside(x, y + 2))
+      set(ox + x, oy + y, edge ? rim : next ? shade : fill)
+    }
+  }
+  if (pose.glint !== null) {
+    for (let y = 0; y < 16; y++) {
+      for (let x = 0; x < 16; x++) {
+        if (inside(x, y) && Math.abs(x + y - (pose.glint - 4)) <= 1) set(ox + x, oy + y, ink)
+      }
+    }
+  }
+  const at = (x: number, y: number, c: number): void => set(ox + x, oy + y, c)
+  at(7, 1, rim)
+  at(8, 1, rim)
+  at(7, 0, pose.spark ? ink : shade)
+  at(8, 0, pose.spark ? ink : shade)
+  for (const ex of [4 + pose.look, 10 + pose.look]) {
+    if (pose.eyes === 'open') for (let y = 6; y <= 8; y++) for (let x = ex; x < ex + 2; x++) at(x, y, ink)
+    else if (pose.eyes === 'wide') for (let y = 5; y <= 8; y++) for (let x = ex; x < ex + 2; x++) at(x, y, ink)
+    else if (pose.eyes === 'closed') {
+      at(ex, 7, ink)
+      at(ex + 1, 7, ink)
+    } else if (pose.eyes === 'happy') {
+      at(ex - 1, 7, ink)
+      at(ex, 6, ink)
+      at(ex + 1, 6, ink)
+      at(ex + 2, 7, ink)
+    } else if (pose.eyes === 'x') {
+      const x0 = ex - 1
+      for (const [dx, dy] of [[0, 6], [2, 6], [1, 7], [0, 8], [2, 8]] as const) at(x0 + dx, dy, ink)
+    } else {
+      const w = ([3, 2, 1, 2] as const)[pose.coin % 4]!
+      const x0 = ex - 1 + Math.floor((3 - w) / 2)
+      for (let y = 6; y <= 8; y++) for (let x = x0; x < x0 + w; x++) at(x, y, gold)
+    }
+  }
+  if (pose.brow === 'raised') for (const x of [10, 11, 12]) at(x, 4, ink)
+  if (pose.brow === 'angry') for (const [x, y] of [[3, 4], [4, 4], [5, 5], [12, 4], [11, 4], [10, 5]] as const) at(x, y, ink)
+  if (pose.cheeks) for (const [x, y] of [[2, 9], [3, 9], [12, 9], [13, 9]] as const) at(x, y, pink)
+  const mouth: Record<VoxPose['mouth'], ReadonlyArray<readonly [number, number]>> = {
+    smile: [[5, 10], [10, 10], [6, 11], [7, 11], [8, 11], [9, 11]],
+    flat: [[6, 11], [7, 11], [8, 11], [9, 11]],
+    frown: [[5, 11], [10, 11], [6, 10], [7, 10], [8, 10], [9, 10]],
+    grin: [[5, 10], [6, 10], [7, 10], [8, 10], [9, 10], [10, 10], [6, 11], [7, 11], [8, 11], [9, 11]],
+  }
+  for (const [x, y] of mouth[pose.mouth]) at(x, y, ink)
+  if (pose.z !== null) {
+    const zy = 12 - pose.z * 2
+    for (const [x, y] of [[0, 0], [1, 0], [2, 0], [1, 1], [0, 2], [1, 2], [2, 2]] as const) set(19 + x, zy + y, pack(mix(black, base, 0.7)))
+  }
+  if (pose.sparkle !== null) {
+    for (const [x, y] of [[1, 2], [20, 3], [2, 12], [19, 10]].slice(0, pose.sparkle)) set(x!, y!, ink)
+  }
+  const words = new Uint32Array(W * VOX_CELL_ROWS * 3)
+  for (let r = 0; r < VOX_CELL_ROWS; r++) {
+    for (let x = 0; x < W; x++) {
+      const top = px[r * 2 * W + x]!
+      const bottom = px[(r * 2 + 1) * W + x]!
+      const i = (r * W + x) * 3
+      const topOn = top !== null
+      const botOn = bottom !== null
+      words[i] = topOn && botOn ? 0x2580 : topOn ? 0x2580 : botOn ? 0x2584 : 0x20
+      words[i + 1] = topOn ? top : botOn ? bottom : DEFAULT_COLOR
+      words[i + 2] = topOn && botOn ? bottom : DEFAULT_COLOR
+    }
+  }
+  const bytes = new Uint8Array(words.buffer)
+  let bin = ''
+  for (const b of bytes) bin += String.fromCharCode(b)
+  return { columns: W, rows: VOX_CELL_ROWS, cells: btoa(bin) }
+}
+
+export function unpackCells(cells: string): number[] {
+  const bin = atob(cells)
+  const bytes = Uint8Array.from(bin, c => c.charCodeAt(0))
+  return Array.from(new Uint32Array(bytes.buffer))
 }
 
 function luminance(hex: string): number {

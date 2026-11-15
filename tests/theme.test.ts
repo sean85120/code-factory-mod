@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { CLASSIC_THEME, DEFAULT_THEME_CAPS, VOX_STATES, VOX_WIDTH, hackerTheme, loopBadge, voxArt, voxFace, voxSpeech, voxState, HACKER_BACKGROUND, HACKER_PALETTE, budgetColor, checkColor, contrastRatio, decisionsHash, parseSettings, parseThemeArg, parseThemePrefs, parseTodo, progressBar, theme, themeCaps, themeReport } from '../hooks/lib'
+import { CLASSIC_THEME, DEFAULT_THEME_CAPS, VOX_CELL_COLUMNS, VOX_CELL_ROWS, faceCells, isHexColor, poseAt, unpackCells, VOX_STATES, VOX_WIDTH, hackerTheme, loopBadge, voxArt, voxFace, voxSpeech, voxState, HACKER_BACKGROUND, HACKER_PALETTE, budgetColor, checkColor, contrastRatio, decisionsHash, parseSettings, parseThemeArg, parseThemePrefs, parseTodo, progressBar, theme, themeCaps, themeReport } from '../hooks/lib'
 
 test('the classic theme reproduces the marks, step glyphs, agent glyphs and colors the band always drew', () => {
   const t = theme()
@@ -235,4 +235,66 @@ test('the mascot speaks only fixed words, ids and numbers: no title, reason or o
   expect(said).toContain('T-004 needs you')
   expect(said).toContain('$5.00 of $5.00')
   for (const line of said) expect([line, line.length <= 40, /SECRET|script|\u001b/.test(line)]).toEqual([line, true, false])
+})
+
+test('poses are a pure function of the clock: same input same pose, blinks come on a cadence, the look drifts', () => {
+  for (const s of VOX_STATES) expect(poseAt(s, 1234, 500)).toEqual(poseAt(s, 1234, 500))
+  expect([1500, 1600, 1700, 5000, 5100].map(t => poseAt('run', t, Number.POSITIVE_INFINITY).eyes)).toEqual(['closed', 'closed', 'open', 'closed', 'closed'])
+  const closed = Array.from({ length: 175 }, (_, i) => poseAt('run', i * 40, Number.POSITIVE_INFINITY).eyes === 'closed').filter(Boolean).length
+  expect(closed).toBeGreaterThan(2)
+  expect(closed).toBeLessThan(14)
+  expect(new Set([0, 1200, 2400, 3600].map(t => poseAt('run', t, 0).look))).toEqual(new Set([0, 1, -1]))
+  expect(poseAt('review', 0, 0).brow).toBe('raised')
+  expect(poseAt('review', 600, 0).glint).not.toBeNull()
+})
+
+test('done celebrates only on an observed transition, then settles; blocked shakes then stops; the coin spins then stills', () => {
+  const lifts = [0, 200, 500, 700, 800, 1700].map(s => poseAt('done', 9000, s).lift)
+  expect(lifts).toEqual([1, 2, 1, 0, 1, 0])
+  expect(poseAt('done', 9000, 100).sparkle).not.toBeNull()
+  expect(poseAt('done', 9000, 3500)).toMatchObject({ lift: 0, sparkle: null, glow: 0.9 })
+  const settled = poseAt('done', 9000, Number.POSITIVE_INFINITY)
+  expect([settled.lift, settled.sparkle]).toEqual([0, null])
+  expect([30, 100, 900].map(s => poseAt('blocked', 9000, s).shake)).toEqual([-1, 1, 0])
+  expect(poseAt('blocked', 9000, Number.POSITIVE_INFINITY).shake).toBe(0)
+  expect([50, 150, 250, 2500].map(s => poseAt('budget', 0, s).coin)).toEqual([0, 1, 2, 0])
+  expect(new Set([0, 500, 1000, 1500, 2000, 2500].map(t => poseAt('hold', t, 0).z)).size).toBe(6)
+  expect(poseAt('hold', 0, 0).eyes).toBe('closed')
+})
+
+test('a face is a decodable grid of width-1 half-block cells that changes with the pose, the tone and the glow', () => {
+  const still = poseAt('run', 0, Number.POSITIVE_INFINITY)
+  const f = faceCells(still, '#3DF58A')
+  expect([f.columns, f.rows]).toEqual([VOX_CELL_COLUMNS, VOX_CELL_ROWS])
+  const words = unpackCells(f.cells)
+  expect(words).toHaveLength(VOX_CELL_COLUMNS * VOX_CELL_ROWS * 3)
+  const glyphs = new Set<number>()
+  for (let i = 0; i < words.length; i += 3) glyphs.add(words[i]!)
+  expect([...glyphs].every(g => g === 0x20 || g === 0x2580 || g === 0x2584)).toBe(true)
+  expect(glyphs.has(0x2580)).toBe(true)
+  expect(faceCells(still, '#3DF58A').cells).toBe(f.cells)
+  expect(faceCells(still, '#FF4D6D').cells).not.toBe(f.cells)
+  expect(faceCells({ ...still, eyes: 'closed' }, '#3DF58A').cells).not.toBe(f.cells)
+  expect(faceCells({ ...still, lift: 2 }, '#3DF58A').cells).not.toBe(f.cells)
+  expect(faceCells({ ...still, glow: 0.2 }, '#3DF58A').cells).not.toBe(f.cells)
+  const states = VOX_STATES.map(s => faceCells(poseAt(s, 0, Number.POSITIVE_INFINITY), '#3DF58A').cells)
+  expect(new Set(states).size).toBe(VOX_STATES.length)
+  for (const s of VOX_STATES) for (const t of [0, 333, 1111, 2777]) for (const since of [0, 250, 5000]) expect(unpackCells(faceCells(poseAt(s, t, since), '#3DF58A').cells)).toHaveLength(VOX_CELL_COLUMNS * VOX_CELL_ROWS * 3)
+})
+
+test('only a six-digit hex color can paint the face, and the motion preference parses, reports and reaches the theme', () => {
+  expect(['#3DF58A', '#0b7a3b'].map(isHexColor)).toEqual([true, true])
+  for (const bad of [undefined, 'green', '#3DF58', '#3DF58AA', '3DF58A', '#GGGGGG']) expect(isHexColor(bad)).toBe(false)
+  expect(hackerTheme(DEFAULT_THEME_CAPS).motion).toBe(true)
+  expect(hackerTheme(DEFAULT_THEME_CAPS, false, false).motion).toBe(false)
+  expect(theme({ name: 'hacker', glyphs: 'auto', motion: 'off' }, DEFAULT_THEME_CAPS).motion).toBe(false)
+  expect(theme({ name: 'hacker', glyphs: 'auto' }, DEFAULT_THEME_CAPS).motion).toBe(true)
+  expect(theme().motion).toBe(false)
+  expect(parseThemePrefs({ name: 'hacker', motion: 'off' })).toEqual({ name: 'hacker', glyphs: 'auto', motion: 'off' })
+  expect(parseThemePrefs({ name: 'hacker', motion: 'fast' })).toEqual({ name: 'hacker', glyphs: 'auto' })
+  expect(parseThemeArg('motion off')).toEqual({ prefs: { motion: 'off' } })
+  expect(parseThemeArg('hacker motion off ascii')).toEqual({ prefs: { name: 'hacker', glyphs: 'ascii', motion: 'off' } })
+  expect(parseThemeArg('motion on').prefs).toHaveProperty('motion', undefined)
+  for (const bad of ['motion', 'motion maybe', 'motion off motion on', 'off']) expect(parseThemeArg(bad).problem).toContain('Usage: /factory-theme')
+  expect(themeReport({ name: 'hacker', glyphs: 'auto', motion: 'off' }, DEFAULT_THEME_CAPS)).toContain('motion off')
 })

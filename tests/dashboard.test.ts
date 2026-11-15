@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { DEFAULT_STATE, hackerTheme, DEFAULT_THEME_CAPS, agentActions, agentTranscript, checksReport, controlsFor, isCompact, agentSummary, buildView, decisionsHash, itemSteps, parseSettings, parseTodo, progressBar, statusLine } from '../hooks/lib'
+import { DEFAULT_STATE, VOX_CELL_COLUMNS, VOX_CELL_ROWS, hackerTheme, unpackCells, DEFAULT_THEME_CAPS, agentActions, agentTranscript, checksReport, controlsFor, isCompact, agentSummary, buildView, decisionsHash, itemSteps, parseSettings, parseTodo, progressBar, statusLine } from '../hooks/lib'
 import type { FactoryEvent, FactoryView } from '../hooks/lib'
 
 const TODO = `## T-001 [feature] First
@@ -701,7 +701,7 @@ test('the wide hacker pane shows the bot and what it is doing, the narrow one an
   fixture($, on, { store: { 'ui/theme': { name: 'hacker' } } })
   await $.command.run({ command: 'factory-status' } as never)
   await $.command.run({ command: 'factory-theme' } as never)
-  const wide = await mountPane($.ui, 80)
+  const wide = await mountPane($.ui, 65)
   expect(await wide.find({ text: /\.-""\*""-\./ })).toBeDefined()
   expect(await wide.find({ text: /\(o\)   \(o\)/ })).toBeDefined()
   expect(await wide.find({ text: /^» working on T-002$/ })).toBeDefined()
@@ -719,4 +719,88 @@ test('the wide hacker pane shows the bot and what it is doing, the narrow one an
   const band = await mountBand($.ui, 140)
   expect(await band.find({ text: /^\(o_o\)$/ })).toBeUndefined()
   await band.unmount()
+})
+
+const blitsOf = ($: any, on: any, answer: () => unknown = () => ({})) => {
+  const blits: { requestId: string; key: string; cells: string }[] = []
+  on('ui.panes', () => ({ value: [{ id: 'factory', title: 'Code factory', isPlaced: true }] }))
+  on('ui.blit', (_: unknown, e: { requestId: string; key: string; cells: string }) => {
+    blits.push(e)
+    return { value: answer() }
+  })
+  return blits
+}
+
+test('a wide hacker terminal pane draws a Raster face with decodable cells and the desktop keeps the ASCII face', async ($, on) => {
+  fixture($, on, { store: { 'ui/theme': { name: 'hacker' } } })
+  await $.command.run({ command: 'factory-status' } as never)
+  await $.command.run({ command: 'factory-theme' } as never)
+  const pane = await mountPane($.ui, 80)
+  const r = await pane.find({ type: 'Raster' })
+  expect(r?.props.key).toBe('vox')
+  expect([r?.props.columns, r?.props.rows]).toEqual([VOX_CELL_COLUMNS, VOX_CELL_ROWS])
+  const words = unpackCells(r?.props.cells as string)
+  expect(words).toHaveLength(VOX_CELL_COLUMNS * VOX_CELL_ROWS * 3)
+  for (let i = 0; i < words.length; i += 3) {
+    expect([0x20, 0x2580, 0x2584]).toContain(words[i])
+    for (const c of [words[i + 1]!, words[i + 2]!]) expect(c === 0x01000000 || c <= 0xffffff).toBe(true)
+  }
+  expect(await pane.find({ text: /\.-""/ })).toBeUndefined()
+  await pane.unmount()
+  const desktop = await $.ui.mount({ plugin: 'code-factory', surface: 'desktop', component: 'Pane', requestId: 'factory', props: { bodyColumns: 80 } } as never)
+  expect({ raster: (await desktop.find({ type: 'Raster' })) !== undefined, art: (await desktop.find({ text: /\.-""\*""-\./ })) !== undefined, any: (await desktop.find({ text: /factory/ })) !== undefined }).toEqual({ raster: false, art: true, any: true })
+  await desktop.unmount()
+})
+
+test('motion off, the ascii tier and the classic look draw no Raster and start no timer', async ($, on) => {
+  const blits = blitsOf($, on)
+  const clock = fixture($, on, { store: { 'ui/theme': { name: 'hacker', motion: 'off' } } })
+  await $.command.run({ command: 'factory-status' } as never)
+  await $.command.run({ command: 'factory-theme' } as never)
+  const still = await mountPane($.ui, 80)
+  expect(await still.find({ type: 'Raster' })).toBeUndefined()
+  expect(await still.find({ text: /\.-""\*""-\./ })).toBeDefined()
+  await still.unmount()
+  await clock.advance(4000)
+  expect(blits).toEqual([])
+  expect(JSON.stringify(await $.command.run({ command: 'factory-theme', args: 'motion on ascii' } as never))).toContain('ascii glyphs')
+  const ascii = await mountPane($.ui, 80)
+  expect(await ascii.find({ type: 'Raster' })).toBeUndefined()
+  await ascii.unmount()
+  await clock.advance(4000)
+  expect(blits).toEqual([])
+  await $.command.run({ command: 'factory-theme', args: 'classic' } as never)
+  await clock.advance(4000)
+  expect(blits).toEqual([])
+})
+
+test('the face animates: frames are blitted to the pane, differ from one another and stop when the pane is gone', async ($, on) => {
+  const blits = blitsOf($, on)
+  const clock = fixture($, on, { store: { 'ui/theme': { name: 'hacker' } } })
+  await $.command.run({ command: 'factory-status' } as never)
+  await $.command.run({ command: 'factory-theme' } as never)
+  const pane = await mountPane($.ui, 80)
+  await clock.advance(2000)
+  await clock.advance(3000)
+  expect(blits.length).toBeGreaterThan(3)
+  for (const b of blits) {
+    expect([b.requestId, b.key]).toEqual(['factory', 'vox'])
+    expect(unpackCells(b.cells)).toHaveLength(VOX_CELL_COLUMNS * VOX_CELL_ROWS * 3)
+  }
+  for (let i = 1; i < blits.length; i++) expect(blits[i]!.cells).not.toBe(blits[i - 1]!.cells)
+  await pane.unmount()
+})
+
+test('a refused blit cancels the timer, and the next refresh starts it again', async ($, on) => {
+  const blits = blitsOf($, on, () => ({ deny: 'not mounted' }))
+  const clock = fixture($, on, { store: { 'ui/theme': { name: 'hacker' } } })
+  await $.command.run({ command: 'factory-status' } as never)
+  await $.command.run({ command: 'factory-theme' } as never)
+  await clock.advance(500)
+  expect(blits.length).toBe(1)
+  await clock.advance(2000)
+  expect(blits.length).toBe(1)
+  await $.command.run({ command: 'factory-status' } as never)
+  await clock.advance(1000)
+  expect(blits.length).toBeGreaterThan(1)
 })
