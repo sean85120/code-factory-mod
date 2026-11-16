@@ -108,6 +108,21 @@ A todo item may carry `- issue: #12` (also `12`; `parseIssueRef` takes only a nu
 
 The guide is derived from the `FactoryView` alone (`guidePhase`: `design` with no items, `approve` until approved, `build` while anything is todo, doing or blocked, else `iterate`). `/factory` (`immediate`) prints `guideReport`; the dashboard pane shows `journey` and `nextHint` (as a getting-started screen before approval, as one line under the buttons after) with `guideControls` buttons (`[✎ design]`, `[✔ approve]`, `[⚑ triage issues]`, `[➜ next phase]`), which call `designCmd`/`approveCmd`/`triageCmd`/`interviewCmd` directly; `pressControl` refuses the three that submit a prompt while any main turn is open, and approve like start. When every item is done and the loop is idle (`isAllDone`: approved, not running, `guidePhase` `iterate`, nothing proposed) the band, the pane and the status line ask the question outright (`DONE_QUESTION`): `doneControls` gives `[➜ design next phase]`, `[⚑ triage issues]` and `[■ stop here]`, and the pane drops `[▶ start]`. `factory-finish` is a control only: `pressControl` stores the current `doneCount` in the `doneDismissed` atom (so the prompt returns when the count changes, with no new loop state) and the band collapses to one `stopped here` line. The finish toast names `/factory-roadmap` and `/factory-triage` and lasts 30 s. Before approval the band is one line (`design drafted`) once todo.md has items, and stays hidden in a repo with none.
 
+### Issue gate (lib.ts, not wired yet)
+
+`issueGate(issue, comments, labelEvents, me, recorded)` decides one issue and returns:
+
+- `skip`: the issue is closed, or its author is not OWNER/MEMBER/COLLABORATOR and has no `factory:triage` label added by someone with write access. That label goes stale, and counts as absent, once the issue is edited or renamed after it (`editedAt`, `renamedAt`).
+- `design`: no design comment yet. A design comment counts only when the factory's own account wrote it and it carries `DESIGN_MARKER`.
+- `wait`: designed, no `factory:go`.
+- `reopen`: the approval is not valid and the label should come off. That means the latest `factory:go` event was not by a user with admin, maintain or write permission (`mayApprove`), the issue was edited or renamed, or the design comment was edited or posted, after that event, or the recorded hash no longer matches.
+- `record`: the approval is valid but nothing is stored yet; the caller stores the returned hash.
+- `build`: only when a `GoRecord` exists and `designFingerprint` still equals it, so a caller that forgets to record cannot build. The fingerprint is a real SHA-256 (`sha256Hex`, not `fnv1a`) of number, title, body and design text, because that text is attacker-controlled.
+
+Every "was it before the approval" comparison is strict and fails closed (`before`): an edit, rename or design post in the same second as the label (GitHub times have one-second resolution) or a time that is not a finite number counts as after it, and a label event with a non-finite time is ignored, so the staleness checks cannot be skipped by a tie or a `NaN`. An empty `me` skips every issue.
+
+Permissions, association, edit times and the rename time come from the caller (`gh api`), so the function stays pure; the poller, the design-comment turn and the wiring into the build loop are later slices. Caller contract: pass only `labeled` events (the gate has no event kind), and drop the stored `GoRecord` whenever the gate returns `reopen`, or a legitimate edit followed by a new approval would reopen forever against the old hash. `isTrustedAuthor` is the author association, not write access: a read-only member or collaborator skips the triage label and gets a design turn run on their text, but `build` still needs a writer's `factory:go`.
+
 ### Settings
 
 `parseSettings` is the schema (defaults in `DEFAULT_SETTINGS`); a present but malformed `buildCmd`, `e2eCmd` or `e2eFor` is a settings problem (it is never silently dropped); `testCmd` must be a non-empty argv array and each configured command is capped at 10 minutes. Adding a setting means updating the `Settings` type, `DEFAULT_SETTINGS`, `parseSettings`, and the JSON example inside `DESIGN_PROMPT`. Settings are part of the approval hash, so changing any of them invalidates a prior approval.
