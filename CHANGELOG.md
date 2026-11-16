@@ -9,6 +9,10 @@ minor version may change behavior).
 
 ### Changed
 
+- Pressing an agent in the band or the dashboard pane shows its transcript (task,
+  words, tool calls with results and errors), refreshed live, instead of only
+  its last five actions.
+
 - The reviewer follows the `review-fix` rules: a Critical/High, Medium and Low
   severity rubric with a failure scenario per finding (Low is declined by
   default, an unproven High counts as Low), the security pass only when the

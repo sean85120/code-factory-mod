@@ -1336,7 +1336,31 @@ const briefInput = (input: Record<string, unknown>): string => {
   return ''
 }
 
-export type AgentMessage = { role: string; text: string; toolUses: readonly { tool: string; input: Record<string, unknown> }[] }
+export type AgentMessage = { role: string; text: string; toolUses: readonly { tool: string; input: Record<string, unknown>; isError?: boolean; text?: string }[] }
+
+export const TRANSCRIPT_LINES = 24
+
+export function agentTranscript(messages: readonly AgentMessage[], maxLines = TRANSCRIPT_LINES): string[] {
+  const out: string[] = []
+  let first = true
+  for (const m of messages) {
+    if (m.role === 'user') {
+      if (first && (m.text ?? '').trim() !== '') out.push(`» task: ${oneLine(m.text, 160)}`)
+      first = false
+      continue
+    }
+    first = false
+    for (const l of (m.text ?? '').split('\n').filter(x => x.trim() !== '').slice(0, 4)) out.push(`› ${oneLine(l, 160)}`)
+    for (const u of m.toolUses ?? []) {
+      const b = oneLine(briefInput(u.input ?? {}), 100)
+      out.push(b === '' ? `⚙ ${oneLine(u.tool, 40)}` : `⚙ ${oneLine(u.tool, 40)}: ${b}`)
+      const r = oneLine((u.text ?? '').split('\n').find(x => x.trim() !== '') ?? '', 140)
+      if (u.isError) out.push(`  ✗ ${r === '' ? 'error' : r}`)
+      else if (r !== '') out.push(`  ↳ ${r}`)
+    }
+  }
+  return maxLines > 0 ? out.slice(-maxLines) : []
+}
 
 export function agentActions(messages: readonly AgentMessage[], n = 5): string[] {
   const out: string[] = []
