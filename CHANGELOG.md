@@ -7,6 +7,13 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+### Changed
+
+- A pull request whose diff holds only prose (Markdown, reStructuredText, AsciiDoc,
+  license files, images under `docs/`) no longer needs test changes. `.txt`
+  files do not count, and the changed-file list is read without rename
+  detection.
+
 ### Added
 
 - README screenshots of the band, the dashboard, an expanded agent, the desktop

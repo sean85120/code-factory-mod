@@ -6,6 +6,7 @@ import {
   classifyBash,
   decisionsHash,
   hasTestChanges,
+  isDocsOnly,
   parseSettings,
   parseTodo,
   pickNext,
@@ -92,6 +93,16 @@ test('classifyBash spots pushes, force pushes, base pushes and merges', () => {
   expect(classifyBash('gh pr merge --admin 12', 'main').hasAdmin).toBe(true)
   expect(classifyBash('echo {} > .factory/state.json', 'main').touchesFactoryState).toBe(true)
   expect(classifyBash('cat .factory/state.json', 'main').touchesFactoryState).toBe(false)
+})
+
+test('isDocsOnly accepts prose and docs images only, never an empty list or code', () => {
+  expect(isDocsOnly(['README.md', 'docs/guide.rst', 'docs/img/a.png', 'LICENSE', 'sub/CHANGELOG.md'])).toBe(true)
+  expect(isDocsOnly([])).toBe(false)
+  expect(isDocsOnly(['README.md', 'src/a.ts'])).toBe(false)
+  expect(isDocsOnly(['requirements.txt'])).toBe(false)
+  expect(isDocsOnly(['assets/logo.svg'])).toBe(false)
+  expect(isDocsOnly(['docs/conf.py'])).toBe(false)
+  expect(isDocsOnly(['src/a.ts', 'src/a.md'])).toBe(false)
 })
 
 test('hasTestChanges recognises common test file layouts', () => {

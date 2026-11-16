@@ -864,6 +864,16 @@ export function hasTestChanges(files: readonly string[]): boolean {
   return files.some(f => TEST_FILE.some(r => r.test(f)))
 }
 
+const DOC_FILE = [
+  /\.(md|mdx|rst|adoc)$/i,
+  /(^|\/)(license|licence|copying|notice)(\.[a-z]+)?$/i,
+  /^docs?\/.+\.(png|jpe?g|gif|webp|svg)$/i,
+]
+
+export function isDocsOnly(files: readonly string[]): boolean {
+  return files.length > 0 && files.every(f => DOC_FILE.some(r => r.test(f)))
+}
+
 export type Check = {
   __typename?: string
   name?: string
