@@ -12,9 +12,11 @@ minor version may change behavior).
 - The issue watcher (setting `watchIssues`, off by default, `/factory-watch`).
   While the loop is idle it reads the open issues every ten minutes through
   one GraphQL call, applies `issueGate`, and runs a read-only turn that posts one
-  design comment on the first issue that needs it. In that turn every `gh`
-  command that can change something, any commit or push and every Edit or Write
-  is denied (new `ghWrite` fact in `classifyBash`). Turning it on changes the
+  design comment on the first issue that needs it. That turn runs under an
+  allowlist (`readOnlyBash`, `readOnlyPathDenied`): only a few read commands,
+  no shell redirects or substitutions, no files outside the repo or that look
+  like secrets, exactly one `gh issue comment` on the designed issue, and every
+  other tool denied, even if another session takes the lock meanwhile. Turning it on changes the
   approval hash, so it needs a `/factory-approve`. Building from `factory:go`
   is a later slice.
 - The pure decision logic for label-gated issue handling (`issueGate` in

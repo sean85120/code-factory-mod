@@ -77,6 +77,8 @@ import {
   parseIssueFacts,
   permissionActors,
   scanIssues,
+  readOnlyBash,
+  readOnlyPathDenied,
   watchReport,
   releasePending,
   roadmapPrompt,
@@ -591,7 +593,7 @@ async function pause($: Dollar, state: FactoryState, rawReason: string, byPerson
   return true
 }
 
-type Instructions = { text: string; isDesign: boolean; roadmapAt: number | null; lastAt: number; turns: number; readOnly: boolean }
+type Instructions = { text: string; isDesign: boolean; roadmapAt: number | null; lastAt: number; turns: number; readOnly: boolean; issue: number; commented: boolean }
 let instructions: Instructions | null = null
 let launchedHere: string | null = null
 let expectReport = false
@@ -599,14 +601,14 @@ let expectReport = false
 const reviewWaiting = (state: FactoryState, settings: Settings, now: number): boolean =>
   state.reviewAgentId !== null && state.reviewAgentId === launchedHere && isReviewPending(state, now, reviewWindow(state, settings))
 
-function submit($: Dollar, full: string, label?: string, isDesign = false, guarded = false, roadmapAt: number | null = null, readOnly = false): void {
+function submit($: Dollar, full: string, label?: string, isDesign = false, guarded = false, roadmapAt: number | null = null, readOnlyIssue: number | null = null): void {
   personSlash = false
   slashTurnId = null
   isFactoryTurn = true
   factoryTurnAt = -1
   isArmed = !isDesign || guarded
   expectReport = false
-  instructions = { text: full, isDesign, roadmapAt, lastAt: roadmapAt ?? 0, turns: 0, readOnly }
+  instructions = { text: full, isDesign, roadmapAt, lastAt: roadmapAt ?? 0, turns: 0, readOnly: readOnlyIssue !== null, issue: readOnlyIssue ?? 0, commented: false }
   const headline = stripControls(label ?? full.split('\n', 1)[0]!).slice(0, 200)
   $.prompt.submit({ text: `${headline}\n(The full instructions are the "code-factory:instructions" section of your system prompt; follow them.)` }).catch(() => {
     instructions = null
@@ -1162,7 +1164,7 @@ async function startInterview($: Dollar, iv: Interview, items: readonly Item[], 
     await settle($, false)
     return
   }
-  submit($, iv.prompt(items, mergedIds, settings, costSummaryForPrompt(costs?.rc ?? null)), iv.label, true, true, at, iv.readOnly ?? false)
+  submit($, iv.prompt(items, mergedIds, settings, costSummaryForPrompt(costs?.rc ?? null)), iv.label, true, true, at, iv.readOnlyIssue ?? null)
   void logEvent($, { itemId: null, kind: 'roadmap', detail: iv.title })
 }
 
@@ -1268,10 +1270,16 @@ const FACTORY_FILE_DENY = deny('code-factory: .factory/state.json and .factory/l
 const isFactoryControlFile = (p: string): boolean => /(^|\/)\.factory\/(?:state|lock)\.json$/i.test(normalizePath(p))
 
 const READ_ONLY_DENY = 'code-factory: this turn only reads the repo and posts one issue comment; it cannot change anything else.'
+const readOnlyTurn = (): boolean => instructions?.readOnly === true && isFactoryTurn
+
+async function readOnlyPath($: Dollar, path: string | undefined): Promise<boolean> {
+  if (!readOnlyTurn()) return false
+  return readOnlyPathDenied(path, await $.session.cwd().catch(() => '/'))
+}
 
 async function guardWrite($: Dollar, path: string, agentId: string | undefined): Promise<{ deny: string } | null> {
   if (isFactoryControlFile(path)) return FACTORY_FILE_DENY
-  if (instructions?.readOnly && isFactoryTurn) return deny(READ_ONLY_DENY)
+  if (readOnlyTurn()) return deny(READ_ONLY_DENY)
   const state = await readState($)
   const live = state.approved && (state.autopilot || isArmed) && !(await lockedByOther($))
   if (!live) return null
@@ -1593,7 +1601,7 @@ async function approveCmd($: Dollar): Promise<{ text: string }> {
   return { text: safeLines(`${head}${started.text}`) }
 }
 
-type Interview = { readOnly?: boolean; what: string; noun: string; label: string; title: string; needsIdle: boolean; markAsked: boolean; prompt: (items: readonly Item[], mergedIds: readonly string[], settings: Settings, costSummary: string) => string }
+type Interview = { readOnlyIssue?: number; what: string; noun: string; label: string; title: string; needsIdle: boolean; markAsked: boolean; prompt: (items: readonly Item[], mergedIds: readonly string[], settings: Settings, costSummary: string) => string }
 
 const ROADMAP_INTERVIEW: Interview = {
   what: 'plan the next phase',
@@ -1693,7 +1701,7 @@ async function pollIssues($: Dollar, mode: 'timer' | 'now' | 'report'): Promise<
     designTries.set(row.number, (designTries.get(row.number) ?? 0) + 1)
     roadmapPending = true
     toast($, `factory: writing a design for issue #${row.number}`)
-    const iv: Interview = { readOnly: true, what: 'design an issue', noun: 'issue design', label: `Code factory: design for issue #${row.number}`, title: `issue #${row.number} design`, needsIdle: false, markAsked: false, prompt: () => issueDesignPrompt(row.number) }
+    const iv: Interview = { readOnlyIssue: row.number, what: 'design an issue', noun: 'issue design', label: `Code factory: design for issue #${row.number}`, title: `issue #${row.number} design`, needsIdle: false, markAsked: false, prompt: () => issueDesignPrompt(row.number) }
     const epoch = loopEpoch
     $.clock.after(300, () => {
       void startInterview($, iv, effectiveItems(snap), snap.state.mergedIds, snap.settings, epoch).finally(() => {
@@ -2029,7 +2037,14 @@ export const register: Register = (on, _options) => {
   on('tool.call', { tool: 'Edit' }, async ($, e, next) => (await guardWrite($, e.file_path, e.agentId)) ?? next(e))
   on('tool.call', { tool: 'Write' }, async ($, e, next) => (await guardWrite($, e.file_path, e.agentId)) ?? next(e))
 
+
+  on('tool.call', { tool: 'Read' }, async ($, e, next) => ((await readOnlyPath($, e.file_path)) ? deny(READ_ONLY_DENY) : next(e)))
+  on('tool.call', async ($, e, next) => {
+    if (!readOnlyTurn() || e.tool === 'Bash' || e.tool === 'Read') return next(e)
+    return deny(READ_ONLY_DENY)
+  })
   on('tool.call', { tool: 'SendMessage' }, async ($, e, next) => {
+    if (readOnlyTurn()) return deny(READ_ONLY_DENY)
     if (e.agentId !== undefined && e.agentId === (await readState($)).reviewAgentId) return next(e)
     const state = await readState($)
     if ((state.reviewAgentId !== null || reviewInFlight) && state.approved && (state.autopilot || isArmed)) {
@@ -2042,6 +2057,7 @@ export const register: Register = (on, _options) => {
   // state, but only for the exact prompt the factory handed the model, spawned
   // by the main loop.
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
+    if (readOnlyTurn()) return deny(READ_ONLY_DENY)
     if (!e.prompt.includes(REVIEW_TAG)) return next(e)
     if (reviewInFlight) return deny('code-factory: a review agent is already starting; wait for it.')
     reviewInFlight = true
@@ -2130,11 +2146,15 @@ export const register: Register = (on, _options) => {
     if (f.touchesFactoryState) {
       return deny('code-factory: the factory state file is controlled by the person through /factory-* commands.')
     }
+    if (readOnlyTurn()) {
+      const verdict = readOnlyBash(e.command, instructions!.issue, instructions!.commented, await $.session.cwd().catch(() => '/'))
+      if (verdict === 'deny') return deny(READ_ONLY_DENY)
+      if (verdict === 'comment') instructions!.commented = true
+      return next(e)
+    }
     const isLive = snap.state.approved && !(await lockedByOther($)) && (snap.state.autopilot || isArmed)
     if (!isLive) return next(e)
     liveItem = snap.state.current
-
-    if (instructions?.readOnly && isFactoryTurn && (f.ghWrite || f.isCommit || f.isPush || f.isPrCreate || f.isPrMerge)) return deny(READ_ONLY_DENY)
 
     if ((f.isCommit || f.isPush) && snap.state.reviewAgentId !== null && e.agentId !== snap.state.reviewAgentId) {
       if (reviewWaiting(snap.state, snap.settings, await $.clock.now())) return deny(REVIEW_BUSY_DENY)

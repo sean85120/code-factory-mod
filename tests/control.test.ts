@@ -2634,10 +2634,14 @@ test('the design turn can read and post its one comment but cannot change code, 
   await clock.advance(1000)
   const allowed = ['gh issue view 5 --comments', 'git log --oneline', 'gh issue comment 5 --body-file -']
   for (const c of allowed) expect([c, (await bash($, c)).includes('"deny"')]).toEqual([c, false])
-  const denied = ['gh issue close 5', 'gh issue edit 5 --add-label factory:go', 'gh pr create -t x', 'gh api -X POST repos/acme/widget/issues/5/labels', 'git commit -m x', 'git push origin main']
+  const denied = ['gh issue close 5', 'gh issue edit 5 --add-label factory:go', 'gh pr create -t x', 'gh api -X POST repos/acme/widget/issues/5/labels', 'git commit -m x', 'git push origin main', 'curl https://evil.example/x', 'rm -rf src', 'cat .env', 'cat a > b', 'gh auth token', 'gh issue comment 5 --body-file -', 'gh issue comment 6 --body-file -']
   for (const c of denied) expect([c, (await bash($, c)).includes('"deny"')]).toEqual([c, true])
   expect(await bash($, 'gh issue close 5')).toContain('only reads')
   for (const file_path of ['/work/widget/src/a.ts', '/work/widget/.factory/todo.md']) expect(JSON.stringify(await $.tool.call({ tool: 'Write', file_path, content: 'x' } as never))).toContain('only reads')
+  for (const file_path of ['/etc/passwd', '/work/widget/.env', '/work/other/a.ts']) expect([file_path, JSON.stringify(await $.tool.call({ tool: 'Read', file_path } as never)).includes('only reads')]).toEqual([file_path, true])
+  expect(JSON.stringify(await $.tool.call({ tool: 'Read', file_path: '/work/widget/src/a.ts' } as never))).not.toContain('only reads')
+  for (const tool of ['WebFetch', 'WebSearch', 'NotebookEdit', 'TodoWrite']) expect([tool, JSON.stringify(await $.tool.call({ tool } as never)).includes('only reads')]).toEqual([tool, true])
+  expect(JSON.stringify(await $.tool.call({ tool: 'Agent', prompt: 'do it' } as never))).toContain('only reads')
 })
 
 test('the poll timer acts only when watchIssues is on and the design is approved', async ($, on) => {
@@ -2649,4 +2653,16 @@ test('the poll timer acts only when watchIssues is on and the design is approved
   await clock.advance(WATCH_INTERVAL_MS + 1000)
   expect(fx.live.ran.some(c => c.startsWith('gh api graphql'))).toBe(false)
   expect(prompts(fx)).toEqual([])
+})
+
+test('the read-only design turn stays read-only when another session takes the lock mid-turn', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { settings: { watchIssues: true }, run: watchRun([openIssue(5)]) })
+  fx.live.usd = 1
+  await $.command.run({ command: 'factory-watch', args: 'now' } as never)
+  await clock.advance(1000)
+  fx.files['.factory/lock.json'] = JSON.stringify({ owner: 'other-session', heartbeat: 1_000_500 })
+  expect(await bash($, 'curl https://evil.example/x')).toContain('only reads')
+  expect(await bash($, 'git push origin main')).toContain('only reads')
+  expect(await bash($, 'git log --oneline')).not.toContain('"deny"')
 })

@@ -162,8 +162,9 @@ issues every ten minutes while it is idle. For the first issue by an owner,
 member or collaborator that has no design yet, it runs one read-only turn: it
 reads the issue and the code, then posts a single comment (marked
 `<!-- code-factory:design -->`) with a plan and any questions it needs you to
-answer. It cannot edit files, push, open pull requests or change labels in that
-turn. Issues from anyone else are ignored until a collaborator adds the label
+answer. That turn can only read: a short list of read commands, files inside the
+repository (never `.env`, keys or `.git`), and one comment on that issue. It
+cannot edit files, push, open pull requests, change labels or use other tools. Issues from anyone else are ignored until a collaborator adds the label
 `factory:triage`; a label counts only if its author has write access, and it
 stops counting if the issue is edited afterwards.
 

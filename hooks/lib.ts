@@ -735,12 +735,66 @@ export function normalizePath(p: string): string {
   return (abs ? '/' : '') + out.join('/')
 }
 
-const GH_READ = new Set(['api', 'auth', 'browse', 'search', 'status', 'help', 'version', 'config'])
+const GH_READ = new Set(['api', 'browse', 'search', 'status', 'help', 'version'])
 const GH_READ_ACTIONS: Record<string, ReadonlySet<string>> = {
+  auth: new Set(['status']),
+  config: new Set(['get', 'list']),
   issue: new Set(['comment', 'view', 'list', 'status']),
   pr: new Set(['view', 'list', 'diff', 'checks', 'status']),
   repo: new Set(['view', 'list']),
   run: new Set(['view', 'list', 'watch']),
+}
+
+const RO_FILE_CMDS = new Set(['cat', 'ls', 'head', 'tail', 'wc', 'rg', 'grep', 'pwd'])
+const RO_GIT = new Set(['log', 'show', 'diff', 'status', 'ls-files', 'grep', 'blame', 'rev-parse'])
+const RO_BAD_FLAG = /^(--output|--pre|--pre-glob|--hostname-bin|--ext-diff|--textconv|--exec-path|--open-files-in-pager|-O)/
+const RO_GH_BAD_FLAG = /^(-R|--repo|-w|--web|--edit-last|--delete-last|--create-if-none)/
+const RO_SECRET = /(^|[\/:])(\.env[^/]*|\.netrc|\.npmrc|\.pypirc|\.aws|\.ssh|\.gnupg|\.git|id_[a-z0-9_]+|credentials[^/]*|[^/]*\.(pem|key|p12|pfx))(\/|$)/i
+const RO_HEREDOC = /^<<-?[A-Za-z_][A-Za-z0-9_]*$/
+
+export function readOnlyPathDenied(p: string | undefined, cwd: string): boolean {
+  if (p === undefined || p === '') return false
+  if (p.startsWith('~') || /(^|\/)\.\.(\/|$)/.test(p)) return true
+  if (p.startsWith('/')) {
+    const root = normalizePath(cwd)
+    const n = normalizePath(p)
+    if (n !== root && !n.startsWith(root === '/' ? '/' : `${root}/`)) return true
+  }
+  return RO_SECRET.test(p)
+}
+
+export function readOnlyBash(command: string, issue: number, commented: boolean, cwd = '/'): 'ok' | 'comment' | 'deny' {
+  let comment = false
+  for (const t of splitCommands(command)) {
+    if (t.length === 0) continue
+    const [head, ...rest] = t
+    const heredoc = rest.filter(x => RO_HEREDOC.test(x))
+    const args = rest.filter(x => !RO_HEREDOC.test(x))
+    if (args.some(x => /[<>`$]/.test(x))) return 'deny'
+    if (head === 'gh') {
+      if (args[0] !== 'issue') return 'deny'
+      if (args[1] === 'comment') {
+        if (commented || comment || args.length !== 5 || args[2] !== String(issue) || args[3] !== '--body-file' || args[4] !== '-') return 'deny'
+        comment = true
+        continue
+      }
+      if (heredoc.length > 0 || (args[1] !== 'view' && args[1] !== 'list') || args.slice(2).some(x => RO_GH_BAD_FLAG.test(x))) return 'deny'
+      continue
+    }
+    if (head === 'git') {
+      if (heredoc.length > 0 || args[0] === undefined || !RO_GIT.has(args[0]) || args.some(x => RO_BAD_FLAG.test(x))) return 'deny'
+      if (args.slice(1).some(x => !x.startsWith('-') && readOnlyPathDenied(x, cwd))) return 'deny'
+      continue
+    }
+    if (head === 'cat' && heredoc.length > 0 && args.length === 0) continue
+    if (head !== undefined && RO_FILE_CMDS.has(head)) {
+      if (heredoc.length > 0 || args.some(x => RO_BAD_FLAG.test(x))) return 'deny'
+      if (args.some(x => !x.startsWith('-') && readOnlyPathDenied(x, cwd))) return 'deny'
+      continue
+    }
+    return 'deny'
+  }
+  return comment ? 'comment' : 'ok'
 }
 
 export function classifyBash(command: string, base: string, branch = ''): BashFacts {
