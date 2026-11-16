@@ -91,6 +91,48 @@ test('a recorded approval hash that no longer matches the text reopens it, a mat
   expect(issueGate(labeled, [design({ body: `${DESIGN_MARKER}\nPlan: rewrite auth.` })], [go()], ME, { issue: 7, hash }).action).toBe('reopen')
 })
 
+test('the latest factory:go event decides who approved, whatever the array order', () => {
+  const labeled = issue({ labels: [LABEL_GO] })
+  const writer = go({ actor: 'maria', permission: 'write', at: 150 })
+  const reader = go({ actor: 'mallory', permission: 'read', at: 190 })
+  expect(issueGate(labeled, [design()], [writer, reader], ME, null).action).toBe('reopen')
+  expect(issueGate(labeled, [design()], [reader, writer], ME, null).action).toBe('reopen')
+  const laterWriter = go({ actor: 'maria', permission: 'write', at: 195 })
+  expect(issueGate(labeled, [design()], [reader, laterWriter], ME, null).action).toBe('record')
+  expect(issueGate(labeled, [design()], [laterWriter, reader], ME, null).action).toBe('record')
+})
+
+test('an edit or a design in the same second as the label does not count as before it', () => {
+  const labeled = issue({ labels: [LABEL_GO] })
+  expect(issueGate({ ...labeled, editedAt: 200 }, [design()], [go()], ME, null).action).toBe('reopen')
+  expect(issueGate({ ...labeled, renamedAt: 200 }, [design()], [go()], ME, null).action).toBe('reopen')
+  expect(issueGate(labeled, [design({ editedAt: 200 })], [go()], ME, null).action).toBe('reopen')
+  expect(issueGate(labeled, [design({ at: 200 })], [go()], ME, null).action).toBe('reopen')
+  expect(issueGate({ ...labeled, editedAt: 199 }, [design({ at: 199 })], [go()], ME, null).action).toBe('record')
+  const stranger = issue({ association: 'NONE', labels: [LABEL_TRIAGE], editedAt: 200 })
+  expect(triageAllowed(stranger, [{ label: LABEL_TRIAGE, actor: 'maria', permission: 'write', at: 200 }])).toBe(false)
+})
+
+test('an unparseable time never counts as before the approval', () => {
+  const labeled = issue({ labels: [LABEL_GO] })
+  expect(issueGate(labeled, [design()], [go({ at: NaN })], ME, null).action).toBe('reopen')
+  expect(issueGate({ ...labeled, editedAt: NaN }, [design()], [go()], ME, null).action).toBe('reopen')
+  expect(issueGate(labeled, [design({ editedAt: NaN })], [go()], ME, null).action).toBe('reopen')
+  expect(issueGate(labeled, [design({ at: NaN })], [go()], ME, null).action).toBe('reopen')
+  expect(issueGate(labeled, [design()], [go({ at: NaN, actor: 'mallory', permission: 'read' }), go()], ME, null).action).toBe('record')
+  const stranger = issue({ association: 'NONE', labels: [LABEL_TRIAGE] })
+  expect(triageAllowed(stranger, [{ label: LABEL_TRIAGE, actor: 'maria', permission: 'write', at: NaN }])).toBe(false)
+  expect(triageAllowed({ ...stranger, editedAt: NaN }, [{ label: LABEL_TRIAGE, actor: 'maria', permission: 'write', at: 5 }])).toBe(false)
+})
+
+test('an unknown factory account skips every issue, and the newest design comment wins', () => {
+  expect(issueGate(issue(), [design({ author: '' })], [], '', null).action).toBe('skip')
+  expect(findDesignComment([design({ author: '' })], '')).toBeUndefined()
+  const newer = design({ body: `${DESIGN_MARKER} new`, at: 9 })
+  const older = design({ body: `${DESIGN_MARKER} old`, at: 3 })
+  expect(findDesignComment([newer, older], ME)).toBe(newer)
+})
+
 test('the fingerprint changes with the number, title, body and design text', () => {
   const base = designFingerprint(issue(), 'plan')
   expect(designFingerprint(issue({ number: 8 }), 'plan')).not.toBe(base)

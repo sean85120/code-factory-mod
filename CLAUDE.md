@@ -119,7 +119,9 @@ The guide is derived from the `FactoryView` alone (`guidePhase`: `design` with n
 - `record`: the approval is valid but nothing is stored yet; the caller stores the returned hash.
 - `build`: only when a `GoRecord` exists and `designFingerprint` still equals it, so a caller that forgets to record cannot build. The fingerprint is a real SHA-256 (`sha256Hex`, not `fnv1a`) of number, title, body and design text, because that text is attacker-controlled.
 
-Permissions, association, edit times and the rename time come from the caller (`gh api`), so the function stays pure; the poller, the design-comment turn and the wiring into the build loop are later slices.
+Every "was it before the approval" comparison is strict and fails closed (`before`): an edit, rename or design post in the same second as the label (GitHub times have one-second resolution) or a time that is not a finite number counts as after it, and a label event with a non-finite time is ignored, so the staleness checks cannot be skipped by a tie or a `NaN`. An empty `me` skips every issue.
+
+Permissions, association, edit times and the rename time come from the caller (`gh api`), so the function stays pure; the poller, the design-comment turn and the wiring into the build loop are later slices. Caller contract: pass only `labeled` events (the gate has no event kind), and drop the stored `GoRecord` whenever the gate returns `reopen`, or a legitimate edit followed by a new approval would reopen forever against the old hash. `isTrustedAuthor` is the author association, not write access: a read-only member or collaborator skips the triage label and gets a design turn run on their text, but `build` still needs a writer's `factory:go`.
 
 ### Settings
 
