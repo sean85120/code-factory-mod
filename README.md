@@ -102,7 +102,8 @@ hands the wheel back to you; `/factory-start` carries on where it stopped.
   stop buttons, the journey with a plain-language "next step" line, the plan
   with a `[skip]` button per item, blocked items with their reason and a
   `[↻ retry]` button, each agent's recent actions, spend against the budget,
-  `[⚑ triage issues]` and `[➜ next phase]` when the loop is idle, and
+  `[⚑ triage issues]` and `[➜ next phase]` when the loop is idle (when every
+  item is merged it asks outright: continue the design, or `[■ stop here]`), and
   `[✔ check setup]`.
 - **The status line**: a one-line summary that is always visible.
 
