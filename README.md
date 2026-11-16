@@ -155,6 +155,37 @@ Issue text comes from outside your session, so it is treated as a report to
 analyse, never as instructions, and nothing from an issue is built until you
 have approved the item it became.
 
+### Unattended pickup: the `factory-ready` label
+
+Put the `factory-ready` label on an issue to let the loop pick it up by itself.
+When the approved queue is empty (nothing left to build), the loop runs
+`gh issue list --state open --label factory-ready` and, for each labeled issue
+that no item in `todo.md` links yet (whatever that item's status), starts one
+unattended triage turn: Claude checks those issues against the code and appends
+the ones worth building as `proposed` items carrying `- issue: #N`. It asks no
+questions, never comments on, closes or relabels issues, and does not commit;
+the loop then pauses. You review the proposed items, push the design files and
+run `/factory-approve`, which promotes them and starts the loop. Nothing is
+promoted or built without that approval. Each issue is offered to the
+unattended triage once (remembered in `.factory/state.json`); one it did not
+turn into an item (needs-info, duplicate, out-of-scope) is not offered again, so
+take it to `/factory-triage` to go through it with you. At most 10 issues are
+handled per turn, oldest first. When `gh` is missing, not logged in or the
+lookup fails, the loop finishes as it always did (the next-phase interview, if
+`askNextPhase` is on). The pickup comes first: the next-phase interview is only
+asked once no new labeled issue is waiting.
+
+The plugin does not create the label. Create it once per repository:
+
+```
+gh label create factory-ready --color 0E8A16 --description "Code factory may pick this up when its queue is empty"
+```
+
+Only people with triage access can apply labels, so the label is your signal,
+but the issue text is still written by whoever opened it: it is treated as a
+report, never as instructions, and the proposed items are yours to read before
+you approve them.
+
 ## Commands
 
 | Command | What it does |
@@ -256,6 +287,32 @@ independent review (more on large changes) and CI-fix rounds. Spend is tracked p
 item (`/factory-costs`, the band and the dashboard). Set `budgetUsd` to stop a
 run at an amount you choose; it never interrupts a turn already running, and with a
 budget set it pauses rather than run unmetered if the spend cannot be read.
+
+### A daily cap for unattended runs
+
+`budgetUsd` and `maxItemsPerRun` in `.factory/settings.json` cap one **run**,
+not a calendar day. A run starts at `/factory-start` (and at `/factory-approve` when it
+starts the loop) and both counters start again from zero there. Both default to
+`0`, which means no cap.
+
+- `budgetUsd`: the loop pauses before starting more work once this run has spent
+  this many US dollars (checked before each step and after each factory or
+  reviewer turn; a turn already running is never interrupted, so a run can end a
+  little above the figure).
+- `maxItemsPerRun`: the loop pauses once this many items have merged in this run.
+
+To use them as a daily cap, start the loop once a day (for example from a daily
+scheduled session that runs `/factory-start`) and do not restart it by hand in
+between: each start opens a new run, so a second `/factory-start` or
+`/factory-approve` the same day gives that day a second allowance. For example:
+
+```json
+{ "budgetUsd": 20, "maxItemsPerRun": 5 }
+```
+
+stops each run at $20 or five merged items, whichever comes first. Changing
+either away from its earlier value changes the approval, so run
+`/factory-approve` after editing them.
 
 ## Contributing
 
