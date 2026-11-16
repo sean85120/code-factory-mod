@@ -13,6 +13,7 @@ import {
   cleanText,
   applyChanges,
   budgetPauseReason,
+  bodyHash,
   budgetReached,
   budgetUnreadableReason,
   ciOutcome,
@@ -160,6 +161,7 @@ import {
   summarize,
   testWeakening,
   todoHeadingProblems,
+  trustDesigns,
   validateItems,
   workPrompt,
 } from './lib'
@@ -1763,6 +1765,29 @@ async function rememberDesigned($: Dollar, n: number): Promise<void> {
   }
 }
 
+const HASH_PREFIX = 'issue-design-hashes/'
+
+async function designHashes($: Dollar): Promise<Record<string, number>> {
+  try {
+    const v = await $.store.get(`${HASH_PREFIX}${await costRepo($)}`)
+    return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, number>) : {}
+  } catch {
+    return {}
+  }
+}
+
+async function rememberDesignHash($: Dollar, hash: string): Promise<boolean> {
+  try {
+    const all = await designHashes($)
+    all[hash] = await $.clock.now()
+    const newest = Object.entries(all).sort((x, y) => y[1] - x[1]).slice(0, 400)
+    await $.store.set(`${HASH_PREFIX}${await costRepo($)}`, Object.fromEntries(newest))
+    return true
+  } catch {
+    return false
+  }
+}
+
 const GO_PREFIX = 'issue-go/'
 
 type GoEntry = { hash: string; by: string; at: number }
@@ -1834,7 +1859,8 @@ async function actOnApprovals($: Dollar, snap: Snapshot, got: { issues: WatchedI
   if (!fresh.state.approved || (await integrityProblem(fresh)) !== null) return [...notes, `#${row.number}: approved, but the plan is not in an approved state; run /factory-approve`]
   if (!(await watchIdle($, fresh))) return [...notes, `#${row.number}: approved, waiting for the loop to be idle`]
   const raw = await readText($, TODO_PATH)
-  const added = parsed && raw !== null ? appendIssueItem(raw, row.number, parsed) : null
+  if (raw === null || decisionsHash(fresh.settings, parseTodo(raw)) !== fresh.state.approvedHash) return [...notes, `#${row.number}: approved, but the plan changed while the factory was checking; run /factory-approve`]
+  const added = parsed ? appendIssueItem(raw, row.number, parsed) : null
   if (!added) return [...notes, `#${row.number}: approved, but its design has no item section the factory can read safely; fix the design comment and add ${LABEL_GO} again`]
   loopEpoch++
   await $.fs.write(TODO_PATH, added.text)
@@ -1889,6 +1915,10 @@ async function postDesign($: Dollar, n: number, answer: string): Promise<void> {
     toast($, `factory: the design turn for issue #${n} wrote no usable design; nothing was posted`)
     return
   }
+  if (!(await rememberDesignHash($, bodyHash(body)))) {
+    toast($, `factory: could not record the design for issue #${n}; nothing was posted`)
+    return
+  }
   const r = await run($, ['gh', 'api', `repos/{owner}/{repo}/issues/${n}/comments`, '-f', `body=${body}`], 60000)
   if (r.exitCode !== 0) {
     toast($, `factory: could not post the design on issue #${n}: ${cleanText(r.stderr).slice(0, 120) || 'gh api failed'}`)
@@ -1908,8 +1938,9 @@ async function pollIssues($: Dollar, mode: 'timer' | 'now' | 'report'): Promise<
     const enabled = snap.settings.watchIssues
     if (mode === 'timer' && (!enabled || !snap.state.approved)) return { text: '' }
     if (!snap.state.approved) return { text: 'Issue watch: the design is not approved yet; /factory-approve first.' }
-    const got = await fetchWatch($)
-    if ('error' in got) return { text: `Issue watch: ${got.error}` }
+    const fetched = await fetchWatch($)
+    if ('error' in fetched) return { text: `Issue watch: ${fetched.error}` }
+    const got = { ...fetched, issues: trustDesigns(fetched.issues, fetched.me, new Set(Object.keys(await designHashes($)))) }
     const canBuild = enabled && snap.settings.buildFromLabels
     const rows = scanIssues(got.issues, got.me, got.perms, canBuild ? goRecords(await goEntries($)) : [])
     const text = watchReport(rows, enabled, canBuild)

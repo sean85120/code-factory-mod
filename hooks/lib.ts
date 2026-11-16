@@ -2908,7 +2908,7 @@ export const LABEL_TRIAGE = 'factory:triage'
 export const DESIGN_MARKER = '<!-- code-factory:design -->'
 
 export type GateIssue = { number: number; title: string; body: string; association: string; labels: readonly string[]; state: string; editedAt: number | null; renamedAt: number | null }
-export type GateComment = { author: string; body: string; at: number; editedAt: number | null }
+export type GateComment = { author: string; body: string; at: number; editedAt: number | null; trusted?: boolean }
 export type LabelEvent = { label: string; actor: string; permission: string; at: number }
 export type GoRecord = { issue: number; hash: string }
 
@@ -2995,6 +2995,12 @@ export function findDesignComment(comments: readonly GateComment[], me: string):
     .reduce<GateComment | undefined>((best, c) => (best === undefined || c.at >= best.at ? c : best), undefined)
 }
 
+export const bodyHash = (body: string): string => sha256Hex(body.replace(/\r\n/g, '\n').trim())
+
+export function trustDesigns(issues: readonly WatchedIssue[], me: string, hashes: ReadonlySet<string>): WatchedIssue[] {
+  return issues.map(w => ({ ...w, comments: w.comments.map(c => (c.author === me && c.body.includes(DESIGN_MARKER) && !hashes.has(bodyHash(c.body)) ? { ...c, trusted: false } : c)) }))
+}
+
 export function designFingerprint(issue: GateIssue, designText: string): string {
   return sha256Hex(JSON.stringify([issue.number, issue.title, issue.body, designText]))
 }
@@ -3006,6 +3012,7 @@ export function issueGate(issue: GateIssue, comments: readonly GateComment[], ev
   const design = findDesignComment(comments, me)
   if (!design) return { action: 'design' }
   if (!issue.labels.includes(LABEL_GO)) return { action: 'wait' }
+  if (design.trusted === false) return { action: 'reopen', reason: 'the design comment is not one the factory recorded posting, or it changed since, so it cannot be approved' }
   const go = lastLabelEvent(events, LABEL_GO)
   if (!go) return { action: 'reopen', reason: `${LABEL_GO} has no recorded label event` }
   if (sameLogin(go.actor, me)) return { action: 'reopen', reason: `${LABEL_GO} was added by the factory's own account, which can never approve; approve from a different account` }
@@ -3255,6 +3262,7 @@ export function designItem(body: string): IssueItem | null {
   const at = heads[0]!
   const open = lines[at] === '## Item' ? /^(`{4,})text$/.exec(lines[at + 1] ?? '') : null
   if (!open || lines[at + 7] !== open[1]) return null
+  if (/<[A-Za-z!?/]/.test([...lines.slice(0, at), ...lines.slice(at + 8)].join('\n').split(DESIGN_MARKER).join(''))) return null
   const got: Record<string, string> = {}
   for (let k = 0; k < ITEM_KEYS.length; k++) {
     const key = ITEM_KEYS[k]!

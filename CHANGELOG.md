@@ -107,6 +107,11 @@ minor version may change behavior).
 
 ### Fixed
 
+- Building from a label only trusts a design the factory recorded posting (a
+  SHA-256 of the posted body in the plugin store). A design the model posted
+  straight through `gh`, or an edited one, is withdrawn instead of built, an item
+  hidden in an HTML comment is never read, and `todo.md` is built from the same
+  text the integrity check passed.
 - Issue design turn: it is bound to its own turn by the factory's headline text,
   not to whichever main turn ends next, and a launch is dropped when a turn
   opened since the poll. A person's or a background turn's answer can no longer

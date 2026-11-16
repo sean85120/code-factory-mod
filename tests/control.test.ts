@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { DESIGN_MARKER, ROADMAP_CEILING_MS, ROADMAP_DONE, ROADMAP_IDLE_MS, ROADMAP_MAX_TURNS, WATCH_INTERVAL_MS, branchFor, decisionsHash, parseSettings, parseTodo, reviewAgentPrompt } from '../hooks/lib'
+import { DESIGN_MARKER, ROADMAP_CEILING_MS, bodyHash, ROADMAP_DONE, ROADMAP_IDLE_MS, ROADMAP_MAX_TURNS, WATCH_INTERVAL_MS, branchFor, decisionsHash, parseSettings, parseTodo, reviewAgentPrompt } from '../hooks/lib'
 
 const TODO = `## T-001 [chore] First
 - status: todo
@@ -2859,7 +2859,8 @@ const buildRun = (nodes: unknown[], perm = 'write') => (cmd: string) => (cmd.sta
 const buildSetup = ($: any, on: any, nodes: unknown[], extra: Record<string, unknown> = {}) => {
   on('ui.toast', () => ({ value: undefined }))
   on('ui.status', () => ({ value: undefined }))
-  return setup($, on, { settings: { watchIssues: true, buildFromLabels: true }, todo: ISSUE_DONE_TODO, run: buildRun(nodes), ...extra, state: { approvedDone: ['T-001'], ...(extra.state as object | undefined) } })
+  const posted = Object.fromEntries((nodes as any[]).flatMap(n => (n.comments?.nodes ?? []).filter((c: any) => c.author?.login === 'factory-bot' && String(c.body).includes(DESIGN_MARKER)).map((c: any) => [bodyHash(c.body), 1])))
+  return setup($, on, { settings: { watchIssues: true, buildFromLabels: true }, todo: ISSUE_DONE_TODO, run: buildRun(nodes), ...extra, store: { 'issue-design-hashes/acme/widget': posted, ...(extra.store as object | undefined) }, state: { approvedDone: ['T-001'], ...(extra.state as object | undefined) } })
 }
 const watchNow = async ($: any): Promise<string> => (await $.command.run({ command: 'factory-watch', args: 'now' } as never)).text as string
 const ghWrites = (fx: { live: { ran: string[] } }, what: string) => fx.live.ran.filter(c => c.startsWith('gh api') && c.includes(what))
@@ -2884,7 +2885,7 @@ test('a valid factory:go is recorded, then the issue becomes a todo item, the ap
 })
 
 test('without buildFromLabels an approved issue is reported and nothing is written', async ($, on) => {
-  const fx = setup($, on, { settings: { watchIssues: true }, todo: ISSUE_DONE_TODO, state: { approvedDone: ['T-001'] }, run: buildRun([approvedIssue(5)]) })
+  const fx = buildSetup($, on, [approvedIssue(5)], { settings: { watchIssues: true } })
   const text = await watchNow($)
   expect(text).toContain('buildFromLabels')
   expect(text).not.toContain('recorded')
@@ -2963,4 +2964,30 @@ test('a blocked item that came from an issue tells the issue once and withdraws 
   await watchNow($)
   expect(ghWrites(fx, 'issues/5/comments')).toHaveLength(1)
   expect(ghWrites(fx, '-X DELETE')).toHaveLength(1)
+})
+
+test('a design posted straight as the factory account is not trusted: a writer\'s label is withdrawn and nothing is built', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const fx = buildSetup($, on, [approvedIssue(5)], { store: { 'issue-design-hashes/acme/widget': {} }, run: buildRun([approvedIssue(5)]) })
+  expect(await watchNow($)).toContain('approval withdrawn')
+  expect(ghWrites(fx, '-X DELETE')).toHaveLength(1)
+  await watchNow($)
+  expect(fx.files['.factory/todo.md']).toBe(ISSUE_DONE_TODO)
+})
+
+const READS_BEFORE_APPEND = 6
+
+test('a todo.md change between the factory\'s two reads is never approved', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  let reads = 0
+  let fx: ReturnType<typeof buildSetup> | undefined
+  fx = buildSetup($, on, [approvedIssue(5)], {
+    hook: (what: string) => {
+      if (what.endsWith('todo.md') && ++reads === READS_BEFORE_APPEND + 1) fx!.files['.factory/todo.md'] = `${ISSUE_DONE_TODO}\n## T-009 [chore] Sneaky\n- status: todo\n- how: x\n- accept: y\n- tests: z\n`
+    },
+  })
+  await watchNow($)
+  const text = await watchNow($)
+  expect(text).toContain('plan changed')
+  expect(fx.files['.factory/todo.md']).not.toContain('issue: #5')
 })
