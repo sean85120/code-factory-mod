@@ -159,12 +159,13 @@ have approved the item it became.
 
 With `"watchIssues": true` (and an approved design) the factory checks the open
 issues every ten minutes while it is idle. For the first issue by an owner,
-member or collaborator that has no design yet, it runs one read-only turn: it
-reads the issue and the code, then posts a single comment (marked
+member or collaborator that has no design yet, it starts one design turn: it
+reads the issue and the code, then the factory posts a single comment (marked
 `<!-- code-factory:design -->`) with a plan and any questions it needs you to
-answer. That turn can only read: a short list of read commands, files inside the
-repository (never `.env`, keys or `.git`), and one comment on that issue. It
-cannot edit files, push, open pull requests, change labels or use other tools. Issues from anyone else are ignored until a collaborator adds the label
+answer. That turn has no shell. It can only read the tracked files the factory
+listed for it (never `.env`, keys, symlinks or `.git`) and it cannot edit files,
+push, open pull requests, change labels or use any other tool; the factory posts
+its answer. Issues from anyone else are ignored until a collaborator adds the label
 `factory:triage`; a label counts only if its author has write access, and it
 stops counting if the issue is edited afterwards.
 
@@ -182,6 +183,7 @@ which issues a valid label would release, and you still add the item with
 | `/factory-design [topic]` | The design interview (run again to amend the plan) |
 | `/factory-approve` | Validate the plan, promote proposed items, start the loop |
 | `/factory-start`, `/factory-pause`, `/factory-stop` | Run or hold the loop |
+| `/factory-exit` | Leave factory mode: stop the loop and hide the band, status line and dashboard |
 | `/factory-triage [search]` | Turn open GitHub issues into proposed items |
 | `/factory-watch [now]` | List open issues and what the factory would do with each; `now` acts on one |
 | `/factory-roadmap` | Plan the next phase once nothing is left to run |

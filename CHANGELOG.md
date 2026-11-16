@@ -9,16 +9,23 @@ minor version may change behavior).
 
 ### Added
 
+- `/factory-exit` leaves factory mode: it stops the loop if it is running, closes
+  the dashboard, clears the status line, hides the band, and drops an open
+  interview's instructions and guards. A factory turn that is still running keeps
+  its guards until it ends. `/factory-start`, `/factory-design`, `/factory-approve`,
+  `/factory-roadmap`, `/factory-triage`, `/factory-dashboard` or a new session
+  bring it back. It writes nothing when the factory was not running.
 - The issue watcher (setting `watchIssues`, off by default, `/factory-watch`).
   While the loop is idle it reads the open issues every ten minutes through
-  one GraphQL call, applies `issueGate`, and runs a read-only turn that posts one
-  design comment on the first issue that needs it. That turn runs under an
-  allowlist (`readOnlyBash`, `readOnlyPathDenied`): only a few read commands,
-  no shell redirects or substitutions, no files outside the repo or that look
-  like secrets, exactly one `gh issue comment` on the designed issue, and every
-  other tool denied, even if another session takes the lock meanwhile. Turning it on changes the
-  approval hash, so it needs a `/factory-approve`. Building from `factory:go`
-  is a later slice.
+  one GraphQL call and applies `issueGate`. For the first issue that needs a
+  design it runs one turn with no shell: the factory puts the issue, its comments
+  (fenced as untrusted data), the repo notes and the list of tracked files in the
+  prompt, and the turn may only use `Read` on those exact files. Symlinks,
+  submodules and secret-looking names are never listed, and every other tool is
+  denied. The factory posts the turn's final answer as the comment itself, and
+  remembers the issue per repo so a new session does not post a second design.
+  Turning it on changes the approval hash, so it needs a `/factory-approve`.
+  Building from `factory:go` is a later slice.
 - The pure decision logic for label-gated issue handling (`issueGate` in
   `hooks/lib.ts`, not wired to anything yet): who may trigger triage, who may
   approve with `factory:go`, a SHA-256 pin of the approved issue and design text,
