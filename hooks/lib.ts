@@ -734,7 +734,7 @@ export function normalizePath(p: string): string {
   return (abs ? '/' : '') + out.join('/')
 }
 
-const DESIGN_SECRET = /(^|\/)(\.env[^/]*|\.netrc|\.npmrc|\.pypirc|\.aws|\.ssh|\.gnupg|\.git|id_[a-z0-9_]+|credentials[^/]*|[^/]*\.(pem|key|p12|pfx))(\/|$)/i
+const DESIGN_SECRET = /(^|\/)(\.env[^/]*|\.netrc|\.npmrc|\.yarnrc[^/]*|\.pypirc|\.pgpass|\.htpasswd|\.git-credentials|\.aws|\.ssh|\.gnupg|\.git|id_[a-z0-9_]+|credentials[^/]*|[^/]*\.(pem|key|p12|pfx))(\/|$)/i
 
 export const DESIGN_FILE_LIMIT = 400
 
@@ -3011,8 +3011,6 @@ export function issueGate(issue: GateIssue, comments: readonly GateComment[], ev
   return { action: 'build', hash, by: go.actor }
 }
 
-// ------------------------------------------------------------ issue watcher
-
 export const WATCH_INTERVAL_MS = 600000
 export const MAX_WATCHED_ISSUES = 30
 export const MAX_DESIGN_TRIES = 2
@@ -3161,6 +3159,7 @@ Steps
 }
 
 export function designComment(answer: string): string | null {
+  if (!/^## Understanding\b/m.test(answer) || !/^## Proposed approach\b/m.test(answer)) return null
   const text = safeLines(answer)
     .split('\n')
     .filter(l => l.trim() !== 'ROADMAP-DONE')

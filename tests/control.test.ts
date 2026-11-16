@@ -2608,12 +2608,14 @@ test('/factory-watch now designs one issue with a Read-only turn, only when watc
   expect(prompts(off)).toEqual([])
 })
 
-const startDesign = async ($: any, on: any, extra: Record<string, unknown> = {}, nodes: unknown[] = [openIssue(5), openIssue(7)]) => {
+const startDesign = async ($: any, on: any, extra: Record<string, unknown> = {}, nodes: unknown[] = [openIssue(5), openIssue(7)], bind = true) => {
   const clock = mock.clock(on, { now: 1_000_000 })
   const fx = setup($, on, { settings: { watchIssues: true }, run: watchRun(nodes), files: { 'README.md': 'readme words' }, ...extra })
   fx.live.usd = 1
   const text = (await $.command.run({ command: 'factory-watch', args: 'now' } as never)).text as string
   await clock.advance(1000)
+  const sent = fx.live.submitted[fx.live.submitted.length - 1]
+  if (bind && sent !== undefined && sent.startsWith('Code factory: design for issue')) await $.turn.start({ text: sent, turnId: 't1' } as never)
   return { fx, text }
 }
 
@@ -2693,13 +2695,47 @@ test('a turn that ends without an answer posts nothing and lifts the guard', asy
   expect(await bash($, 'git status')).not.toContain('can only Read')
 })
 
-test('a prompt the person types takes the design turn over: nothing is posted from the next answer and the restriction lifts', async ($, on) => {
+test('a prompt the person types voids the post but the restriction holds until the design turn ends', async ($, on) => {
   const { fx } = await startDesign($, on)
   expect(await bash($, 'git status')).toContain('can only Read')
   await $.prompt.submit({ text: 'let me look at this myself', origin: { kind: 'composer' } } as never)
-  expect(await bash($, 'git status')).not.toContain('can only Read')
+  expect(await bash($, 'git status')).toContain('can only Read')
   await mainTurn($, { answer: DESIGN_ANSWER })
   expect(posted(fx)).toEqual([])
+  expect(await bash($, 'git status')).not.toContain('can only Read')
+})
+
+test('a turn that starts before the design turn is not taken for it: its answer is not posted and the restriction stays', async ($, on) => {
+  const { fx } = await startDesign($, on, {}, [openIssue(5)], false)
+  await $.turn.start({ text: 'background job finished', turnId: 'other' } as never)
+  await mainTurn($, { answer: DESIGN_ANSWER, turnId: 'other' })
+  expect(posted(fx)).toEqual([])
+  expect(await bash($, 'git status')).toContain('can only Read')
+  await $.turn.start({ text: fx.live.submitted[fx.live.submitted.length - 1], turnId: 't1' } as never)
+  await mainTurn($, { answer: DESIGN_ANSWER })
+  expect(posted(fx)).toHaveLength(1)
+})
+
+test('a turn that opens between the poll and the launch stops the launch, so its answer cannot be posted', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { settings: { watchIssues: true }, run: watchRun([openIssue(5)]), files: { 'README.md': 'readme words' } })
+  fx.live.usd = 1
+  const text = (await $.command.run({ command: 'factory-watch', args: 'now' } as never)).text as string
+  expect(text).toContain('Designing #5 now.')
+  await $.turn.start({ text: 'my own question', turnId: 'mine' } as never)
+  await clock.advance(1000)
+  expect(fx.live.submitted.some(s => s.startsWith('Code factory: design for issue'))).toBe(false)
+  await mainTurn($, { answer: DESIGN_ANSWER, turnId: 'mine' })
+  expect(posted(fx)).toEqual([])
+  expect(await bash($, 'git status')).not.toContain('can only Read')
+})
+
+test('a second launch for the same issue is refused while a claim is fresh, and the post re-checks the designed list', async ($, on) => {
+  const { fx } = await startDesign($, on, {}, [openIssue(5)])
+  await mainTurn($, { answer: 'ok' })
+  const again = (await $.command.run({ command: 'factory-watch', args: 'now' } as never)).text as string
+  expect(again).toContain('claimed in the last 45 minutes')
+  expect(fx.live.submitted.filter(s => s.startsWith('Code factory: design for issue #5'))).toHaveLength(1)
 })
 
 test('the stale-turn timer never lifts the restriction while a factory turn is still running', async ($, on) => {

@@ -609,7 +609,7 @@ async function pause($: Dollar, state: FactoryState, rawReason: string, byPerson
 
 type Instructions = { text: string; isDesign: boolean; roadmapAt: number | null; lastAt: number; turns: number }
 let instructions: Instructions | null = null
-type IssueTurn = { number: number; allowed: ReadonlySet<string>; at: number }
+type IssueTurn = { number: number; allowed: ReadonlySet<string>; at: number; label: string; turnId: string | null; voided: boolean }
 const ISSUE_TURN_MS = 30 * 60000
 let issueTurn: IssueTurn | null = null
 let launchedHere: string | null = null
@@ -1184,7 +1184,13 @@ async function startInterview($: Dollar, iv: Interview, items: readonly Item[], 
     await settle($, false)
     return
   }
-  issueTurn = iv.designTurn ? { ...iv.designTurn, at } : null
+  if (iv.designTurn) {
+    if (mainTurnOpen || isFactoryTurn) {
+      await settle($, false)
+      return
+    }
+    issueTurn = { ...iv.designTurn, at, label: stripControls(iv.label).slice(0, 200), turnId: null, voided: false }
+  } else issueTurn = null
   submit($, iv.prompt(items, mergedIds, settings, costSummaryForPrompt(costs?.rc ?? null)), iv.label, true, true, at)
   void logEvent($, { itemId: null, kind: 'roadmap', detail: iv.title })
 }
@@ -1294,8 +1300,9 @@ const READ_ONLY_DENY = 'code-factory: this turn can only Read the tracked files 
 const readOnlyTurn = (): boolean => issueTurn !== null
 
 async function readOnlyPath($: Dollar, path: string | undefined): Promise<boolean> {
-  if (issueTurn === null) return false
-  return !designReadAllowed(path, await $.session.cwd().catch(() => null), issueTurn.allowed)
+  const turn = issueTurn
+  if (turn === null) return false
+  return !designReadAllowed(path, await $.session.cwd().catch(() => null), turn.allowed)
 }
 
 async function guardWrite($: Dollar, path: string, agentId: string | undefined): Promise<{ deny: string } | null> {
@@ -1649,7 +1656,7 @@ async function approveCmd($: Dollar): Promise<{ text: string }> {
   return { text: safeLines(`${head}${started.text}`) }
 }
 
-type Interview = { designTurn?: Omit<IssueTurn, 'at'>; what: string; noun: string; label: string; title: string; needsIdle: boolean; markAsked: boolean; prompt: (items: readonly Item[], mergedIds: readonly string[], settings: Settings, costSummary: string) => string }
+type Interview = { designTurn?: Pick<IssueTurn, 'number' | 'allowed'>; what: string; noun: string; label: string; title: string; needsIdle: boolean; markAsked: boolean; prompt: (items: readonly Item[], mergedIds: readonly string[], settings: Settings, costSummary: string) => string }
 
 const ROADMAP_INTERVIEW: Interview = {
   what: 'plan the next phase',
@@ -1769,7 +1776,27 @@ async function designContext($: Dollar, w: WatchedIssue): Promise<{ files: strin
   return { files, ctx: { title: w.issue.title, association: w.issue.association, body: w.issue.body, comments: w.comments.map(c => ({ author: c.author, body: c.body })), files, docs } }
 }
 
+const CLAIM_PREFIX = 'issue-claims/'
+const CLAIM_MS = 45 * 60000
+
+async function claimIssue($: Dollar, n: number): Promise<boolean> {
+  try {
+    const key = `${CLAIM_PREFIX}${await costRepo($)}`
+    const v = await $.store.get(key)
+    const all: Record<string, number> = v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, number>) : {}
+    const now = await $.clock.now()
+    const at = all[String(n)]
+    if (typeof at === 'number' && now - at < CLAIM_MS) return false
+    all[String(n)] = now
+    await $.store.set(key, Object.fromEntries(Object.entries(all).filter(([, t]) => typeof t === 'number' && now - t < CLAIM_MS)))
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function postDesign($: Dollar, n: number, answer: string): Promise<void> {
+  if (String(n) in (await designedIssues($))) return
   const body = designComment(answer)
   if (body === null) {
     toast($, `factory: the design turn for issue #${n} wrote no usable design; nothing was posted`)
@@ -1807,6 +1834,7 @@ async function pollIssues($: Dollar, mode: 'timer' | 'now' | 'report'): Promise<
     if (!built) return { text: `${text}\n(Could not list the repo files, so no design was started.)` }
     const busy = snap.state.autopilot || (await integrityProblem(snap)) !== null || (await lockedByOther($)) || launchedHere !== null || isAdvancing || roadmapPending || mainTurnOpen || instructions !== null || issueTurn !== null || (await turnBusy($))
     if (busy) return { text: `${text}\n(Not acting now: the loop or a turn is busy.)` }
+    if (!(await claimIssue($, row.number))) return { text: `${text}\n(Issue #${row.number} was claimed in the last 45 minutes, by another session or an earlier try; not acting.)` }
     designTries.set(row.number, (designTries.get(row.number) ?? 0) + 1)
     roadmapPending = true
     toast($, `factory: writing a design for issue #${row.number}`)
@@ -2039,10 +2067,11 @@ export const register: Register = (on, _options) => {
     if (e.agentId && e.agentId === launchedHere) expectReport = true
     const out = await next(e)
     await turnCost($, e)
-    if (!e.agentId && issueTurn) {
+    if (!e.agentId && issueTurn && issueTurn.turnId !== null && e.turnId === issueTurn.turnId) {
       const turn = issueTurn
       issueTurn = null
       dropRoadmap()
+      if (turn.voided) return out
       if (e.reason === 'answer') await postDesign($, turn.number, e.answer)
       else toast($, `factory: the design turn for issue #${turn.number} ended without an answer (${e.reason}); nothing was posted`)
     }
@@ -2129,7 +2158,7 @@ export const register: Register = (on, _options) => {
       isFactoryTurn = false
       isArmed = false
       expectReport = false
-      issueTurn = null
+      if (issueTurn !== null) issueTurn.voided = true
     }
     if (['composer', 'bridge', 'sdk'].includes(e.origin.kind) && e.text.trimStart().startsWith('/') && !/^\/factory(-|\s|$)/.test(e.text.trimStart()) && markOwner !== null) {
       await settle($, true)
@@ -2148,6 +2177,7 @@ export const register: Register = (on, _options) => {
   on('turn.start', async ($, e, next) => {
     mainTurnOpen = true
     if (personSlash && slashTurnId === null) slashTurnId = e.turnId
+    if (issueTurn !== null && issueTurn.turnId === null && e.text.startsWith(issueTurn.label)) issueTurn.turnId = e.turnId
     return next(e)
   })
 
@@ -2162,7 +2192,6 @@ export const register: Register = (on, _options) => {
 
   on('tool.call', { tool: 'Edit' }, async ($, e, next) => (await guardWrite($, e.file_path, e.agentId)) ?? next(e))
   on('tool.call', { tool: 'Write' }, async ($, e, next) => (await guardWrite($, e.file_path, e.agentId)) ?? next(e))
-
 
   on('tool.call', { tool: 'Read' }, async ($, e, next) => ((await readOnlyPath($, e.file_path)) ? deny(READ_ONLY_DENY) : next(e)))
   on('tool.call', async ($, e, next) => {

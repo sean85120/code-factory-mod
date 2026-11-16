@@ -92,6 +92,18 @@ minor version may change behavior).
   pull request templates, and a README with requirements, settings reference and
   the trust model.
 
+### Fixed
+
+- Issue design turn: it is bound to its own turn by the factory's headline text,
+  not to whichever main turn ends next, and a launch is dropped when a turn
+  opened since the poll. A person's or a background turn's answer can no longer
+  be posted on an issue. A typed prompt now only voids the post; the read-only
+  restriction holds until the design turn ends.
+- Issue design comments are posted only when the answer has the two design
+  headings. An issue is claimed for 45 minutes before a launch, so two sessions
+  do not both design it, and the designed list is re-read before posting. More
+  credential file names are kept out of the file list.
+
 ## [0.2.0]
 
 ### Added

