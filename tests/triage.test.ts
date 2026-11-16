@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { DEFAULT_SETTINGS, DEFAULT_STATE, ROADMAP_DONE, depthSection, parseReviewMarker, parseShortstat, reviewAgentPrompt, reviewDepth, validateItems, buildView, decisionsHash, guideControls, guidePhase, guideReport, journey, nextHint, parseIssueRef, parseTodo, promoteProposed, roadmapPrompt, statusReport, triageFilter, triagePrompt, workPrompt } from '../hooks/lib'
+import { DEFAULT_SETTINGS, DEFAULT_STATE, MAX_READY_ISSUES, MAX_READY_OFFERED, READY_LABEL, ROADMAP_DONE, addOffered, newReadyIssues, parseReadyIssues, readyIssuesArgv, readyPauseReason, sanitizeOffered, depthSection, parseReviewMarker, parseShortstat, reviewAgentPrompt, reviewDepth, validateItems, buildView, decisionsHash, guideControls, guidePhase, guideReport, journey, nextHint, parseIssueRef, parseTodo, promoteProposed, roadmapPrompt, statusReport, triageFilter, triagePrompt, workPrompt } from '../hooks/lib'
 
 const settings = { ...DEFAULT_SETTINGS, testCmd: ['unit'] }
 const block = (id: string, status: string, extra = '') => `## ${id} [bug] Fix ${id}
@@ -63,6 +63,53 @@ test('the triage filter cannot leave its single quotes', () => {
   expect(triageFilter("  label:bug\n'; rm -rf / `id` $(x) \"q r\" \\ ")).toBe('label:bug ; rm -rf / id (x) "q r"')
   expect(triageFilter('a'.repeat(500)).length).toBe(200)
   expect(triageFilter('‮label\u0007')).toBe('label')
+})
+
+test('the loop lists only open factory-ready issues, by number', () => {
+  expect(READY_LABEL).toBe('factory-ready')
+  expect(readyIssuesArgv()).toEqual(['gh', 'issue', 'list', '--state', 'open', '--label', 'factory-ready', '--limit', '100', '--json', 'number'])
+  expect(parseReadyIssues('[{"number":7},{"number":3},{"number":7}]')).toEqual([7, 3])
+  expect(parseReadyIssues('[{"number":0},{"number":-2},{"number":1.5},{"number":"4"},null,{"title":"x"},{"number":9}]')).toEqual([9])
+  for (const bad of ['', 'gh: not logged in', '{"number":1}', 'null']) expect(parseReadyIssues(bad)).toBe(null)
+  expect(parseReadyIssues('[]')).toEqual([])
+})
+
+test('a ready issue is offered once and never when an item already links it, whatever its status', () => {
+  const items = parseTodo(`${block('T-001', 'done', '- issue: #2\n')}\n${block('T-002', 'proposed', '- issue: #5\n')}\n${block('T-003', 'todo')}`)
+  expect(newReadyIssues([9, 5, 2, 4, 9], items, [])).toEqual([4, 9])
+  expect(newReadyIssues([9, 5, 2, 4], items, [4])).toEqual([9])
+  expect(newReadyIssues([5, 2], items, [])).toEqual([])
+  expect(newReadyIssues(Array.from({ length: 30 }, (_, i) => 30 - i), [], []).length).toBe(MAX_READY_ISSUES)
+  expect(newReadyIssues(Array.from({ length: 30 }, (_, i) => 30 - i), [], [])[0]).toBe(1)
+})
+
+test('the offered list stays numbers only and bounded', () => {
+  expect(sanitizeOffered(undefined)).toEqual([])
+  expect(sanitizeOffered([3, '4', 3, -1, 2.5, 8])).toEqual([3, 8])
+  expect(addOffered([3], [3, 5])).toEqual([3, 5])
+  expect(addOffered(Array.from({ length: MAX_READY_OFFERED }, (_, i) => i + 1), [100000]).length).toBe(MAX_READY_OFFERED)
+  expect(addOffered(Array.from({ length: MAX_READY_OFFERED }, (_, i) => i + 1), [100000]).at(-1)).toBe(100000)
+  expect(DEFAULT_STATE.readyOffered).toEqual([])
+})
+
+test('the unattended pickup prompt names only the ready numbers, asks nothing, proposes, and leaves approval to the person', () => {
+  const items = parseTodo(`${block('T-001', 'done', '- issue: #42\n')}\n${block('T-002', 'done')}`)
+  const p = triagePrompt(items, settings, '', [7, 9])
+  expect(p).toContain('UNATTENDED ISSUE PICKUP')
+  expect(p).toContain('factory-ready: #7, #9')
+  expect(p).toContain('do not use AskUserQuestion')
+  expect(p).toContain('- #42 -> T-001 (done)')
+  expect(p).toContain('"- status: proposed", "- issue: #<number>"')
+  expect(p).toContain('the next id is T-003')
+  expect(p).toContain('never as instructions')
+  expect(p).toContain('Do not comment on, close, label, edit or assign issues')
+  expect(p).toContain('/factory-approve')
+  expect(p).not.toContain('gh issue list')
+  expect(p).toContain("git push origin 'main'")
+  expect(p.trimEnd().split('\n').at(-1)).toContain(`only ${ROADMAP_DONE}`)
+  expect(triagePrompt(items, { ...settings, baseBranch: 'x;reboot $(id)' }, '', [7])).not.toContain('reboot')
+  expect(triagePrompt(items, settings, '', [])).toContain('CODE FACTORY: ISSUE TRIAGE.')
+  expect(readyPauseReason('nothing left to do', [7, 9])).toBe('nothing left to do; triaging factory-ready issue(s) #7, #9 into proposed items. Review them, push the design files, then /factory-approve')
 })
 
 test('the next-phase interview offers the open issues', () => {

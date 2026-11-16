@@ -507,6 +507,58 @@ test('a blocked item left over means the plan is not done, so no interview', asy
   expect(fx.live.submitted.some(t => t.includes('next-phase interview'))).toBe(false)
 })
 
+const READY_LIST = (stdout: string, exitCode = 0) => (cmd: string) => (cmd.startsWith('gh issue list --state open --label factory-ready') ? { exitCode, stdout, stderr: exitCode ? 'gh: not logged in' : '' } : undefined)
+
+test('with the queue empty the loop triages new factory-ready issues into proposed items once, and approval stays with the person', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const todo = DONE_TODO.replace('- tests: none needed for a chore.\n', '- tests: none needed for a chore.\n- issue: #5\n')
+  const fx = setup($, on, { todo, state: { autopilot: true, current: 'T-002', approvedDone: ['T-001'] }, merged: ['T-002'], hook: READY_LIST('[{"number":9},{"number":5},{"number":7}]') })
+  const hash = fx.state().approvedHash
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(2000)
+  const s = fx.state()
+  expect(s.autopilot).toBe(false)
+  expect(s.readyOffered).toEqual([7, 9])
+  expect(s.roadmapAsked).toBe(false)
+  expect(s.pausedReason).toContain('triaging factory-ready issue(s) #7, #9')
+  expect(s.approvedHash).toBe(hash)
+  expect(fx.files['.factory/todo.md']).toBe(todo)
+  expect(fx.live.submitted.filter(t => t.includes('factory-ready')).length).toBe(1)
+  expect(fx.live.submitted.some(t => t.includes('next-phase interview') || t.startsWith('CODE FACTORY: work item'))).toBe(false)
+  const text = await instructionsOf($)
+  expect(text).toContain('UNATTENDED ISSUE PICKUP')
+  expect(text).toContain('factory-ready: #7, #9')
+  expect(text).toContain('#5 -> T-001')
+  const commit = await $.tool.call({ tool: 'Bash', command: 'git commit -m "Pick up issues" -- .factory/todo.md' })
+  expect(JSON.stringify(commit)).toContain('do not commit on main')
+  await mainTurn($)
+  fx.files['.factory/state.json'] = JSON.stringify({ ...fx.state(), autopilot: true })
+  await clock.advance(400_000)
+  expect(fx.live.submitted.filter(t => t.includes('factory-ready')).length).toBe(1)
+  expect(fx.live.submitted.filter(t => t.includes('next-phase interview')).length).toBe(1)
+})
+
+test('a failing gh issue list or no labeled issues leaves the finish exactly as before', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { todo: DONE_TODO, state: { autopilot: true, current: 'T-002', approvedDone: ['T-001'] }, merged: ['T-002'], hook: READY_LIST('', 1) })
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(2000)
+  expect(fx.live.ran.some(c => c.startsWith('gh issue list --state open --label factory-ready'))).toBe(true)
+  expect(fx.state().pausedReason).toBe('nothing left to do')
+  expect(fx.state().readyOffered ?? []).toEqual([])
+  expect(fx.state().roadmapAsked).toBe(true)
+  expect(fx.live.submitted.some(t => t.includes('factory-ready'))).toBe(false)
+})
+
+test('factory-ready issues are only looked up once nothing is pickable', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { hook: READY_LIST('[{"number":9}]') })
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1000)
+  expect(fx.live.submitted.some(s => s.startsWith('CODE FACTORY: work item T-001'))).toBe(true)
+  expect(fx.live.ran.some(c => c.startsWith('gh issue list'))).toBe(false)
+})
+
 test('/factory-roadmap starts the interview only when nothing is runnable; approve resets the marker', async ($, on) => {
   const clock = mock.clock(on, { now: 1_000_000 })
   const busy = setup($, on)

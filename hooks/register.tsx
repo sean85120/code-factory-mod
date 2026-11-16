@@ -73,6 +73,12 @@ import {
   releasePending,
   roadmapPrompt,
   triagePrompt,
+  addOffered,
+  newReadyIssues,
+  parseReadyIssues,
+  readyIssuesArgv,
+  readyPauseReason,
+  sanitizeOffered,
   parseShortstat,
   depthSection,
   triageFilter,
@@ -226,7 +232,7 @@ async function readStateOnce($: Dollar): Promise<FactoryState | 'absent' | null>
   try {
     const raw = JSON.parse(text) as Partial<FactoryState>
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
-    return { ...DEFAULT_STATE, ...raw, events: sanitizeEvents(raw.events), reviewDeclined: sanitizeDeclined(raw.reviewDeclined), reviewOpen: sanitizeDeclined(raw.reviewOpen), roadmapAsked: raw.roadmapAsked === true, unreadable: undefined }
+    return { ...DEFAULT_STATE, ...raw, events: sanitizeEvents(raw.events), reviewDeclined: sanitizeDeclined(raw.reviewDeclined), reviewOpen: sanitizeDeclined(raw.reviewOpen), roadmapAsked: raw.roadmapAsked === true, readyOffered: sanitizeOffered(raw.readyOffered), unreadable: undefined }
   } catch {
     return null
   }
@@ -1101,12 +1107,17 @@ async function advance($: Dollar): Promise<void> {
           return await handOut({ key: PLAN_KEY, kind: 'release', title: `release v${version}` }, false, () => submit($, releasePrompt(version, settings), `CODE FACTORY: release v${version}`))
         }
       }
-      const ask = shouldAskRoadmap(settings, state, items)
+      // Unattended pickup: open issues a maintainer labeled factory-ready and
+      // the plan does not know yet become proposed items in one armed triage
+      // turn; /factory-approve stays the only way they reach the queue.
+      const ready = await readyIssues($, snap.items, state.readyOffered)
+      const ask = ready.length === 0 && shouldAskRoadmap(settings, state, items)
+      const reason = ready.length > 0 ? readyPauseReason(finished, ready) : finished
       const wrote = await write({
-        ...withEvent(state, now, { itemId: null, kind: 'paused', detail: finished }),
+        ...withEvent(state, now, { itemId: null, kind: 'paused', detail: reason }),
         autopilot: false,
         current: null,
-        pausedReason: finished,
+        pausedReason: reason,
         roadmapAsked: state.roadmapAsked || ask,
       })
       if (!wrote) return
@@ -1115,9 +1126,9 @@ async function advance($: Dollar): Promise<void> {
       await releaseLock($)
       toast($, `factory finished: ${finished} (${summarize(items, blocked)})`, { timeoutMs: 10000 })
       await refreshStatus($)
-      if (ask && epoch === loopEpoch && !(await lockedByOther($))) {
+      if ((ready.length > 0 || ask) && epoch === loopEpoch && !(await lockedByOther($))) {
         if (hasMerged) await resetContext($, settings)
-        await startInterview($, ROADMAP_INTERVIEW, items, state.mergedIds, settings, epoch)
+        await startInterview($, ready.length > 0 ? readyInterview(ready) : ROADMAP_INTERVIEW, items, state.mergedIds, settings, epoch)
       }
       return
     }
@@ -1147,6 +1158,10 @@ async function startInterview($: Dollar, iv: Interview, items: readonly Item[], 
   const costs = await readCosts($)
   if (epoch !== loopEpoch) return
   if (iv.markAsked) await patchState($, s => ({ ...s, roadmapAsked: true }))
+  if (iv.offer && iv.offer.length > 0) {
+    const offer = iv.offer
+    await patchState($, s => ({ ...s, readyOffered: addOffered(s.readyOffered, offer) }))
+  }
   if (epoch !== loopEpoch) return
   await drive($, { key: PLAN_KEY, kind: 'roadmap', title: iv.title })
   const at = await $.clock.now()
@@ -1582,7 +1597,7 @@ async function approveCmd($: Dollar): Promise<{ text: string }> {
   return { text: safeLines(`${head}${started.text}`) }
 }
 
-type Interview = { what: string; noun: string; label: string; title: string; needsIdle: boolean; markAsked: boolean; prompt: (items: readonly Item[], mergedIds: readonly string[], settings: Settings, costSummary: string) => string }
+type Interview = { what: string; noun: string; label: string; title: string; needsIdle: boolean; markAsked: boolean; offer?: readonly number[]; prompt: (items: readonly Item[], mergedIds: readonly string[], settings: Settings, costSummary: string) => string }
 
 const ROADMAP_INTERVIEW: Interview = {
   what: 'plan the next phase',
@@ -1622,6 +1637,30 @@ async function interviewCmd($: Dollar, iv: Interview): Promise<{ text: string }>
     })
   })
   return { text: `Code factory: ${iv.noun} starting. Answer the questions; run /factory-approve when the new items are pushed (it starts the loop).` }
+}
+
+// The loop's own triage of factory-ready issues: same armed launch as
+// /factory-triage, but only for these numbers, with no questions asked, and the
+// numbers are remembered (readyOffered) so a turn that adds nothing for one of
+// them is not repeated at every finish.
+const readyInterview = (ready: readonly number[]): Interview => ({
+  what: 'pick up factory-ready issues',
+  noun: 'factory-ready pickup',
+  label: `Code factory: queue empty; triaging factory-ready issue(s) ${ready.map(n => `#${n}`).join(', ')}`,
+  title: 'factory-ready pickup',
+  needsIdle: true,
+  markAsked: false,
+  offer: ready,
+  prompt: (items, _merged, settings) => triagePrompt(items, settings, '', ready),
+})
+
+// Open factory-ready issues the plan has not seen. A failed or unparseable
+// `gh issue list` (gh missing, not logged in, no network) counts as none, so
+// the loop finishes exactly as it did before this pickup existed.
+async function readyIssues($: Dollar, items: readonly Item[], offered: readonly number[]): Promise<number[]> {
+  const listed = await run($, readyIssuesArgv(), 30000)
+  if (listed.exitCode !== 0) return []
+  return newReadyIssues(parseReadyIssues(listed.stdout) ?? [], items, offered)
 }
 
 async function triageCmd($: Dollar, args: string): Promise<{ text: string }> {
