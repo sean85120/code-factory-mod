@@ -70,6 +70,14 @@ import {
   roadmapExpired,
   isSafeBranchName,
   isRoadmapDone,
+  ISSUE_QUERY,
+  MAX_DESIGN_TRIES,
+  WATCH_INTERVAL_MS,
+  issueDesignPrompt,
+  parseIssueFacts,
+  permissionActors,
+  scanIssues,
+  watchReport,
   releasePending,
   roadmapPrompt,
   triagePrompt,
@@ -143,7 +151,7 @@ import {
   validateItems,
   workPrompt,
 } from './lib'
-import type { AgentRow, Control, DoctorCheck, Drive, EventKind, FactoryEvent, FactoryState, FactoryView, Item, LoopEvent, RepoCosts, ReviewMark, Settings, Stage, Step, Theme, ThemePrefs, Usage, VoxState } from './lib'
+import type { AgentRow, Control, DoctorCheck, Drive, EventKind, FactoryEvent, FactoryState, FactoryView, Item, LoopEvent, RepoCosts, ReviewMark, Settings, Stage, Step, Theme, ThemePrefs, Usage, VoxState, WatchedIssue } from './lib'
 
 type Dollar = EngineInterface
 
@@ -583,7 +591,7 @@ async function pause($: Dollar, state: FactoryState, rawReason: string, byPerson
   return true
 }
 
-type Instructions = { text: string; isDesign: boolean; roadmapAt: number | null; lastAt: number; turns: number }
+type Instructions = { text: string; isDesign: boolean; roadmapAt: number | null; lastAt: number; turns: number; readOnly: boolean }
 let instructions: Instructions | null = null
 let launchedHere: string | null = null
 let expectReport = false
@@ -591,14 +599,14 @@ let expectReport = false
 const reviewWaiting = (state: FactoryState, settings: Settings, now: number): boolean =>
   state.reviewAgentId !== null && state.reviewAgentId === launchedHere && isReviewPending(state, now, reviewWindow(state, settings))
 
-function submit($: Dollar, full: string, label?: string, isDesign = false, guarded = false, roadmapAt: number | null = null): void {
+function submit($: Dollar, full: string, label?: string, isDesign = false, guarded = false, roadmapAt: number | null = null, readOnly = false): void {
   personSlash = false
   slashTurnId = null
   isFactoryTurn = true
   factoryTurnAt = -1
   isArmed = !isDesign || guarded
   expectReport = false
-  instructions = { text: full, isDesign, roadmapAt, lastAt: roadmapAt ?? 0, turns: 0 }
+  instructions = { text: full, isDesign, roadmapAt, lastAt: roadmapAt ?? 0, turns: 0, readOnly }
   const headline = stripControls(label ?? full.split('\n', 1)[0]!).slice(0, 200)
   $.prompt.submit({ text: `${headline}\n(The full instructions are the "code-factory:instructions" section of your system prompt; follow them.)` }).catch(() => {
     instructions = null
@@ -1154,7 +1162,7 @@ async function startInterview($: Dollar, iv: Interview, items: readonly Item[], 
     await settle($, false)
     return
   }
-  submit($, iv.prompt(items, mergedIds, settings, costSummaryForPrompt(costs?.rc ?? null)), iv.label, true, true, at)
+  submit($, iv.prompt(items, mergedIds, settings, costSummaryForPrompt(costs?.rc ?? null)), iv.label, true, true, at, iv.readOnly ?? false)
   void logEvent($, { itemId: null, kind: 'roadmap', detail: iv.title })
 }
 
@@ -1259,8 +1267,11 @@ const REVIEW_BUSY_DENY = 'code-factory: the review agent is still running; do no
 const FACTORY_FILE_DENY = deny('code-factory: .factory/state.json and .factory/lock.json are controlled by the person through /factory-* commands.')
 const isFactoryControlFile = (p: string): boolean => /(^|\/)\.factory\/(?:state|lock)\.json$/i.test(normalizePath(p))
 
+const READ_ONLY_DENY = 'code-factory: this turn only reads the repo and posts one issue comment; it cannot change anything else.'
+
 async function guardWrite($: Dollar, path: string, agentId: string | undefined): Promise<{ deny: string } | null> {
   if (isFactoryControlFile(path)) return FACTORY_FILE_DENY
+  if (instructions?.readOnly && isFactoryTurn) return deny(READ_ONLY_DENY)
   const state = await readState($)
   const live = state.approved && (state.autopilot || isArmed) && !(await lockedByOther($))
   if (!live) return null
@@ -1582,7 +1593,7 @@ async function approveCmd($: Dollar): Promise<{ text: string }> {
   return { text: safeLines(`${head}${started.text}`) }
 }
 
-type Interview = { what: string; noun: string; label: string; title: string; needsIdle: boolean; markAsked: boolean; prompt: (items: readonly Item[], mergedIds: readonly string[], settings: Settings, costSummary: string) => string }
+type Interview = { readOnly?: boolean; what: string; noun: string; label: string; title: string; needsIdle: boolean; markAsked: boolean; prompt: (items: readonly Item[], mergedIds: readonly string[], settings: Settings, costSummary: string) => string }
 
 const ROADMAP_INTERVIEW: Interview = {
   what: 'plan the next phase',
@@ -1637,6 +1648,64 @@ async function triageCmd($: Dollar, args: string): Promise<{ text: string }> {
   })
 }
 
+let polling = false
+let issueTimer: Timer | null = null
+const designTries = new Map<number, number>()
+
+type Watch = { me: string; issues: WatchedIssue[]; perms: Record<string, string> }
+
+async function fetchWatch($: Dollar): Promise<Watch | { error: string }> {
+  const r = await run($, ['gh', 'api', 'graphql', '-F', 'owner={owner}', '-F', 'name={repo}', '-f', `query=${ISSUE_QUERY}`], 60000)
+  if (r.exitCode !== 0) return { error: cleanText(r.stderr).slice(0, 160) || 'gh api graphql failed' }
+  let json: unknown
+  try {
+    json = JSON.parse(r.stdout)
+  } catch {
+    return { error: 'could not read the GitHub reply' }
+  }
+  const parsed = parseIssueFacts(json)
+  if (!parsed) return { error: 'unexpected GitHub reply' }
+  const perms: Record<string, string> = {}
+  for (const login of permissionActors(parsed.issues)) {
+    const p = await run($, ['gh', 'api', `repos/{owner}/{repo}/collaborators/${login}/permission`, '--jq', '.permission'], 30000)
+    if (p.exitCode === 0) perms[login] = p.stdout.trim()
+  }
+  return { ...parsed, perms }
+}
+
+async function pollIssues($: Dollar, mode: 'timer' | 'now' | 'report'): Promise<{ text: string }> {
+  if (polling) return { text: 'Issue watch: a check is already running.' }
+  polling = true
+  try {
+    const snap = await load($)
+    const enabled = snap.settings.watchIssues
+    if (mode === 'timer' && (!enabled || !snap.state.approved)) return { text: '' }
+    if (!snap.state.approved) return { text: 'Issue watch: the design is not approved yet; /factory-approve first.' }
+    const got = await fetchWatch($)
+    if ('error' in got) return { text: `Issue watch: ${got.error}` }
+    const rows = scanIssues(got.issues, got.me, got.perms)
+    const text = watchReport(rows, enabled)
+    if (mode === 'report' || !enabled) return { text }
+    const row = rows.find(r => r.gate.action === 'design' && (designTries.get(r.number) ?? 0) < MAX_DESIGN_TRIES)
+    if (!row) return { text }
+    const busy = snap.state.autopilot || (await integrityProblem(snap)) !== null || (await lockedByOther($)) || launchedHere !== null || isAdvancing || roadmapPending || mainTurnOpen || (await turnBusy($))
+    if (busy) return { text: `${text}\n(Not acting now: the loop or a turn is busy.)` }
+    designTries.set(row.number, (designTries.get(row.number) ?? 0) + 1)
+    roadmapPending = true
+    toast($, `factory: writing a design for issue #${row.number}`)
+    const iv: Interview = { readOnly: true, what: 'design an issue', noun: 'issue design', label: `Code factory: design for issue #${row.number}`, title: `issue #${row.number} design`, needsIdle: false, markAsked: false, prompt: () => issueDesignPrompt(row.number) }
+    const epoch = loopEpoch
+    $.clock.after(300, () => {
+      void startInterview($, iv, effectiveItems(snap), snap.state.mergedIds, snap.settings, epoch).finally(() => {
+        roadmapPending = false
+      })
+    })
+    return { text: `${text}\nDesigning #${row.number} now.` }
+  } finally {
+    polling = false
+  }
+}
+
 async function guideCmd($: Dollar): Promise<{ text: string }> {
   await refreshView($)
   return { text: guideReport(await read($, view)) }
@@ -1650,6 +1719,7 @@ async function doctorCmd($: Dollar): Promise<{ text: string }> {
 
 export const register: Register = (on, _options) => {
   on('session.start', async ($, e, next) => {
+    if (!issueTimer) issueTimer = $.clock.every(WATCH_INTERVAL_MS, () => void pollIssues($, 'timer').catch(() => undefined))
     for (const [name, description, argumentHint, immediate] of [
       ['factory', 'Code factory: where am I, what is the next step, and the commands', undefined, true],
       ['factory-triage', 'Code factory: read the open GitHub issues with me and turn the ones worth doing into proposed items', '[search]', false],
@@ -1660,6 +1730,7 @@ export const register: Register = (on, _options) => {
       ['factory-pause', 'Code factory: stop advancing after the current turn, keeping the item, attempts and pending review', undefined, true],
       ['factory-status', 'Code factory: show progress, the current item, spend and blocked items', undefined, false],
       ['factory-log', 'Code factory: show the event timeline, for one item or all', '[ID]', true],
+      ['factory-watch', 'Code factory: list open issues and what the factory would do with each; now acts on one', '[now]', true],
       ['factory-theme', 'Code factory: choose the look of the band and pane, hacker or classic', '[hacker|classic] [ascii|auto] [motion on|off]', true],
       ['factory-skip', 'Code factory: mark an item blocked so the loop moves on', '<ID> [reason]', false],
       ['factory-retry', 'Code factory: unblock an item and reset its attempts', '<ID>', false],
@@ -1748,6 +1819,8 @@ export const register: Register = (on, _options) => {
       }),
     }
   })
+
+  on('command.run', { command: 'factory-watch' }, async ($, e) => ({ text: safeLines((await pollIssues($, e.args.trim() === 'now' ? 'now' : 'report')).text) }))
 
   on('command.run', { command: 'factory-log' }, async ($, e) => {
     const { id } = parseItemArg(e.args)
@@ -2060,6 +2133,8 @@ export const register: Register = (on, _options) => {
     const isLive = snap.state.approved && !(await lockedByOther($)) && (snap.state.autopilot || isArmed)
     if (!isLive) return next(e)
     liveItem = snap.state.current
+
+    if (instructions?.readOnly && isFactoryTurn && (f.ghWrite || f.isCommit || f.isPush || f.isPrCreate || f.isPrMerge)) return deny(READ_ONLY_DENY)
 
     if ((f.isCommit || f.isPush) && snap.state.reviewAgentId !== null && e.agentId !== snap.state.reviewAgentId) {
       if (reviewWaiting(snap.state, snap.settings, await $.clock.now())) return deny(REVIEW_BUSY_DENY)

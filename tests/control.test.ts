@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { ROADMAP_CEILING_MS, ROADMAP_DONE, ROADMAP_IDLE_MS, ROADMAP_MAX_TURNS, branchFor, decisionsHash, parseSettings, parseTodo, reviewAgentPrompt } from '../hooks/lib'
+import { ROADMAP_CEILING_MS, ROADMAP_DONE, ROADMAP_IDLE_MS, ROADMAP_MAX_TURNS, WATCH_INTERVAL_MS, branchFor, decisionsHash, parseSettings, parseTodo, reviewAgentPrompt } from '../hooks/lib'
 
 const TODO = `## T-001 [chore] First
 - status: todo
@@ -19,7 +19,7 @@ const ID = 'a4d789fa45ad6c140'
 const ok = (stdout: string, exitCode = 0) => ({ exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 const usage = (model: string, n: number) => ({ input_tokens: n, output_tokens: n, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model })
 
-type Opts = { state?: Record<string, unknown>; settings?: Record<string, unknown>; todo?: string; merged?: string[]; branch?: string; agentText?: string; lockedBy?: string; noCost?: boolean; storeSetFails?: boolean; hook?: (what: string) => Promise<unknown> | unknown; store?: Record<string, unknown>; read?: (path: string, files: Record<string, string>) => string | undefined; bashText?: string; files?: Record<string, string>; storeRef?: Record<string, unknown> }
+type Opts = { run?: (cmd: string) => string | undefined; state?: Record<string, unknown>; settings?: Record<string, unknown>; todo?: string; merged?: string[]; branch?: string; agentText?: string; lockedBy?: string; noCost?: boolean; storeSetFails?: boolean; hook?: (what: string) => Promise<unknown> | unknown; store?: Record<string, unknown>; read?: (path: string, files: Record<string, string>) => string | undefined; bashText?: string; files?: Record<string, string>; storeRef?: Record<string, unknown> }
 
 function setup($: any, on: any, o: Opts = {}) {
   const settingsRaw = { testCmd: ['unit'], baseBranch: 'main', requireReview: false, contextReset: 'none', ...o.settings }
@@ -93,6 +93,8 @@ function setup($: any, on: any, o: Opts = {}) {
       if (k) delete files[k]
       return { value: ok('') }
     }
+    const custom = o.run?.(cmd)
+    if (custom !== undefined) return { value: ok(custom) }
     if (cmd.startsWith('git remote get-url')) return { value: ok('git@github.com:acme/widget.git\n') }
     if (cmd.startsWith('git branch')) return { value: ok(`${o.branch ?? 'main'}\n`) }
     if (cmd.startsWith('git rev-parse')) return { value: ok(`${SHA}\n`) }
@@ -2583,4 +2585,68 @@ test('/factory shows the journey and the next step', async ($, on) => {
   expect(text).toContain('● 3 Build')
   expect(text).toContain('Next: Paused')
   expect(text).toContain('/factory-triage')
+})
+
+const ghIssues = (nodes: unknown[]) =>
+  JSON.stringify({ data: { viewer: { login: 'factory-bot' }, repository: { issues: { nodes } } } })
+const openIssue = (n: number, o: Record<string, unknown> = {}) => ({ number: n, title: `Issue ${n}`, body: 'text', state: 'OPEN', authorAssociation: 'COLLABORATOR', lastEditedAt: null, labels: { nodes: [] }, comments: { nodes: [] }, timelineItems: { nodes: [] }, ...o })
+const watchRun = (nodes: unknown[]) => (cmd: string) => (cmd.startsWith('gh api graphql') ? ghIssues(nodes) : undefined)
+
+test('/factory-watch lists what the factory would do and submits nothing, even with watchIssues on', async ($, on) => {
+  const fx = setup($, on, { settings: { watchIssues: true }, run: watchRun([openIssue(5), openIssue(6, { authorAssociation: 'NONE' })]) })
+  const text = (await $.command.run({ command: 'factory-watch', args: '' } as never)).text
+  expect(text).toContain('Issue watch (on): 2 open issues')
+  expect(text).toContain('#5 Issue 5 → design')
+  expect(text).toContain('#6 Issue 6 → skip')
+  expect(prompts(fx)).toEqual([])
+})
+
+test('/factory-watch now designs one issue with a read-only turn, only when watchIssues is on', async ($, on) => {
+  const off = setup($, on, { run: watchRun([openIssue(5)]) })
+  expect((await $.command.run({ command: 'factory-watch', args: 'now' } as never)).text).toContain('off:')
+  expect(prompts(off)).toEqual([])
+})
+
+test('with watchIssues on, now submits one design turn for the first issue that needs one', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { settings: { watchIssues: true }, run: watchRun([openIssue(5), openIssue(7)]) })
+  fx.live.usd = 1
+  const text = (await $.command.run({ command: 'factory-watch', args: 'now' } as never)).text
+  await clock.advance(1000)
+  expect(text).toContain('Designing #5 now.')
+  expect(fx.live.submitted.filter(s => s.includes('design for issue #5'))).toHaveLength(1)
+  expect(fx.live.submitted.some(s => s.includes('issue #7'))).toBe(false)
+  expect(await instructionsOf($)).toContain('gh issue comment 5 --body-file -')
+})
+
+test('now does nothing while the loop is running or a design is already being asked for', async ($, on) => {
+  const fx = setup($, on, { settings: { watchIssues: true }, state: { autopilot: true, current: 'T-001' }, run: watchRun([openIssue(5)]) })
+  const text = (await $.command.run({ command: 'factory-watch', args: 'now' } as never)).text
+  expect(text).toContain('Not acting now')
+  expect(prompts(fx)).toEqual([])
+})
+
+test('the design turn can read and post its one comment but cannot change code, issues, labels or PRs', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { settings: { watchIssues: true }, run: watchRun([openIssue(5)]) })
+  fx.live.usd = 1
+  await $.command.run({ command: 'factory-watch', args: 'now' } as never)
+  await clock.advance(1000)
+  const allowed = ['gh issue view 5 --comments', 'git log --oneline', 'gh issue comment 5 --body-file -']
+  for (const c of allowed) expect([c, (await bash($, c)).includes('"deny"')]).toEqual([c, false])
+  const denied = ['gh issue close 5', 'gh issue edit 5 --add-label factory:go', 'gh pr create -t x', 'gh api -X POST repos/acme/widget/issues/5/labels', 'git commit -m x', 'git push origin main']
+  for (const c of denied) expect([c, (await bash($, c)).includes('"deny"')]).toEqual([c, true])
+  expect(await bash($, 'gh issue close 5')).toContain('only reads')
+  for (const file_path of ['/work/widget/src/a.ts', '/work/widget/.factory/todo.md']) expect(JSON.stringify(await $.tool.call({ tool: 'Write', file_path, content: 'x' } as never))).toContain('only reads')
+})
+
+test('the poll timer acts only when watchIssues is on and the design is approved', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { run: watchRun([openIssue(5)]) })
+  on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: '/work/widget', surface: 'terminal', isInteractive: false })
+  await clock.advance(WATCH_INTERVAL_MS + 1000)
+  expect(fx.live.ran.some(c => c.startsWith('gh api graphql'))).toBe(false)
+  expect(prompts(fx)).toEqual([])
 })

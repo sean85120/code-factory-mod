@@ -108,7 +108,7 @@ A todo item may carry `- issue: #12` (also `12`; `parseIssueRef` takes only a nu
 
 The guide is derived from the `FactoryView` alone (`guidePhase`: `design` with no items, `approve` until approved, `build` while anything is todo, doing or blocked, else `iterate`). `/factory` (`immediate`) prints `guideReport`; the dashboard pane shows `journey` and `nextHint` (as a getting-started screen before approval, as one line under the buttons after) with `guideControls` buttons (`[✎ design]`, `[✔ approve]`, `[⚑ triage issues]`, `[➜ next phase]`), which call `designCmd`/`approveCmd`/`triageCmd`/`interviewCmd` directly; `pressControl` refuses the three that submit a prompt while any main turn is open, and approve like start. Before approval the band is one line (`design drafted`) once todo.md has items, and stays hidden in a repo with none.
 
-### Issue gate (lib.ts, not wired yet)
+### Issue gate and watcher (lib.ts, register.tsx)
 
 `issueGate(issue, comments, labelEvents, me, recorded)` decides one issue and returns:
 
@@ -119,7 +119,9 @@ The guide is derived from the `FactoryView` alone (`guidePhase`: `design` with n
 - `record`: the approval is valid but nothing is stored yet; the caller stores the returned hash.
 - `build`: only when a `GoRecord` exists and `designFingerprint` still equals it, so a caller that forgets to record cannot build. The fingerprint is a real SHA-256 (`sha256Hex`, not `fnv1a`) of number, title, body and design text, because that text is attacker-controlled.
 
-Permissions, association, edit times and the rename time come from the caller (`gh api`), so the function stays pure; the poller, the design-comment turn and the wiring into the build loop are later slices.
+Permissions, association, edit times and the rename time come from the caller (`gh api`), so the function stays pure.
+
+The watcher feeds it. `fetchWatch` runs one `gh api graphql` call (`ISSUE_QUERY`: viewer login, the 30 most recently updated open issues with labels, the last 30 comments and the last 50 `LABELED_EVENT`/`RENAMED_TITLE_EVENT` timeline items), `parseIssueFacts` turns the reply into `WatchedIssue`s (text cleaned, the latest rename time kept, label events carrying only valid GitHub logins), and `permissionActors` lists the people who added `factory:go` or `factory:triage`, each looked up once with `gh api repos/{owner}/{repo}/collaborators/<login>/permission`. `scanIssues` applies `issueGate` with those permissions. `pollIssues` runs from a `WATCH_INTERVAL_MS` (10 min) timer started at `session.start`, and from `/factory-watch now`; `/factory-watch` alone only prints `watchReport`. It acts only when `settings.watchIssues` is on (in the approval hash only when true), the design is approved, and nothing is busy (no loop, no integrity problem, no other lock, no reviewer, no turn, no pending launch); it designs the first `design` row that has had fewer than `MAX_DESIGN_TRIES` (2) tries this session. The launch goes through `startInterview` on a 300 ms timer like `/factory-roadmap` (a prompt submitted from inside a running command never reaches the session), as a guarded design-class turn with `readOnly: true` (`issueDesignPrompt`). While `instructions.readOnly` and a factory turn run, the Bash hook denies any command with the `ghWrite` fact (every `gh` subcommand outside a read allowlist except `gh issue comment`, and every `gh api` call that is not a plain GET), commits, pushes, PR creation and merges, and Edit/Write deny every path, `.factory/` included. The one comment is the exception, so the turn can post it; the guard does not check which issue number it names (the prompt does), so a misbehaving model could comment on another issue. `factory:go` is read and reported but nothing acts on `record` or `build` yet: wiring approval into the build loop is the next slice.
 
 ### Settings
 
