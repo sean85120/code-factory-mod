@@ -23,6 +23,11 @@ minor version may change behavior).
   pane shows the 9-row face with a short line beside it when it is at least 60
   columns wide; the band and the status line carry a one-line face such as
   `(o_o)`. The speech is fixed words, ids and numbers only.
+- Vox is animated on terminals: a half-block pixel face in the pane that blinks,
+  looks around while it works, scans while it reviews, hops when the plan is
+  done, shakes once when something blocks, sleeps while paused and spins `$`
+  eyes at the budget. `/factory-theme motion off` keeps it still. It stays still
+  under `NO_COLOR`, the ASCII tier and a 16-color Claude theme.
 - `scripts/test-serial.sh` runs the test files one at a time, for a busy machine
   where the parallel run times out.
 

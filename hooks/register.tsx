@@ -40,6 +40,13 @@ import {
   voxSpeech,
   voxState,
   VOX_PANE_COLUMNS,
+  VOX_RASTER_COLUMNS,
+  VOX_CELL_COLUMNS,
+  VOX_CELL_ROWS,
+  VOX_FRAME_MS,
+  faceCells,
+  isHexColor,
+  poseAt,
   checksLine,
   checksReport,
   controlsFor,
@@ -131,7 +138,7 @@ import {
   validateItems,
   workPrompt,
 } from './lib'
-import type { AgentRow, Control, DoctorCheck, Drive, EventKind, FactoryEvent, FactoryState, FactoryView, Item, LoopEvent, RepoCosts, ReviewMark, Settings, Stage, Step, Theme, ThemePrefs, Usage } from './lib'
+import type { AgentRow, Control, DoctorCheck, Drive, EventKind, FactoryEvent, FactoryState, FactoryView, Item, LoopEvent, RepoCosts, ReviewMark, Settings, Stage, Step, Theme, ThemePrefs, Usage, VoxState } from './lib'
 
 type Dollar = EngineInterface
 
@@ -766,6 +773,65 @@ async function collectAgents($: Dollar, mainBusy: boolean, current: string | nul
   return Promise.all(shown.map(async r => (r.id === open ? { ...r, transcript: await readTranscript($, r.id === 'main' ? undefined : r.id) } : r)))
 }
 
+let voxTimer: Timer | null = null
+let voxFrame = 0
+let voxPrev: VoxState | null = null
+let voxEntered = 0
+let voxCelebrate = false
+let voxLast: { key: string; cells: string } | null = null
+
+function stopVox(): void {
+  voxTimer?.cancel()
+  voxTimer = null
+}
+
+async function voxPlan($: Dollar): Promise<{ vs: VoxState; hex: string } | null> {
+  const v = await read($, view)
+  if (!v || !v.approved) return null
+  const t = await currentTheme($)
+  const vs = voxState(v)
+  const hex = t.vox[vs]
+  return t.name === 'hacker' && t.motion && !t.ascii && isHexColor(hex) ? { vs, hex } : null
+}
+
+function voxCellsNow(vs: VoxState, hex: string): string {
+  return voxLast !== null && voxLast.key === `${vs}|${hex}` ? voxLast.cells : faceCells(poseAt(vs, 0, Number.POSITIVE_INFINITY), hex).cells
+}
+
+async function voxTick($: Dollar): Promise<void> {
+  const plan = await voxPlan($)
+  if (plan === null) return stopVox()
+  voxFrame += 1
+  if (plan.vs !== voxPrev) {
+    voxCelebrate = voxPrev !== null
+    voxEntered = voxFrame
+    voxPrev = plan.vs
+  }
+  if (plan.vs === 'hold' && voxFrame % 3 !== 0) return
+  const since = voxCelebrate ? (voxFrame - voxEntered) * VOX_FRAME_MS : Number.POSITIVE_INFINITY
+  const cells = faceCells(poseAt(plan.vs, voxFrame * VOX_FRAME_MS, since), plan.hex).cells
+  const key = `${plan.vs}|${plan.hex}`
+  if (voxLast !== null && voxLast.key === key && voxLast.cells === cells) return
+  voxLast = { key, cells }
+  const sent = await $.ui.blit({ requestId: PANE, key: 'vox', cells })
+  if ('deny' in sent) stopVox()
+}
+
+let voxStarting = false
+
+async function ensureVox($: Dollar): Promise<void> {
+  if (voxTimer !== null || voxStarting) return
+  voxStarting = true
+  try {
+    if ((await voxPlan($)) === null || !(await $.ui.panes()).some(p => p.id === PANE)) return
+    voxFrame = 0
+    voxPrev = null
+    voxTimer = $.clock.every(VOX_FRAME_MS, () => void voxTick($))
+  } finally {
+    voxStarting = false
+  }
+}
+
 async function refreshOnce($: Dollar): Promise<void> {
   try {
     const snap = await load($)
@@ -791,6 +857,7 @@ async function refreshOnce($: Dollar): Promise<void> {
       lastStatusText = text
       status($, text)
     }
+    await ensureVox($)
   } catch {
     return
   }
@@ -1588,7 +1655,7 @@ export const register: Register = (on, _options) => {
       ['factory-pause', 'Code factory: stop advancing after the current turn, keeping the item, attempts and pending review', undefined, true],
       ['factory-status', 'Code factory: show progress, the current item, spend and blocked items', undefined, false],
       ['factory-log', 'Code factory: show the event timeline, for one item or all', '[ID]', true],
-      ['factory-theme', 'Code factory: choose the look of the band and pane, hacker or classic', '[hacker|classic] [ascii|auto]', true],
+      ['factory-theme', 'Code factory: choose the look of the band and pane, hacker or classic', '[hacker|classic] [ascii|auto] [motion on|off]', true],
       ['factory-skip', 'Code factory: mark an item blocked so the loop moves on', '<ID> [reason]', false],
       ['factory-retry', 'Code factory: unblock an item and reset its attempts', '<ID>', false],
       ['factory-costs', 'Code factory: show spend per repo and per item', '[repo|all] | reset <repo>', true],
@@ -1600,6 +1667,8 @@ export const register: Register = (on, _options) => {
     }
 
     lastStatusText = null
+    stopVox()
+    voxLast = null
     await loadTheme($)
     startWatchdog($)
     await startView($)
@@ -1627,6 +1696,7 @@ export const register: Register = (on, _options) => {
       reviewInFlight = false
       viewTimer?.cancel()
       viewTimer = null
+      stopVox()
       watchTimer?.cancel()
       watchTimer = null
       isFactoryTurn = false
@@ -2223,6 +2293,7 @@ export const register: Register = (on, _options) => {
     const t = await currentTheme($)
     const rule = (label: string): string => t.rule(label, e.props.bodyColumns === undefined ? undefined : e.props.bodyColumns - 2)
     const Input = 'Input' in els ? els.Input : null
+    const Raster = e.surface === 'terminal' && 'Raster' in els ? els.Raster : null
     const v = await read($, view)
     const open = await read($, openAgent)
     const skipping = await read($, skipTarget)
@@ -2272,18 +2343,24 @@ export const register: Register = (on, _options) => {
     const blocked = v.blocked ?? []
     const vs = voxState(v)
     const showVox = t.name === 'hacker' && (e.props.bodyColumns === undefined || e.props.bodyColumns >= VOX_PANE_COLUMNS)
+    const voxHex = t.vox[vs]
+    const raster = Raster !== null && t.motion && !t.ascii && isHexColor(voxHex) && (e.props.bodyColumns === undefined || e.props.bodyColumns >= VOX_RASTER_COLUMNS) ? voxHex : null
 
     return (
       <Box flexDirection="column" paddingX={1}>
         {showVox && (
           <Box gap={2}>
-            <Box flexDirection="column">
-              {voxArt(vs).map((row, i) => (
-                <Text key={`vox-${i}`} color={t.vox[vs]}>
-                  {row}
-                </Text>
-              ))}
-            </Box>
+            {Raster !== null && raster !== null ? (
+              <Raster key="vox" columns={VOX_CELL_COLUMNS} rows={VOX_CELL_ROWS} cells={voxCellsNow(vs, raster)} />
+            ) : (
+              <Box flexDirection="column">
+                {voxArt(vs).map((row, i) => (
+                  <Text key={`vox-${i}`} color={t.vox[vs]}>
+                    {row}
+                  </Text>
+                ))}
+              </Box>
+            )}
             <Box flexDirection="column">
               {voxSpeech(v).map((line, i) => (
                 <Text key={`say-${i}`} color={i === 0 ? t.vox[vs] : undefined} dimColor={i > 0} wrap="truncate-end">
