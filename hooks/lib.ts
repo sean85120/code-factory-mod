@@ -1979,7 +1979,8 @@ export function statusLine(v: FactoryView, t: Theme = CLASSIC_THEME): string {
     if (v.current !== null && at >= 0) parts.push(`${v.stage} ${t.bar(at + 1, STAGES.length, 5)} ${at + 1}/${STAGES.length}`)
     if (v.current !== null && (v.attempt ?? 0) > 1) parts.push(`attempt ${v.attempt}/${v.maxAttempts ?? '?'}`)
     if (v.current !== null && (v.reviewRound ?? 0) > 0) parts.push(`review ${v.reviewRound}/${v.maxReviewRounds ?? '?'}`)
-  } else parts.push(`${t.head(loopBadge(v))} ${oneLine(v.pausedReason ?? 'stopped', 70)}`)
+  } else if (isAllDone(v)) parts.push(`${t.head('DONE')} all merged · continue? /factory-roadmap or stop`)
+  else parts.push(`${t.head(loopBadge(v))} ${oneLine(v.pausedReason ?? 'stopped', 70)}`)
   const total = v.total ?? v.doneCount + v.rows.length + v.more
   const todo = Math.max(0, total - v.doneCount - (v.blockedCount ?? 0))
   parts.push(`${v.doneCount}/${total} done ${t.bar(v.doneCount, total, 6)}`)
@@ -2804,7 +2805,22 @@ export function nextHint(v: FactoryView | null): string {
     return `Paused${v.pausedReason ? ` (${oneLine(v.pausedReason, 80)})` : ''}. /factory-start carries on${blocked > 0 ? `; ${blocked} blocked item${blocked === 1 ? '' : 's'} can be retried with /factory-retry <ID>` : ''}.${pending}`
   }
   if (proposed > 0) return `${proposed} proposed item${proposed === 1 ? '' : 's'} wait: push the design files, then /factory-approve starts on them.`
-  return `Everything planned is merged. /factory-triage turns open issues into the next items; /factory-roadmap plans the next phase.`
+  return DONE_HINT
+}
+
+export const DONE_QUESTION = 'Nothing left to build. Continue the design, or stop here?'
+export const DONE_HINT = `${DONE_QUESTION} /factory-roadmap plans the next phase, /factory-triage turns open issues into items; stopping here changes nothing.`
+
+export function isAllDone(v: FactoryView | null): boolean {
+  return v !== null && v.approved && !v.running && guidePhase(v) === 'iterate' && countMarks(v, 'proposed') === 0
+}
+
+export function doneControls(): Control[] {
+  return [
+    { key: 'roadmap', label: '➜ design next phase', command: 'factory-roadmap' },
+    { key: 'triage', label: '⚑ triage issues', command: 'factory-triage' },
+    { key: 'finish', label: '■ stop here', command: 'factory-finish' },
+  ]
 }
 
 // The buttons that go with nextHint, for the dashboard.
@@ -2816,6 +2832,7 @@ export function guideControls(v: FactoryView | null): Control[] {
     { key: 'design', label: '✎ amend design', command: 'factory-design' },
   ]
   if (!v || v.running) return []
+  if (isAllDone(v)) return doneControls()
   const out: Control[] = []
   if (countMarks(v, 'proposed') > 0) out.push({ key: 'approve', label: '✔ approve new items', command: 'factory-approve' })
   out.push({ key: 'triage', label: '⚑ triage issues', command: 'factory-triage' })
