@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { CLASSIC_THEME, DEFAULT_THEME_CAPS, hackerTheme, loopBadge, HACKER_BACKGROUND, HACKER_PALETTE, budgetColor, checkColor, contrastRatio, decisionsHash, parseSettings, parseThemeArg, parseThemePrefs, parseTodo, progressBar, theme, themeCaps, themeReport } from '../hooks/lib'
+import { CLASSIC_THEME, DEFAULT_THEME_CAPS, VOX_STATES, VOX_WIDTH, hackerTheme, loopBadge, voxArt, voxFace, voxSpeech, voxState, HACKER_BACKGROUND, HACKER_PALETTE, budgetColor, checkColor, contrastRatio, decisionsHash, parseSettings, parseThemeArg, parseThemePrefs, parseTodo, progressBar, theme, themeCaps, themeReport } from '../hooks/lib'
 
 test('the classic theme reproduces the marks, step glyphs, agent glyphs and colors the band always drew', () => {
   const t = theme()
@@ -174,4 +174,65 @@ test('the loop badge tells running, held, done and failed apart', () => {
   expect(loopBadge({ ...base, doneCount: 3, total: 3 })).toBe('DONE')
   expect(loopBadge({ ...base, rows: [row('blocked')], blockedCount: 1, doneCount: 2, total: 3 })).toBe('FAIL')
   expect(loopBadge({ ...base, rows: [row('blocked'), row('todo')], blockedCount: 1, doneCount: 1, total: 3 })).toBe('HOLD')
+})
+
+const vv = (o: Record<string, unknown> = {}) => ({ approved: true, running: false, stage: null, current: null, rows: [], more: 0, blockedCount: 0, doneCount: 0, total: 0, pausedReason: null, runUsd: null, budgetUsd: 0, reviewRound: null, maxReviewRounds: null, ...o }) as never
+const vrow = (id: string, mark: string, title = 'x') => ({ id, type: 'feature', title, version: '', mark })
+
+test('the mascot state follows the loop: blocked, budget, held, done, reviewing, running and idle', () => {
+  expect(voxState(vv({ approved: false }))).toBe('idle')
+  expect(voxState(vv({ running: true, current: 'T-002', stage: 'build' }))).toBe('run')
+  expect(voxState(vv({ running: true, current: 'T-002', stage: 'review' }))).toBe('review')
+  expect(voxState(vv({ running: true, current: null, stage: 'review' }))).toBe('run')
+  expect(voxState(vv({ rows: [vrow('T-002', 'todo')] }))).toBe('hold')
+  expect(voxState(vv({ rows: [vrow('T-002', 'todo')], pausedReason: 'budget reached: $5.00 of $5.00' }))).toBe('budget')
+  expect(voxState(vv({ doneCount: 3, total: 3 }))).toBe('done')
+  expect(voxState(vv({ rows: [vrow('T-003', 'blocked')], blockedCount: 1, doneCount: 2, total: 3, pausedReason: 'budget reached' }))).toBe('blocked')
+})
+
+test('every mascot face is 9 rows of 17 printable ASCII columns and no two states look alike', () => {
+  const seen = new Set<string>()
+  for (const s of VOX_STATES) {
+    const art = voxArt(s)
+    expect([s, art.length]).toEqual([s, 9])
+    for (const row of art) expect([s, row.length, ASCII.test(row)]).toEqual([s, VOX_WIDTH, true])
+    seen.add(art.join('\n'))
+  }
+  expect(seen.size).toBe(VOX_STATES.length)
+  expect(voxArt('run')[4]).toBe('|   (o)   (o)   |')
+  expect(voxArt('hold')[4]).toBe('|   (-)   (-)   |')
+  expect(voxArt('blocked')[6]).toBe(' \\    /---\\    / ')
+})
+
+test('the one-line faces are ASCII and the classic theme draws no mascot at all', () => {
+  expect(VOX_STATES.map(voxFace)).toEqual(['(o_o)', '(o_O)', '(^_^)', '(-_-)', '(x_x)', '($_$)', '(o_o)'])
+  for (const s of VOX_STATES) {
+    expect(ASCII.test(voxFace(s))).toBe(true)
+    expect(theme().face(s)).toBe('')
+    expect(theme().vox[s]).toBeUndefined()
+    expect(hackerTheme(DEFAULT_THEME_CAPS).face(s)).toBe(voxFace(s))
+  }
+  expect(Object.values(hackerTheme({ ...DEFAULT_THEME_CAPS, noColor: true }).vox).every(c => c === undefined)).toBe(true)
+  expect(hackerTheme(DEFAULT_THEME_CAPS).vox.blocked).toBe('#FF4D6D')
+})
+
+test('the mascot speaks only fixed words, ids and numbers: no title, reason or other repo text reaches it', () => {
+  const evil = '<script>SECRET\u001b[31m'
+  const base = { running: true, current: 'T-002', stage: 'build', rows: [vrow('T-002', 'doing', evil), vrow('T-003', 'todo', evil), vrow('T-004', 'blocked', evil)], blockedCount: 1, pausedReason: evil }
+  const said = [
+    voxSpeech(vv(base)),
+    voxSpeech(vv({ ...base, running: false })),
+    voxSpeech(vv({ ...base, stage: 'review', reviewRound: 2, maxReviewRounds: 3 })),
+    voxSpeech(vv({ approved: false })),
+    voxSpeech(vv({ doneCount: 3, total: 3 })),
+    voxSpeech(vv({ rows: [vrow('T-004', 'blocked', evil)], blockedCount: 1, doneCount: 2, total: 3 })),
+    voxSpeech(vv({ pausedReason: evil })),
+    voxSpeech(vv({ rows: [vrow('T-002', 'todo')], pausedReason: 'budget reached', runUsd: 5, budgetUsd: 5 })),
+  ].flat()
+  expect(said).toContain('working on T-002')
+  expect(said).toContain('next: T-003')
+  expect(said).toContain('round 2/3')
+  expect(said).toContain('T-004 needs you')
+  expect(said).toContain('$5.00 of $5.00')
+  for (const line of said) expect([line, line.length <= 40, /SECRET|script|\u001b/.test(line)]).toEqual([line, true, false])
 })

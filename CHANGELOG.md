@@ -18,6 +18,11 @@ minor version may change behavior).
   section rules sized to the pane, and control glyphs that never render
   double-width. `/factory-theme ascii` (or a locale that is not UTF-8, or
   `TERM=dumb`) switches to plain ASCII. State is never shown by color alone.
+- The hacker look has a mascot, Vox, a round ASCII face that shows how the loop
+  is doing (running, reviewing, done, held, blocked, over budget, idle). The
+  pane shows the 9-row face with a short line beside it when it is at least 60
+  columns wide; the band and the status line carry a one-line face such as
+  `(o_o)`. The speech is fixed words, ids and numbers only.
 - `scripts/test-serial.sh` runs the test files one at a time, for a busy machine
   where the parallel run times out.
 
