@@ -99,7 +99,7 @@ test('the journey follows design, approve, build, iterate', () => {
   expect(guidePhase(done)).toBe('iterate')
   expect(journey(done).map(s => s.state)).toEqual(['done', 'done', 'done', 'doing'])
   expect(nextHint(done)).toContain('/factory-triage')
-  expect(guideControls(done).map(c => c.command)).toEqual(['factory-triage', 'factory-roadmap'])
+  expect(guideControls(done).map(c => c.command)).toEqual(['factory-roadmap', 'factory-triage', 'factory-finish'])
 
   const grown = view(`${block('T-001', 'done')}\n${block('T-002', 'proposed')}`, { approved: true })
   expect(nextHint(grown)).toContain('1 proposed item wait')

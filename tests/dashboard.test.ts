@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { DEFAULT_STATE, VOX_CELL_COLUMNS, VOX_CELL_ROWS, hackerTheme, unpackCells, DEFAULT_THEME_CAPS, agentActions, agentTranscript, checksReport, controlsFor, isCompact, agentSummary, buildView, decisionsHash, itemSteps, parseSettings, parseTodo, progressBar, statusLine } from '../hooks/lib'
+import { DONE_QUESTION, guideControls, isAllDone, nextHint, DEFAULT_STATE, VOX_CELL_COLUMNS, VOX_CELL_ROWS, hackerTheme, unpackCells, DEFAULT_THEME_CAPS, agentActions, agentTranscript, checksReport, controlsFor, isCompact, agentSummary, buildView, decisionsHash, itemSteps, parseSettings, parseTodo, progressBar, statusLine } from '../hooks/lib'
 import type { FactoryEvent, FactoryView } from '../hooks/lib'
 
 const TODO = `## T-001 [feature] First
@@ -21,6 +21,8 @@ const TODO = `## T-001 [feature] First
 - accept: The third thing works for documented inputs.
 - tests: Unit tests for each input.
 `
+
+const DONE_TODO = TODO.replace(/status: todo/g, 'status: done')
 
 const ev = (kind: FactoryEvent['kind'], extra: Partial<FactoryEvent> = {}): FactoryEvent => ({ ts: 1_000, itemId: 'T-002', kind, detail: '', ...extra })
 
@@ -150,7 +152,7 @@ test('statusLine shortens a long pause reason to one line and drops the stage of
 const ok = (stdout: string) => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 const SETTINGS = JSON.stringify({ testCmd: ['unit'], baseBranch: 'main', requireReview: false, requireTestChanges: false, allowTestRemoval: true })
 
-function fixture($: any, on: any, o: { runs?: string[][]; autopilot?: boolean; blocked?: string[]; writes?: { path: string; text: string }[]; agents?: any[]; store?: Record<string, unknown>; env?: Record<string, string>; claudeTheme?: string; messages?: Record<string, any[]>; statuses?: (string | undefined)[]; rosterFails?: boolean; reads?: { n: number }; approved?: boolean } = {}) {
+function fixture($: any, on: any, o: { done?: boolean; runs?: string[][]; autopilot?: boolean; blocked?: string[]; writes?: { path: string; text: string }[]; agents?: any[]; store?: Record<string, unknown>; env?: Record<string, string>; claudeTheme?: string; messages?: Record<string, any[]>; statuses?: (string | undefined)[]; rosterFails?: boolean; reads?: { n: number }; approved?: boolean } = {}) {
   const clock = mock.clock(on, { now: 1_000_000 })
   if (o.store) mock.store(on, o.store)
   if (o.env) mock.env(on, o.env)
@@ -158,8 +160,8 @@ function fixture($: any, on: any, o: { runs?: string[][]; autopilot?: boolean; b
   const hash = decisionsHash(parseSettings(SETTINGS).settings, parseTodo(TODO))
   const files: Record<string, string> = {
     '.factory/settings.json': SETTINGS,
-    '.factory/todo.md': TODO,
-    '.factory/state.json': JSON.stringify({ approved: o.approved ?? true, approvedHash: hash, autopilot: o.autopilot ?? true, current: o.autopilot === false ? null : 'T-002', approvedDone: ['T-001'], events: [{ ts: 999_000, itemId: 'T-002', kind: 'started', detail: '' }] }),
+    '.factory/todo.md': o.done ? DONE_TODO : TODO,
+    '.factory/state.json': JSON.stringify({ approved: o.approved ?? true, approvedHash: hash, autopilot: o.autopilot ?? true, current: o.autopilot === false ? null : 'T-002', approvedDone: o.done ? ['T-001', 'T-002', 'T-003'] : ['T-001'], events: [{ ts: 999_000, itemId: 'T-002', kind: 'started', detail: '' }] }),
   }
   for (const id of o.blocked ?? []) files[`.factory/blocked/${id}.md`] = 'Skipped by you: needs a product decision. /factory-retry makes it eligible again.\n'
   const key = (path: string) => Object.keys(files).find(k => path.endsWith(`/${k}`))
@@ -845,4 +847,69 @@ test('motion off draws the desktop Vox without an animation block', async ($, on
   expect(vox?.props.source).toBeDefined()
   expect(String(vox?.props.source)).not.toContain('<style>')
   await desk.unmount()
+})
+
+const allDone = (o: Partial<FactoryView> = {}): FactoryView =>
+  base({ running: false, current: null, stage: null, doneCount: 3, total: 3, marks: { 'T-001': 'done', 'T-002': 'done', 'T-003': 'done' }, pausedReason: 'stopped by you', ...o })
+
+test('isAllDone is true only for an approved, idle plan with every item done', () => {
+  expect(isAllDone(allDone())).toBe(true)
+  expect(isAllDone(null)).toBe(false)
+  expect(isAllDone(allDone({ running: true }))).toBe(false)
+  expect(isAllDone(allDone({ approved: false }))).toBe(false)
+  expect(isAllDone(allDone({ marks: { 'T-001': 'done', 'T-002': 'todo' } }))).toBe(false)
+  expect(isAllDone(allDone({ marks: { 'T-001': 'done', 'T-002': 'blocked' } }))).toBe(false)
+  expect(isAllDone(allDone({ marks: { 'T-001': 'done', 'T-002': 'proposed' } }))).toBe(false)
+})
+
+test('the all-done guide asks to continue or stop, and offers exactly those buttons', () => {
+  const v = allDone()
+  expect(guideControls(v).map(c => c.key)).toEqual(['roadmap', 'triage', 'finish'])
+  expect(nextHint(v)).toContain(DONE_QUESTION)
+  expect(statusLine(v)).toContain('all merged · continue? /factory-roadmap or stop')
+  const open = allDone({ doneCount: 2, marks: { 'T-001': 'done', 'T-002': 'done', 'T-003': 'todo' } })
+  expect(statusLine(open)).not.toContain('all merged')
+  expect(guideControls(open).map(c => c.key)).not.toContain('finish')
+})
+
+test('an all-done band asks to continue or stop, and stop here collapses it to one line', async ($, on) => {
+  const toasts: string[] = []
+  fixture($, on, { autopilot: false, done: true })
+  on('ui.toast', (_: unknown, e: { text: string }) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.command.run({ command: 'factory-status' } as never)
+  const ui = await band($)
+  expect(await ui.find({ text: /All 3 items merged/ })).toBeDefined()
+  expect(await ui.find({ text: /Continue the design, or stop here\?/ })).toBeDefined()
+  expect(await ui.find({ text: /design next phase/ })).toBeDefined()
+  expect(await ui.find({ text: /triage issues/ })).toBeDefined()
+  expect(await ui.find({ text: /▶ start/ })).toBeUndefined()
+  await ui.press({ key: 'finish' })
+  expect(toasts.some(t => t.includes('stopped here'))).toBe(true)
+  await ui.unmount()
+  const again = await band($)
+  expect(await again.find({ text: /3\/3 merged · stopped here/ })).toBeDefined()
+  expect(await again.find({ text: /Continue the design, or stop here\?/ })).toBeUndefined()
+  expect(await again.find({ text: /design next phase/ })).toBeDefined()
+  await again.unmount()
+})
+
+test('an all-done pane puts the question on top and has no start button', async ($, on) => {
+  fixture($, on, { autopilot: false, done: true })
+  await $.command.run({ command: 'factory-status' } as never)
+  const pane = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'Pane', requestId: 'factory', props: {} } as never)
+  expect(await pane.find({ text: /Continue the design, or stop here\?/ })).toBeDefined()
+  expect(await pane.find({ text: /design next phase/ })).toBeDefined()
+  expect(await pane.find({ text: /▶ start/ })).toBeUndefined()
+  await pane.unmount()
+})
+
+test('a plan with open items shows no all-done prompt', async ($, on) => {
+  fixture($, on, { autopilot: false })
+  await $.command.run({ command: 'factory-status' } as never)
+  const ui = await band($)
+  expect(await ui.find({ text: /Continue the design, or stop here\?/ })).toBeUndefined()
+  await ui.unmount()
 })
