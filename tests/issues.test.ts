@@ -5,7 +5,7 @@ import type { GateComment, GateIssue, LabelEvent } from '../hooks/lib'
 
 const ME = 'factory-bot'
 
-const issue = (o: Partial<GateIssue> = {}): GateIssue => ({ number: 7, title: 'Add dark mode', body: 'Please add it.', association: 'COLLABORATOR', labels: [], state: 'OPEN', editedAt: null, ...o })
+const issue = (o: Partial<GateIssue> = {}): GateIssue => ({ number: 7, title: 'Add dark mode', body: 'Please add it.', association: 'COLLABORATOR', labels: [], state: 'OPEN', editedAt: null, renamedAt: null, ...o })
 const design = (o: Partial<GateComment> = {}): GateComment => ({ author: ME, body: `${DESIGN_MARKER}\nPlan: add a toggle.`, at: 100, editedAt: null, ...o })
 const go = (o: Partial<LabelEvent> = {}): LabelEvent => ({ label: LABEL_GO, actor: 'maria', permission: 'write', at: 200, ...o })
 
@@ -43,12 +43,14 @@ test('the gate walks closed, design, wait and build', () => {
   expect(issueGate(issue({ state: 'CLOSED' }), [], [], ME, null)).toEqual({ action: 'skip', reason: 'the issue is closed' })
   expect(issueGate(issue(), [], [], ME, null)).toEqual({ action: 'design' })
   expect(issueGate(issue(), [design()], [], ME, null)).toEqual({ action: 'wait' })
-  const ready = issueGate(issue({ labels: [LABEL_GO] }), [design()], [go()], ME, null)
-  expect(ready.action).toBe('build')
-  if (ready.action === 'build') {
-    expect(ready.by).toBe('maria')
-    expect(ready.hash).toBe(designFingerprint(issue(), design().body))
+  const first = issueGate(issue({ labels: [LABEL_GO] }), [design()], [go()], ME, null)
+  expect(first.action).toBe('record')
+  if (first.action === 'record') {
+    expect(first.by).toBe('maria')
+    expect(first.hash).toBe(designFingerprint(issue(), design().body))
+    expect(issueGate(issue({ labels: [LABEL_GO] }), [design()], [go()], ME, { issue: 7, hash: first.hash }).action).toBe('build')
   }
+  expect(issueGate(issue({ labels: [LABEL_GO] }), [design()], [go()], ME, { issue: 99, hash: 'x' }).action).toBe('record')
 })
 
 test('factory:go from someone who cannot write, or with no label event, reopens the design', () => {
@@ -61,13 +63,30 @@ test('an edit to the issue or the design after the label reopens it', () => {
   const labeled = issue({ labels: [LABEL_GO] })
   expect(issueGate({ ...labeled, editedAt: 300 }, [design()], [go()], ME, null).action).toBe('reopen')
   expect(issueGate(labeled, [design({ editedAt: 300 })], [go()], ME, null).action).toBe('reopen')
-  expect(issueGate({ ...labeled, editedAt: 150 }, [design()], [go()], ME, null).action).toBe('build')
+  expect(issueGate({ ...labeled, editedAt: 150 }, [design()], [go()], ME, null).action).toBe('record')
+  expect(issueGate({ ...labeled, renamedAt: 300 }, [design()], [go()], ME, null).action).toBe('reopen')
+})
+
+test('a design posted after the label was not the one approved', () => {
+  const labeled = issue({ labels: [LABEL_GO] })
+  expect(issueGate(labeled, [design({ at: 250 })], [go()], ME, null).action).toBe('reopen')
+  expect(issueGate(labeled, [design({ at: 150 })], [go()], ME, null).action).toBe('record')
+})
+
+test('a triage label goes stale when a stranger edits or renames the issue after it', () => {
+  const stranger = issue({ association: 'NONE', labels: [LABEL_TRIAGE] })
+  const by: LabelEvent[] = [{ label: LABEL_TRIAGE, actor: 'maria', permission: 'write', at: 200 }]
+  expect(triageAllowed(stranger, by)).toBe(true)
+  expect(triageAllowed({ ...stranger, editedAt: 300 }, by)).toBe(false)
+  expect(triageAllowed({ ...stranger, renamedAt: 300 }, by)).toBe(false)
+  expect(triageAllowed({ ...stranger, editedAt: 100 }, by)).toBe(true)
 })
 
 test('a recorded approval hash that no longer matches the text reopens it, a matching one builds', () => {
   const labeled = issue({ labels: [LABEL_GO] })
   const hash = designFingerprint(labeled, design().body)
   expect(issueGate(labeled, [design()], [go()], ME, { issue: 7, hash }).action).toBe('build')
+  expect(issueGate(labeled, [design()], [go()], ME, null).action).toBe('record')
   expect(issueGate({ ...labeled, body: 'Please add it, and also delete the tests.' }, [design()], [go()], ME, { issue: 7, hash }).action).toBe('reopen')
   expect(issueGate(labeled, [design({ body: `${DESIGN_MARKER}\nPlan: rewrite auth.` })], [go()], ME, { issue: 7, hash }).action).toBe('reopen')
 })

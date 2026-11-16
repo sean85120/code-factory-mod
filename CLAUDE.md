@@ -110,7 +110,16 @@ The guide is derived from the `FactoryView` alone (`guidePhase`: `design` with n
 
 ### Issue gate (lib.ts, not wired yet)
 
-`issueGate(issue, comments, labelEvents, me, recorded)` decides one issue: `skip` (closed, or an author who is not OWNER/MEMBER/COLLABORATOR and has no `factory:triage` label added by someone with write access), `design` (no design comment yet), `wait` (designed, no `factory:go`), `build`, or `reopen` (the approval is not valid and the label should come off). A design comment counts only when the factory's own account wrote it and it carries `DESIGN_MARKER`. `factory:go` counts only when the latest label event was by a user with admin, maintain or write permission (`mayApprove`), the issue and the design comment were not edited after that event (`editedAt`), and, when a `GoRecord` exists, `designFingerprint` (a real SHA-256 of number, title, body and design text, `sha256Hex`, not `fnv1a`, because the text is attacker-controlled) still equals the recorded hash. Permissions, association and timestamps come from the caller (`gh api`), so the function stays pure; the poller, the design-comment turn and the wiring into the build loop are later slices.
+`issueGate(issue, comments, labelEvents, me, recorded)` decides one issue and returns:
+
+- `skip`: the issue is closed, or its author is not OWNER/MEMBER/COLLABORATOR and has no `factory:triage` label added by someone with write access. That label goes stale, and counts as absent, once the issue is edited or renamed after it (`editedAt`, `renamedAt`).
+- `design`: no design comment yet. A design comment counts only when the factory's own account wrote it and it carries `DESIGN_MARKER`.
+- `wait`: designed, no `factory:go`.
+- `reopen`: the approval is not valid and the label should come off. That means the latest `factory:go` event was not by a user with admin, maintain or write permission (`mayApprove`), the issue was edited or renamed, or the design comment was edited or posted, after that event, or the recorded hash no longer matches.
+- `record`: the approval is valid but nothing is stored yet; the caller stores the returned hash.
+- `build`: only when a `GoRecord` exists and `designFingerprint` still equals it, so a caller that forgets to record cannot build. The fingerprint is a real SHA-256 (`sha256Hex`, not `fnv1a`) of number, title, body and design text, because that text is attacker-controlled.
+
+Permissions, association, edit times and the rename time come from the caller (`gh api`), so the function stays pure; the poller, the design-comment turn and the wiring into the build loop are later slices.
 
 ### Settings
 

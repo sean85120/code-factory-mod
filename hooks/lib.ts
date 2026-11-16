@@ -2854,7 +2854,7 @@ export const LABEL_GO = 'factory:go'
 export const LABEL_TRIAGE = 'factory:triage'
 export const DESIGN_MARKER = '<!-- code-factory:design -->'
 
-export type GateIssue = { number: number; title: string; body: string; association: string; labels: readonly string[]; state: string; editedAt: number | null }
+export type GateIssue = { number: number; title: string; body: string; association: string; labels: readonly string[]; state: string; editedAt: number | null; renamedAt: number | null }
 export type GateComment = { author: string; body: string; at: number; editedAt: number | null }
 export type LabelEvent = { label: string; actor: string; permission: string; at: number }
 export type GoRecord = { issue: number; hash: string }
@@ -2863,6 +2863,7 @@ export type IssueGate =
   | { action: 'skip'; reason: string }
   | { action: 'design' }
   | { action: 'wait' }
+  | { action: 'record'; hash: string; by: string }
   | { action: 'build'; hash: string; by: string }
   | { action: 'reopen'; reason: string }
 
@@ -2919,11 +2920,13 @@ export const mayApprove = (permission: string): boolean => WRITE_PERMISSIONS.has
 const lastLabelEvent = (events: readonly LabelEvent[], label: string): LabelEvent | undefined =>
   events.filter(e => e.label === label).reduce<LabelEvent | undefined>((best, e) => (best === undefined || e.at >= best.at ? e : best), undefined)
 
+const changedAt = (issue: GateIssue): number => Math.max(issue.editedAt ?? 0, issue.renamedAt ?? 0)
+
 export function triageAllowed(issue: GateIssue, events: readonly LabelEvent[]): boolean {
   if (isTrustedAuthor(issue.association)) return true
   if (!issue.labels.includes(LABEL_TRIAGE)) return false
   const by = lastLabelEvent(events, LABEL_TRIAGE)
-  return by !== undefined && mayApprove(by.permission)
+  return by !== undefined && mayApprove(by.permission) && changedAt(issue) <= by.at
 }
 
 export function findDesignComment(comments: readonly GateComment[], me: string): GateComment | undefined {
@@ -2943,8 +2946,10 @@ export function issueGate(issue: GateIssue, comments: readonly GateComment[], ev
   const go = lastLabelEvent(events, LABEL_GO)
   if (!go) return { action: 'reopen', reason: `${LABEL_GO} has no recorded label event` }
   if (!mayApprove(go.permission)) return { action: 'reopen', reason: `${LABEL_GO} was added by ${go.actor}, who cannot write to this repository` }
-  if ((issue.editedAt ?? 0) > go.at || (design.editedAt ?? 0) > go.at) return { action: 'reopen', reason: `the issue or the design was edited after ${LABEL_GO} was added` }
+  if (changedAt(issue) > go.at || (design.editedAt ?? 0) > go.at) return { action: 'reopen', reason: `the issue or the design was edited after ${LABEL_GO} was added` }
+  if (design.at > go.at) return { action: 'reopen', reason: `the design was posted after ${LABEL_GO} was added, so it was not the one approved` }
   const hash = designFingerprint(issue, design.body)
-  if (recorded && recorded.issue === issue.number && recorded.hash !== hash) return { action: 'reopen', reason: 'the issue or the design changed after it was approved' }
+  if (!recorded || recorded.issue !== issue.number) return { action: 'record', hash, by: go.actor }
+  if (recorded.hash !== hash) return { action: 'reopen', reason: 'the issue or the design changed after it was approved' }
   return { action: 'build', hash, by: go.actor }
 }
