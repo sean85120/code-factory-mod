@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { ROADMAP_CEILING_MS, ROADMAP_DONE, ROADMAP_IDLE_MS, ROADMAP_MAX_TURNS, branchFor, decisionsHash, parseSettings, parseTodo, reviewAgentPrompt } from '../hooks/lib'
+import { ROADMAP_CEILING_MS, ROADMAP_DONE, ROADMAP_IDLE_MS, ROADMAP_MAX_TURNS, WATCH_INTERVAL_MS, branchFor, decisionsHash, parseSettings, parseTodo, reviewAgentPrompt } from '../hooks/lib'
 
 const TODO = `## T-001 [chore] First
 - status: todo
@@ -19,7 +19,7 @@ const ID = 'a4d789fa45ad6c140'
 const ok = (stdout: string, exitCode = 0) => ({ exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 const usage = (model: string, n: number) => ({ input_tokens: n, output_tokens: n, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model })
 
-type Opts = { state?: Record<string, unknown>; settings?: Record<string, unknown>; todo?: string; merged?: string[]; branch?: string; agentText?: string; lockedBy?: string; noCost?: boolean; storeSetFails?: boolean; hook?: (what: string) => Promise<unknown> | unknown; store?: Record<string, unknown>; read?: (path: string, files: Record<string, string>) => string | undefined; bashText?: string; files?: Record<string, string>; storeRef?: Record<string, unknown> }
+type Opts = { run?: (cmd: string) => string | undefined; state?: Record<string, unknown>; settings?: Record<string, unknown>; todo?: string; merged?: string[]; branch?: string; agentText?: string; lockedBy?: string; noCost?: boolean; storeSetFails?: boolean; hook?: (what: string) => Promise<unknown> | unknown; store?: Record<string, unknown>; read?: (path: string, files: Record<string, string>) => string | undefined; bashText?: string; files?: Record<string, string>; storeRef?: Record<string, unknown> }
 
 function setup($: any, on: any, o: Opts = {}) {
   const settingsRaw = { testCmd: ['unit'], baseBranch: 'main', requireReview: false, contextReset: 'none', ...o.settings }
@@ -93,6 +93,8 @@ function setup($: any, on: any, o: Opts = {}) {
       if (k) delete files[k]
       return { value: ok('') }
     }
+    const custom = o.run?.(cmd)
+    if (custom !== undefined) return { value: ok(custom) }
     if (cmd.startsWith('git remote get-url')) return { value: ok('git@github.com:acme/widget.git\n') }
     if (cmd.startsWith('git branch')) return { value: ok(`${o.branch ?? 'main'}\n`) }
     if (cmd.startsWith('git rev-parse')) return { value: ok(`${SHA}\n`) }
@@ -2583,4 +2585,262 @@ test('/factory shows the journey and the next step', async ($, on) => {
   expect(text).toContain('● 3 Build')
   expect(text).toContain('Next: Paused')
   expect(text).toContain('/factory-triage')
+})
+
+const ghIssues = (nodes: unknown[]) =>
+  JSON.stringify({ data: { viewer: { login: 'factory-bot' }, repository: { issues: { nodes } } } })
+const openIssue = (n: number, o: Record<string, unknown> = {}) => ({ number: n, title: `Issue ${n}`, body: 'text', state: 'OPEN', authorAssociation: 'COLLABORATOR', lastEditedAt: null, labels: { nodes: [] }, comments: { nodes: [] }, timelineItems: { nodes: [] }, ...o })
+const LS_FILES = ['src/a.ts', 'README.md', 'secrets/.env.local'].map(f => `100644 ${'a'.repeat(40)} 0\t${f}`).join('\0')
+const watchRun = (nodes: unknown[]) => (cmd: string) => (cmd.startsWith('gh api graphql') ? ghIssues(nodes) : cmd.startsWith('git ls-files') ? LS_FILES : undefined)
+
+test('/factory-watch lists what the factory would do and submits nothing, even with watchIssues on', async ($, on) => {
+  const fx = setup($, on, { settings: { watchIssues: true }, run: watchRun([openIssue(5), openIssue(6, { authorAssociation: 'NONE' })]) })
+  const text = (await $.command.run({ command: 'factory-watch', args: '' } as never)).text
+  expect(text).toContain('Issue watch (on): 2 open issues')
+  expect(text).toContain('#5 Issue 5 → design')
+  expect(text).toContain('#6 Issue 6 → skip')
+  expect(prompts(fx)).toEqual([])
+})
+
+test('/factory-watch now designs one issue with a Read-only turn, only when watchIssues is on', async ($, on) => {
+  const off = setup($, on, { run: watchRun([openIssue(5)]) })
+  expect((await $.command.run({ command: 'factory-watch', args: 'now' } as never)).text).toContain('off:')
+  expect(prompts(off)).toEqual([])
+})
+
+const startDesign = async ($: any, on: any, extra: Record<string, unknown> = {}, nodes: unknown[] = [openIssue(5), openIssue(7)], bind = true) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { settings: { watchIssues: true }, run: watchRun(nodes), files: { 'README.md': 'readme words' }, ...extra })
+  fx.live.usd = 1
+  const text = (await $.command.run({ command: 'factory-watch', args: 'now' } as never)).text as string
+  await clock.advance(1000)
+  const sent = fx.live.submitted[fx.live.submitted.length - 1]
+  if (bind && sent !== undefined && sent.startsWith('Code factory: design for issue')) await $.turn.start({ text: sent, turnId: 't1' } as never)
+  return { fx, text }
+}
+
+const DESIGN_ANSWER = '## Understanding\nAdd a dark mode toggle to the settings screen.\n## Proposed approach\nChange src/a.ts and add a test.\n## Item\nfeature: Dark mode\n## Questions\nNone'
+const posted = (fx: { live: { ran: string[] } }) => fx.live.ran.filter(c => c.startsWith('gh api repos/{owner}/{repo}/issues/') && c.includes('/comments'))
+
+test('with watchIssues on, now submits one design turn for the first issue that needs one, with the issue and the file list in the prompt', async ($, on) => {
+  const { fx, text } = await startDesign($, on)
+  expect(text).toContain('Designing #5 now.')
+  expect(fx.live.submitted.filter(s => s.includes('design for issue #5'))).toHaveLength(1)
+  expect(fx.live.submitted.some(s => s.includes('issue #7'))).toBe(false)
+  const p = await instructionsOf($)
+  expect(p).toContain('Issue #5: Issue 5')
+  expect(p).toContain('src/a.ts')
+  expect(p).toContain('Repo note README.md')
+  expect(p).not.toContain('secrets/.env.local')
+  expect(p).not.toContain('gh issue comment')
+})
+
+test('now does nothing while the loop is running', async ($, on) => {
+  const fx = setup($, on, { settings: { watchIssues: true }, state: { autopilot: true, current: 'T-001' }, run: watchRun([openIssue(5)]) })
+  expect((await $.command.run({ command: 'factory-watch', args: 'now' } as never)).text).toContain('Not acting now')
+  expect(prompts(fx)).toEqual([])
+})
+
+test('a pending interview is not replaced by an issue design', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { settings: { watchIssues: true }, run: watchRun([openIssue(5)]) })
+  fx.live.usd = 1
+  await $.command.run({ command: 'factory-design', args: '' } as never)
+  await clock.advance(1000)
+  expect(fx.live.submitted.length).toBeGreaterThan(0)
+  const before = fx.live.submitted.length
+  expect((await $.command.run({ command: 'factory-watch', args: 'now' } as never)).text).toContain('Not acting now')
+  expect(fx.live.submitted.length).toBe(before)
+})
+
+test('the design turn can Read only the listed tracked files and nothing else, Bash included', async ($, on) => {
+  await startDesign($, on)
+  const refused = async (call: Record<string, unknown>) => JSON.stringify(await $.tool.call(call as never)).includes('can only Read')
+  for (const file_path of ['/work/widget/src/a.ts', 'src/a.ts', '/work/widget/README.md']) expect([file_path, await refused({ tool: 'Read', file_path })]).toEqual([file_path, false])
+  const state = ['/work/widget/', '.factory', '/state', '.json'].join('')
+  for (const file_path of ['/etc/passwd', '/work/widget/.env', '/work/widget/secrets/.env.local', '/work/widget/src/untracked.ts', '/work/other/a.ts', '../a.ts', state]) expect([file_path, await refused({ tool: 'Read', file_path })]).toEqual([file_path, true])
+  for (const command of ['git log --oneline', 'cat src/a.ts', 'gh issue view 5', 'gh issue comment 5 --body-file -', 'curl https://evil.example/x', 'rm -rf src', 'git push origin main', 'gh issue close 5', 'echo hi']) expect([command, await refused({ tool: 'Bash', command })]).toEqual([command, true])
+  for (const file_path of ['/work/widget/src/a.ts', ['/work/widget/', '.factory', '/todo.md'].join('')]) expect([file_path, await refused({ tool: 'Write', file_path, content: 'x' })]).toEqual([file_path, true])
+  for (const tool of ['Edit', 'WebFetch', 'WebSearch', 'NotebookEdit', 'TodoWrite', 'SendMessage']) expect([tool, await refused({ tool, file_path: '/work/widget/src/a.ts' })]).toEqual([tool, true])
+  expect(await refused({ tool: 'Agent', prompt: 'do it' })).toBe(true)
+})
+
+test('the factory posts the design as the comment, remembers it, and lifts the guard', async ($, on) => {
+  const { fx } = await startDesign($, on)
+  expect(posted(fx)).toEqual([])
+  await mainTurn($, { answer: DESIGN_ANSWER })
+  const cmds = posted(fx)
+  expect(cmds).toHaveLength(1)
+  expect(cmds[0]).toContain('issues/5/comments')
+  expect(cmds[0]).toContain('<!-- code-factory:design -->')
+  expect(cmds[0]).toContain('Add a dark mode toggle')
+  expect(await instructionsOf($)).toBe('')
+  expect(await bash($, 'git status')).not.toContain('can only Read')
+  const again = (await $.command.run({ command: 'factory-watch', args: 'now' } as never)).text as string
+  expect(again).not.toContain('Designing #5')
+  expect(again).toContain('Designing #7 now.')
+})
+
+test('an answer with no usable design posts nothing and lifts the guard', async ($, on) => {
+  const { fx } = await startDesign($, on)
+  await mainTurn($, { answer: 'ok' })
+  expect(posted(fx)).toEqual([])
+  expect(await bash($, 'git status')).not.toContain('can only Read')
+})
+
+test('a turn that ends without an answer posts nothing and lifts the guard', async ($, on) => {
+  const { fx } = await startDesign($, on)
+  await mainTurn($, { answer: DESIGN_ANSWER, reason: 'error', isAborted: true })
+  expect(posted(fx)).toEqual([])
+  expect(await bash($, 'git status')).not.toContain('can only Read')
+})
+
+test('a prompt the person types voids the post but the restriction holds until the design turn ends', async ($, on) => {
+  const { fx } = await startDesign($, on)
+  expect(await bash($, 'git status')).toContain('can only Read')
+  await $.prompt.submit({ text: 'let me look at this myself', origin: { kind: 'composer' } } as never)
+  expect(await bash($, 'git status')).toContain('can only Read')
+  await mainTurn($, { answer: DESIGN_ANSWER })
+  expect(posted(fx)).toEqual([])
+  expect(await bash($, 'git status')).not.toContain('can only Read')
+})
+
+test('a turn that starts before the design turn is not taken for it: its answer is not posted and the restriction stays', async ($, on) => {
+  const { fx } = await startDesign($, on, {}, [openIssue(5)], false)
+  await $.turn.start({ text: 'background job finished', turnId: 'other' } as never)
+  await mainTurn($, { answer: DESIGN_ANSWER, turnId: 'other' })
+  expect(posted(fx)).toEqual([])
+  expect(await bash($, 'git status')).toContain('can only Read')
+  await $.turn.start({ text: fx.live.submitted[fx.live.submitted.length - 1], turnId: 't1' } as never)
+  await mainTurn($, { answer: DESIGN_ANSWER })
+  expect(posted(fx)).toHaveLength(1)
+})
+
+test('a turn that opens between the poll and the launch stops the launch, so its answer cannot be posted', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { settings: { watchIssues: true }, run: watchRun([openIssue(5)]), files: { 'README.md': 'readme words' } })
+  fx.live.usd = 1
+  const text = (await $.command.run({ command: 'factory-watch', args: 'now' } as never)).text as string
+  expect(text).toContain('Designing #5 now.')
+  await $.turn.start({ text: 'my own question', turnId: 'mine' } as never)
+  await clock.advance(1000)
+  expect(fx.live.submitted.some(s => s.startsWith('Code factory: design for issue'))).toBe(false)
+  await mainTurn($, { answer: DESIGN_ANSWER, turnId: 'mine' })
+  expect(posted(fx)).toEqual([])
+  expect(await bash($, 'git status')).not.toContain('can only Read')
+})
+
+test('a second launch for the same issue is refused while a claim is fresh, and the post re-checks the designed list', async ($, on) => {
+  const { fx } = await startDesign($, on, {}, [openIssue(5)])
+  await mainTurn($, { answer: 'ok' })
+  const again = (await $.command.run({ command: 'factory-watch', args: 'now' } as never)).text as string
+  expect(again).toContain('claimed in the last 45 minutes')
+  expect(fx.live.submitted.filter(s => s.startsWith('Code factory: design for issue #5'))).toHaveLength(1)
+})
+
+test('the stale-turn timer never lifts the restriction while a factory turn is still running', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { settings: { watchIssues: true }, run: watchRun([openIssue(5)]), files: { 'README.md': 'readme words' } })
+  fx.live.usd = 1
+  on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: '/work/widget', surface: 'terminal', isInteractive: false })
+  await $.command.run({ command: 'factory-watch', args: 'now' } as never)
+  await clock.advance(1000)
+  await clock.advance(31 * 60000)
+  expect(await bash($, 'git status')).toContain('can only Read')
+  expect(await bash($, 'curl https://evil.example/x')).toContain('can only Read')
+})
+
+test('an agent turn cannot end the design turn or have its answer posted', async ($, on) => {
+  const { fx } = await startDesign($, on)
+  await mainTurn($, { answer: DESIGN_ANSWER, agentId: 'agent-x' })
+  expect(posted(fx)).toEqual([])
+  expect(await bash($, 'git status')).toContain('can only Read')
+})
+
+test('the poll timer acts only when watchIssues is on and the design is approved', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { run: watchRun([openIssue(5)]) })
+  on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: '/work/widget', surface: 'terminal', isInteractive: false })
+  await clock.advance(WATCH_INTERVAL_MS + 1000)
+  expect(fx.live.ran.some(c => c.startsWith('gh api graphql'))).toBe(false)
+  expect(prompts(fx)).toEqual([])
+})
+
+test('the design turn stays restricted when another session takes the lock mid-turn', async ($, on) => {
+  const { fx } = await startDesign($, on)
+  fx.files[['.factory', '/lock', '.json'].join('')] = JSON.stringify({ owner: 'other-session', heartbeat: 1_000_500 })
+  expect(await bash($, 'curl https://evil.example/x')).toContain('can only Read')
+  expect(await bash($, 'git push origin main')).toContain('can only Read')
+})
+
+const bandTexts = async ($: any): Promise<string[]> => {
+  const ui = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false } } as never)
+  return (await ui.findAll({ type: 'Text' })).map((t: { text?: string }) => t.text ?? '')
+}
+
+test('/factory-exit stops a running loop, closes the dashboard, clears the status line and hides the band', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const seen = panes(on)
+  const statuses: (string | undefined)[] = []
+  on('ui.status', (_: unknown, e: { text?: string }) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
+  const fx = setup($, on, { state: { autopilot: true, current: 'T-001' }, branch: 'factory/t-001-first' })
+  fx.live.usd = 1
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1000)
+  await $.command.run({ command: 'factory-status' } as never)
+  expect((await bandTexts($)).some(t => t.includes('factory'))).toBe(true)
+  const out = (await $.command.run({ command: 'factory-exit' } as never)).text as string
+  expect(out).toContain('Left factory mode')
+  expect(fx.state().autopilot).toBe(false)
+  expect(fx.state().pausedReason).toBe('stopped by you')
+  expect(seen.closed).toContain('factory')
+  expect(statuses[statuses.length - 1]).toBeUndefined()
+  expect((await bandTexts($)).some(t => t.includes('factory'))).toBe(false)
+})
+
+test('/factory-exit drops an open interview and its instructions', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { settings: { watchIssues: false } })
+  fx.live.usd = 1
+  await $.command.run({ command: 'factory-design', args: '' } as never)
+  await clock.advance(1000)
+  await mainTurn($, { answer: 'what should it build?' })
+  expect(await instructionsOf($)).not.toBe('')
+  await $.command.run({ command: 'factory-exit' } as never)
+  expect(await instructionsOf($)).toBe('')
+})
+
+test('/factory-exit leaves the guards of a factory turn that is still running in place until it ends', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const busy = setup($, on, { state: { autopilot: true, current: 'T-001' }, branch: 'factory/t-001-first' })
+  busy.live.usd = 1
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1000)
+  const out = (await $.command.run({ command: 'factory-exit' } as never)).text as string
+  expect(out).toContain('finishes under the guards')
+  expect(await instructionsOf($)).not.toBe('')
+  expect(busy.state().autopilot).toBe(false)
+})
+
+test('/factory-exit writes nothing when the factory was not running, and the entry commands bring the band back', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on)
+  fx.live.usd = 1
+  const before = fx.files['.factory/state.json']
+  const out = (await $.command.run({ command: 'factory-exit' } as never)).text as string
+  expect(out).toContain('Left factory mode')
+  expect(fx.files['.factory/state.json']).toBe(before)
+  await $.command.run({ command: 'factory-status' } as never)
+  expect((await bandTexts($)).some(t => t.includes('factory'))).toBe(false)
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1000)
+  await $.command.run({ command: 'factory-status' } as never)
+  expect((await bandTexts($)).some(t => t.includes('factory'))).toBe(true)
 })

@@ -156,6 +156,26 @@ Issue text comes from outside your session, so it is treated as a report to
 analyse, never as instructions, and nothing from an issue is built until you
 have approved the item it became.
 
+## Watching issues
+
+With `"watchIssues": true` (and an approved design) the factory checks the open
+issues every ten minutes while it is idle. For the first issue by an owner,
+member or collaborator that has no design yet, it starts one design turn: it
+reads the issue and the code, then the factory posts a single comment (marked
+`<!-- code-factory:design -->`) with a plan and any questions it needs you to
+answer. That turn has no shell. It can only read the tracked files the factory
+listed for it (never `.env`, keys, symlinks or `.git`) and it cannot edit files,
+push, open pull requests, change labels or use any other tool; the factory posts
+its answer. Issues from anyone else are ignored until a collaborator adds the label
+`factory:triage`; a label counts only if its author has write access, and it
+stops counting if the issue is edited afterwards.
+
+`/factory-watch` lists what the factory would do with each open issue without
+doing anything. `/factory-watch now` runs one check and designs one issue.
+Building from the `factory:go` label is not wired up yet: the report shows
+which issues a valid label would release, and you still add the item with
+`/factory-triage` and `/factory-approve`.
+
 ## Commands
 
 | Command | What it does |
@@ -164,7 +184,9 @@ have approved the item it became.
 | `/factory-design [topic]` | The design interview (run again to amend the plan) |
 | `/factory-approve` | Validate the plan, promote proposed items, start the loop |
 | `/factory-start`, `/factory-pause`, `/factory-stop` | Run or hold the loop |
+| `/factory-exit` | Leave factory mode: stop the loop and hide the band, status line and dashboard |
 | `/factory-triage [search]` | Turn open GitHub issues into proposed items |
+| `/factory-watch [now]` | List open issues and what the factory would do with each; `now` acts on one |
 | `/factory-roadmap` | Plan the next phase once nothing is left to run |
 | `/factory-dashboard [off]` | Open or close the control panel |
 | `/factory-status`, `/factory-log [ID]` | Progress and the event timeline |
@@ -177,8 +199,8 @@ have approved the item it became.
 
 The interview writes `.factory/settings.json`; you can edit it by hand and
 re-run `/factory-approve`. Settings are part of the approval, so changing one
-pauses the loop until you approve again (`reviewTimeoutMs`, `budgetUsd` at its
-default and `askNextPhase` at its default are the exceptions).
+pauses the loop until you approve again (`reviewTimeoutMs`, `budgetUsd`, `askNextPhase` and `watchIssues` at their
+defaults are the exceptions).
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -204,6 +226,7 @@ default and `askNextPhase` at its default are the exceptions).
 | `requireBranchProtection` | `false` | Refuse to approve unless the base branch is protected. |
 | `budgetUsd` | `0` | Pause a run once it has spent this many US dollars (0 is no budget). |
 | `askNextPhase` | `true` | Interview you about the next phase when everything is merged. |
+| `watchIssues` | `false` | While the loop is idle, check GitHub every ten minutes and post a design comment on new issues by collaborators. |
 
 ## Files it writes
 

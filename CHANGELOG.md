@@ -9,6 +9,23 @@ minor version may change behavior).
 
 ### Added
 
+- `/factory-exit` leaves factory mode: it stops the loop if it is running, closes
+  the dashboard, clears the status line, hides the band, and drops an open
+  interview's instructions and guards. A factory turn that is still running keeps
+  its guards until it ends. `/factory-start`, `/factory-design`, `/factory-approve`,
+  `/factory-roadmap`, `/factory-triage`, `/factory-dashboard` or a new session
+  bring it back. It writes nothing when the factory was not running.
+- The issue watcher (setting `watchIssues`, off by default, `/factory-watch`).
+  While the loop is idle it reads the open issues every ten minutes through
+  one GraphQL call and applies `issueGate`. For the first issue that needs a
+  design it runs one turn with no shell: the factory puts the issue, its comments
+  (fenced as untrusted data), the repo notes and the list of tracked files in the
+  prompt, and the turn may only use `Read` on those exact files. Symlinks,
+  submodules and secret-looking names are never listed, and every other tool is
+  denied. The factory posts the turn's final answer as the comment itself, and
+  remembers the issue per repo so a new session does not post a second design.
+  Turning it on changes the approval hash, so it needs a `/factory-approve`.
+  Building from `factory:go` is a later slice.
 - An "all done" screen: when every item is merged, the band, the pane, the
   status line and the finish toast say so and ask whether to continue the design
   (`[➜ design next phase]`, `[⚑ triage issues]`) or stop (`[■ stop here]`, which
@@ -74,6 +91,18 @@ minor version may change behavior).
 - MIT license, contributing guide, code of conduct, security policy, issue and
   pull request templates, and a README with requirements, settings reference and
   the trust model.
+
+### Fixed
+
+- Issue design turn: it is bound to its own turn by the factory's headline text,
+  not to whichever main turn ends next, and a launch is dropped when a turn
+  opened since the poll. A person's or a background turn's answer can no longer
+  be posted on an issue. A typed prompt now only voids the post; the read-only
+  restriction holds until the design turn ends.
+- Issue design comments are posted only when the answer has the two design
+  headings. An issue is claimed for 45 minutes before a launch, so two sessions
+  do not both design it, and the designed list is re-read before posting. More
+  credential file names are kept out of the file list.
 
 ## [0.2.0]
 
