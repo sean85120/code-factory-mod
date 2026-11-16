@@ -7,6 +7,15 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+### Added
+
+- `/factory-theme hacker` recolors the band and pane in a phosphor palette that
+  follows your Claude theme (dark, light or 16-color) and honors `NO_COLOR`.
+  The choice is stored in your plugin store, outside the repo, so it never
+  changes the approval hash. `classic` stays the default.
+- `scripts/test-serial.sh` runs the test files one at a time, for a busy machine
+  where the parallel run times out.
+
 ### Changed
 
 - Pressing an agent in the band or the dashboard pane shows its transcript (task,

@@ -1,9 +1,9 @@
 // Pure logic of the code factory: parsing, validation, guards and prompts.
 // No engine calls here, so tests can exercise it directly.
 
-import type { AgentRow, DoctorCheck, FactoryView, Mark, Stage, Step, StepState, ViewRow } from '../types'
+import type { AgentRow, DoctorCheck, FactoryView, Mark, Stage, Step, StepState, ThemeCaps, ThemeName, ThemePrefs, ViewRow } from '../types'
 
-export type { AgentRow, DoctorCheck, FactoryView, Mark, Stage, Step, ViewRow }
+export type { AgentRow, DoctorCheck, FactoryView, Mark, Stage, Step, ThemeCaps, ThemeName, ThemePrefs, ViewRow }
 
 export type ItemType = 'feature' | 'bug' | 'chore' | 'docs'
 export type ItemStatus = 'proposed' | 'todo' | 'done'
@@ -1323,7 +1323,6 @@ export function progressBar(done: number, total: number, width = 10): string {
   return '█'.repeat(full) + '░'.repeat(w - full)
 }
 
-export type ThemeName = 'classic' | 'hacker'
 export type ThemeGlyph = { glyph: string; color: string | undefined }
 export type Theme = {
   name: ThemeName
@@ -1335,6 +1334,9 @@ export type Theme = {
   ok: string | undefined
   warn: string | undefined
   error: string | undefined
+  accent: string | undefined
+  agent: string | undefined
+  dim: string | undefined
 }
 
 const CLASSIC_AGENT_GLYPH: Record<string, string> = { running: '●', waiting: '◐', pending: '○', idle: '◌', completed: '✓', failed: '✗', killed: '✗' }
@@ -1355,10 +1357,82 @@ export const CLASSIC_THEME: Theme = {
   ok: 'green',
   warn: 'yellow',
   error: 'red',
+  accent: undefined,
+  agent: undefined,
+  dim: undefined,
 }
 
-export function theme(): Theme {
-  return CLASSIC_THEME
+type Palette = { primary: string | undefined; accent: string | undefined; agent: string | undefined; warn: string | undefined; error: string | undefined; dim: string | undefined }
+
+export const HACKER_PALETTE = {
+  dark: { primary: '#3DF58A', accent: '#4CC9F0', agent: '#C77DFF', warn: '#FFB000', error: '#FF4D6D', dim: '#6B8F7B' },
+  light: { primary: '#0B7A3B', accent: '#0A6C8F', agent: '#7B2CBF', warn: '#9A5B00', error: '#C2183A', dim: '#5A6B62' },
+  ansi: { primary: 'green', accent: 'cyan', agent: 'magenta', warn: 'yellow', error: 'red', dim: undefined },
+  none: { primary: undefined, accent: undefined, agent: undefined, warn: undefined, error: undefined, dim: undefined },
+} as const satisfies Record<string, Palette>
+
+export const HACKER_BACKGROUND = { dark: '#0B0F0C', light: '#FFFFFF' } as const
+
+export const DEFAULT_THEME_PREFS: ThemePrefs = { name: 'classic' }
+export const DEFAULT_THEME_CAPS: ThemeCaps = { noColor: false, scheme: 'dark', ansi: false }
+
+export function parseThemePrefs(raw: unknown): ThemePrefs {
+  const name = raw !== null && typeof raw === 'object' ? (raw as { name?: unknown }).name : undefined
+  return { name: name === 'hacker' ? 'hacker' : 'classic' }
+}
+
+export function parseThemeArg(args: string): { prefs?: Partial<ThemePrefs>; problem?: string } {
+  const words = args.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return {}
+  if (words.length === 1 && (words[0] === 'hacker' || words[0] === 'classic')) return { prefs: { name: words[0] } }
+  return { problem: 'Usage: /factory-theme [hacker|classic]. With no argument it shows the current look.' }
+}
+
+export function themeCaps(noColor: string | undefined, claudeTheme: string | undefined): ThemeCaps {
+  const name = (claudeTheme ?? '').toLowerCase()
+  return { noColor: (noColor ?? '') !== '', ansi: name.includes('ansi'), scheme: name.includes('light') ? 'light' : 'dark' }
+}
+
+export function hackerTheme(caps: ThemeCaps): Theme {
+  const p: Palette = caps.noColor ? HACKER_PALETTE.none : caps.ansi ? HACKER_PALETTE.ansi : HACKER_PALETTE[caps.scheme]
+  return {
+    ...CLASSIC_THEME,
+    name: 'hacker',
+    mark: {
+      done: { glyph: '✓', color: p.primary },
+      doing: { glyph: '▶', color: p.warn },
+      todo: { glyph: '○', color: undefined },
+      blocked: { glyph: '✗', color: p.error },
+      proposed: { glyph: '·', color: undefined },
+    },
+    step: { done: { glyph: '✓', color: p.primary }, doing: { glyph: '●', color: p.warn }, todo: { glyph: '○', color: undefined } },
+    running: p.primary,
+    ok: p.primary,
+    warn: p.warn,
+    error: p.error,
+    accent: p.accent,
+    agent: p.agent,
+    dim: p.dim,
+  }
+}
+
+export function theme(prefs: ThemePrefs = DEFAULT_THEME_PREFS, caps: ThemeCaps = DEFAULT_THEME_CAPS): Theme {
+  return prefs.name === 'hacker' ? hackerTheme(caps) : CLASSIC_THEME
+}
+
+export function themeReport(prefs: ThemePrefs, caps: ThemeCaps): string {
+  const tier = prefs.name === 'classic' ? '' : caps.noColor ? ' (no color, NO_COLOR is set)' : caps.ansi ? ' (16 colors)' : caps.scheme === 'light' ? ' (light)' : ' (dark)'
+  return `Look: ${prefs.name}${tier}. ${prefs.name === 'classic' ? '/factory-theme hacker switches to the hacker palette.' : '/factory-theme classic switches back.'} The choice is yours alone, kept outside the repo, and never needs a re-approval.`
+}
+
+function luminance(hex: string): number {
+  const c = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(x => (x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4))
+  return 0.2126 * c[0]! + 0.7152 * c[1]! + 0.0722 * c[2]!
+}
+
+export function contrastRatio(fg: string, bg: string): number {
+  const [a, b] = [luminance(fg), luminance(bg)]
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)
 }
 
 export function budgetColor(t: Theme, v: Pick<FactoryView, 'runUsd' | 'budgetUsd'>): string | undefined {

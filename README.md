@@ -135,6 +135,7 @@ have approved the item it became.
 | `/factory-costs [repo\|all]` | Spend per repository and per item |
 | `/factory-skip <ID> [reason]`, `/factory-retry <ID>` | Set an item aside, or bring it back |
 | `/factory-doctor` | Check that git, gh and the design files are ready |
+| `/factory-theme [hacker\|classic]` | Choose the look of the band and pane; it is yours alone and never needs a re-approval |
 
 ## Settings
 
