@@ -36,7 +36,9 @@ minor version may change behavior).
   The factory's own account (the one `gh` is logged in as) can never approve,
   because the model can reach it, so approve from a different account. The item
   the writer approves is shown as raw text in a code block the factory builds,
-  so a hidden link or a fenced example cannot change what gets built.
+  so a hidden link or a fenced example cannot change what gets built. The block
+  comes first in the comment and item-like headings in the free text are removed,
+  so the way GitHub reads fences cannot hide or imitate it.
 - An "all done" screen: when every item is merged, the band, the pane, the
   status line and the finish toast say so and ask whether to continue the design
   (`[➜ design next phase]`, `[⚑ triage issues]`) or stop (`[■ stop here]`, which

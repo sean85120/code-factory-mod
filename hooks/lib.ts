@@ -3179,6 +3179,7 @@ const itemLine = (text: string, max: number): string => {
 const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})/
 const ITEM_HEADING = /^ {0,3}##\s+Item\b/
 const ANY_HEADING = /^ {0,3}#{1,2}\s/
+const ITEM_LIKE = /^[ \t>*+\-\d.)]*#{1,6}[ \t]*Item\b/i
 const ITEM_KEYS = ['type', 'title', 'how', 'accept', 'tests'] as const
 
 function fenceState(lines: readonly string[]): { outside: boolean[]; open: string | null } {
@@ -3282,7 +3283,7 @@ export function designComment(answer: string): string | null {
   const item = answerItem(answer)
   const text = safeLines(stripItemSections(answer))
     .split('\n')
-    .filter(l => l.trim() !== 'ROADMAP-DONE')
+    .filter(l => l.trim() !== 'ROADMAP-DONE' && !ITEM_LIKE.test(l))
     .join('\n')
     .split(DESIGN_MARKER)
     .join('')
@@ -3293,6 +3294,6 @@ export function designComment(answer: string): string | null {
     .trim()
   if (text.length < 40) return null
   const cut = closeFences(text.length > DESIGN_ANSWER_CHARS ? `${text.slice(0, DESIGN_ANSWER_CHARS)}\n[cut]` : text)
-  const block = item ? `\n\n${renderItem(item)}` : ''
-  return `${DESIGN_MARKER}\n${cut}${block}\n\n## Approve\nA collaborator with write access approves by adding the \`${LABEL_GO}\` label. Editing the issue or this comment afterwards withdraws the approval.`
+  const block = item ? `${renderItem(item)}\n\n` : ''
+  return `${DESIGN_MARKER}\n${block}${cut}\n\n## Approve\nA collaborator with write access approves by adding the \`${LABEL_GO}\` label. Editing the issue or this comment afterwards withdraws the approval.`
 }

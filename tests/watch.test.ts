@@ -215,10 +215,26 @@ test('designItem refuses everything but one factory-built block, and a fenced ex
   expect(designItem('')).toBeNull()
 })
 
-test('an unclosed code fence in the answer is closed before the factory block, which is then not an item', () => {
+test('an unclosed code fence in the answer is closed before the footer and cannot reach the item block', () => {
   const c = designComment(ANSWER.replace('## Proposed approach\n', '## Proposed approach\n```\n'))!
   expect(c).toContain('```\n\n## Approve')
   expect(designItem(c)).toBeNull()
+  const open = designComment(ANSWER.replace('## Understanding\nA toggle.', '## Understanding\nA toggle.\n> ```\n- ```\n1. ~~~'))!
+  expect(designItem(open)).toEqual(ITEM)
+})
+
+test('the item block comes first, right after the marker, so nothing in the free text can hide or imitate it', () => {
+  const c = designComment(ANSWER)!
+  const lines = c.split('\n')
+  expect(lines[0]).toBe(DESIGN_MARKER)
+  expect(lines[1]).toBe('## Item')
+  expect(lines[2]).toBe('````text')
+  const tricky = ANSWER.replace('## Proposed approach\n', '## Proposed approach\n> ## Item\n- ## item\n   ### Item\n#Item\n1. ## Item\n')
+  const t = designComment(tricky)!
+  const tl = t.split('\n')
+  expect(tl[1]).toBe('## Item')
+  expect(tl.filter(l => /^[ \t>*+\-\d.)]*#{1,6}[ \t]*Item\b/i.test(l))).toHaveLength(1)
+  expect(designItem(t)).toEqual(ITEM)
 })
 
 test('appendIssueItem adds one todo item with the next id and the issue link, and refuses anything the parser would read differently', () => {
