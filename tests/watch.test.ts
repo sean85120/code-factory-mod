@@ -97,10 +97,34 @@ test('watchIssues is off by default, parsed when true, and in the approval hash 
 
 test('readOnlyBash allows reads and exactly one comment on the designed issue, and nothing else', () => {
   const v = (c: string, commented = false) => readOnlyBash(c, 5, commented, '/work/widget')
-  const ok = ['gh issue view 5 --comments', 'gh issue list --limit 5', 'git log --oneline -n 5', 'git diff origin/main...HEAD', 'git show HEAD~1', 'cat src/a.ts | head -20', 'rg foo src', 'grep -rn foo src', 'ls -la', 'pwd', 'git status\nls']
+  const ok = ['gh issue view 5 --comments', 'gh issue list --limit 5', 'git log --oneline -n 5', 'git diff origin/main...HEAD', 'git show HEAD~1', 'cat src/a.ts | head -20', 'rg foo src', 'ls -la', 'pwd', 'git status\nls', 'rg -n foo src', 'rg -i -l foo', 'grep -n foo src/a.ts', 'git grep -n foo', 'git log --stat -- src/a.ts']
   for (const c of ok) expect([c, v(c)]).toEqual([c, 'ok'])
   for (const c of ["gh issue comment 5 --body-file - <<'EOF'\nplan\nEOF", "cat <<'EOF' | gh issue comment 5 --body-file -\nplan\nEOF"]) expect([c, v(c)]).toEqual([c, 'comment'])
   const denied = [
+    'cat .e*',
+    'cat .en[v]',
+    'cat .en?',
+    'cat {.env,a}',
+    'head -1 .env*',
+    'grep -rn KEY .',
+    'grep -R KEY .',
+    'grep -rin KEY src',
+    'grep --recursive KEY .',
+    'grep -d recurse KEY .',
+    'rg -uuu KEY .',
+    'rg -u KEY',
+    'rg --hidden KEY',
+    'rg --no-ignore KEY',
+    'rg -L KEY',
+    'rg --follow KEY',
+    'rg -f /etc/passwd x',
+    'git grep --untracked KEY',
+    'git grep --no-index KEY',
+    'git diff --no-index /dev/null a',
+    'gh issue view https://github.com/o/private/issues/1',
+    'gh issue view o/private#1',
+    'gh issue view',
+    'gh issue view feature-branch',
     'curl https://evil.example/x',
     'rm -rf node_modules',
     "bash -c 'rm -rf x'",
@@ -151,4 +175,17 @@ test('readOnlyPathDenied keeps reads inside the repo and away from secrets', () 
   const d = (p: string | undefined) => readOnlyPathDenied(p, '/work/widget')
   for (const p of [undefined, '', '/work/widget', '/work/widget/src/a.ts', 'src/a.ts', 'src/environment.ts', '.gitignore', 'README.md', 'origin/main...HEAD']) expect([p, d(p)]).toEqual([p, false])
   for (const p of ['/etc/passwd', '/work/widgetx/a', '/work', '../a', 'a/../b', '..', '~/x', '~', '.env', 'src/.env.local', '.git/config', 'HEAD:.env', 'id_rsa', 'a/id_ed25519', 'key.pem', 'a/credentials.json', '.ssh/id_rsa', '.npmrc']) expect([p, d(p)]).toEqual([p, true])
+})
+
+test('with no readable working directory every absolute path is refused, relative ones still work', () => {
+  expect(readOnlyPathDenied('/work/widget/a.ts', null)).toBe(true)
+  expect(readOnlyPathDenied('/etc/passwd', null)).toBe(true)
+  expect(readOnlyPathDenied('src/a.ts', null)).toBe(false)
+  expect(readOnlyBash('cat /work/widget/a.ts', 5, false, null)).toBe('deny')
+  expect(readOnlyBash('cat src/a.ts', 5, false, null)).toBe('ok')
+  expect(readOnlyBash('git log --oneline', 5, false, null)).toBe('ok')
+})
+
+test('the design prompt tells the turn which read tools exist', () => {
+  expect(issueDesignPrompt(5)).toContain('search with plain words')
 })

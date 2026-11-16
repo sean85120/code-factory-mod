@@ -1274,7 +1274,7 @@ const readOnlyTurn = (): boolean => instructions?.readOnly === true && isFactory
 
 async function readOnlyPath($: Dollar, path: string | undefined): Promise<boolean> {
   if (!readOnlyTurn()) return false
-  return readOnlyPathDenied(path, await $.session.cwd().catch(() => '/'))
+  return readOnlyPathDenied(path, await $.session.cwd().catch(() => null))
 }
 
 async function guardWrite($: Dollar, path: string, agentId: string | undefined): Promise<{ deny: string } | null> {
@@ -2147,7 +2147,7 @@ export const register: Register = (on, _options) => {
       return deny('code-factory: the factory state file is controlled by the person through /factory-* commands.')
     }
     if (readOnlyTurn()) {
-      const verdict = readOnlyBash(e.command, instructions!.issue, instructions!.commented, await $.session.cwd().catch(() => '/'))
+      const verdict = readOnlyBash(e.command, instructions!.issue, instructions!.commented, await $.session.cwd().catch(() => null))
       if (verdict === 'deny') return deny(READ_ONLY_DENY)
       if (verdict === 'comment') instructions!.commented = true
       return next(e)
