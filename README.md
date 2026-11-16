@@ -17,6 +17,10 @@ turns the ones worth doing into new items, and goes again.
  ○ 4 Iterate   triage open issues, plan the next phase, repeat
 ```
 
+<p align="center">
+  <img src="docs/img/pane-hacker.png" alt="The code-factory dashboard in the hacker look: Vox the mascot, the plan, a blocked item, the current item's pipeline and a running review agent" width="760">
+</p>
+
 > **Status: early.** code-factory uses Claude Code's plugin hooks module, an API
 > that is marked early access and may change between Claude Code releases. The
 > test suite is verified in CI against a pinned Claude Code version (see
@@ -101,6 +105,37 @@ hands the wheel back to you; `/factory-start` carries on where it stopped.
   `[⚑ triage issues]` and `[➜ next phase]` when the loop is idle, and
   `[✔ check setup]`.
 - **The status line**: a one-line summary that is always visible.
+
+The band, in the classic look and in the hacker look (`/factory-theme hacker`):
+
+![The band above the prompt in the classic look](docs/img/band-classic.png)
+![The band above the prompt in the hacker look](docs/img/band-hacker.png)
+
+The dashboard in the classic look:
+
+![The dashboard in the classic look](docs/img/pane-classic.png)
+
+Press an agent in the band or the dashboard to see what it is doing, task, words and tool calls with their results:
+
+![The dashboard with a review agent expanded to its transcript](docs/img/pane-agent.png)
+
+On the Claude desktop app the hacker look draws the pane as a dark console, with Vox and the stage pipeline as animated drawings:
+
+![The dashboard on the Claude desktop app in the hacker look](docs/img/pane-desktop.png)
+
+### Vox
+
+The hacker look has a mascot. Vox shows the loop's state at a glance and, on
+the terminal, animates it (a blink every few seconds, a two-hop celebration
+when the plan is done, a shake once when something blocks). `/factory-theme motion off` keeps it still.
+
+![Vox in its seven states: working, reviewing, done, paused, blocked, budget reached and idle](docs/img/vox-states.png)
+
+These images are renders of the plugin's own output: `scripts/demo-shots.sh`
+mounts the real band and dashboard against a made-up five-item plan, draws the
+captured element trees as a terminal window in headless Chrome, and saves the
+PNGs to `docs/img/`. They are not captures of a live session, so spacing and
+fonts differ a little from your terminal.
 
 ## Triage, fix, repeat
 
