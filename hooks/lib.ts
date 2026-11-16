@@ -1316,20 +1316,29 @@ export type ViewExtra = { maxAttempts: number; maxReviewRounds: number; agents: 
 
 export const MAX_VIEW_AGENTS = 6
 
-export function progressBar(done: number, total: number, width = 10): string {
+export function progressBar(done: number, total: number, width = 10, fullChar = '█', emptyChar = '░'): string {
   const w = Math.max(1, Math.floor(width))
   const frac = total > 0 && Number.isFinite(done) ? Math.min(1, Math.max(0, done / total)) : 0
   const full = frac >= 1 ? w : Math.floor(frac * w)
-  return '█'.repeat(full) + '░'.repeat(w - full)
+  return fullChar.repeat(full) + emptyChar.repeat(w - full)
 }
 
 export type ThemeGlyph = { glyph: string; color: string | undefined }
+export type LoopBadge = 'RUN' | 'HOLD' | 'DONE' | 'FAIL'
 export type Theme = {
   name: ThemeName
+  ascii: boolean
   mark: Record<Mark, ThemeGlyph>
   step: Record<StepState, ThemeGlyph>
   agentGlyph: (status: string) => string
   bar: (done: number, total: number, width?: number) => string
+  head: (badge: LoopBadge) => string
+  label: (text: string) => string
+  rule: (label: string, columns?: number) => string
+  eventMark: string
+  changeMark: string
+  arrow: string
+  fold: { open: string; closed: string }
   running: string | undefined
   ok: string | undefined
   warn: string | undefined
@@ -1343,6 +1352,7 @@ const CLASSIC_AGENT_GLYPH: Record<string, string> = { running: '●', waiting: '
 
 export const CLASSIC_THEME: Theme = {
   name: 'classic',
+  ascii: false,
   mark: {
     done: { glyph: '✓', color: 'green' },
     doing: { glyph: '▶', color: 'yellow' },
@@ -1353,6 +1363,13 @@ export const CLASSIC_THEME: Theme = {
   step: { done: { glyph: '✓', color: 'green' }, doing: { glyph: '●', color: 'yellow' }, todo: { glyph: '○', color: undefined } },
   agentGlyph: status => CLASSIC_AGENT_GLYPH[status] ?? '·',
   bar: progressBar,
+  head: badge => (badge === 'RUN' ? 'factory ▶' : 'factory ⏸'),
+  label: text => text,
+  rule: label => label,
+  eventMark: '⋯',
+  changeMark: 'Δ',
+  arrow: '➜',
+  fold: { open: '▾', closed: '▸' },
   running: 'green',
   ok: 'green',
   warn: 'yellow',
@@ -1373,39 +1390,103 @@ export const HACKER_PALETTE = {
 
 export const HACKER_BACKGROUND = { dark: '#0B0F0C', light: '#FFFFFF' } as const
 
-export const DEFAULT_THEME_PREFS: ThemePrefs = { name: 'classic' }
-export const DEFAULT_THEME_CAPS: ThemeCaps = { noColor: false, scheme: 'dark', ansi: false }
+const HACKER_GLYPHS = {
+  unicode: {
+    mark: { done: '◆', doing: '▸', todo: '◇', blocked: '✖', proposed: '·' },
+    step: { done: '■', doing: '▸', todo: '□' },
+    agent: { running: '◉', waiting: '◌', pending: '◌', idle: '·', completed: '◆', failed: '✖', killed: '✖' } as Record<string, string>,
+    sigil: '❯',
+    ruleLead: '──',
+    ruleFill: '─',
+    eventMark: '»',
+    changeMark: 'Δ',
+    arrow: '»',
+    fold: { open: '▾', closed: '▸' },
+    barFull: '▰',
+    barEmpty: '▱',
+  },
+  ascii: {
+    mark: { done: '+', doing: '>', todo: '-', blocked: 'x', proposed: '.' },
+    step: { done: '#', doing: '>', todo: '.' },
+    agent: { running: '*', waiting: '~', pending: '~', idle: '.', completed: '+', failed: 'x', killed: 'x' } as Record<string, string>,
+    sigil: '>',
+    ruleLead: '--',
+    ruleFill: '-',
+    eventMark: '>>',
+    changeMark: '~',
+    arrow: '>',
+    fold: { open: 'v', closed: '>' },
+    barFull: '#',
+    barEmpty: '.',
+  },
+} as const
+
+const LABEL_SWAP: Record<string, string> = { '⏸': '‖', '▶': '▸' }
+
+export const DEFAULT_THEME_PREFS: ThemePrefs = { name: 'classic', glyphs: 'auto' }
+export const DEFAULT_THEME_CAPS: ThemeCaps = { noColor: false, scheme: 'dark', ansi: false, utf8: true }
 
 export function parseThemePrefs(raw: unknown): ThemePrefs {
-  const name = raw !== null && typeof raw === 'object' ? (raw as { name?: unknown }).name : undefined
-  return { name: name === 'hacker' ? 'hacker' : 'classic' }
+  const o = raw !== null && typeof raw === 'object' ? (raw as { name?: unknown; glyphs?: unknown }) : {}
+  return { name: o.name === 'hacker' ? 'hacker' : 'classic', glyphs: o.glyphs === 'ascii' ? 'ascii' : 'auto' }
 }
+
+const THEME_USAGE = 'Usage: /factory-theme [hacker|classic] [ascii|auto]. With no argument it shows the current look.'
 
 export function parseThemeArg(args: string): { prefs?: Partial<ThemePrefs>; problem?: string } {
   const words = args.trim().toLowerCase().split(/\s+/).filter(Boolean)
-  if (words.length === 0) return {}
-  if (words.length === 1 && (words[0] === 'hacker' || words[0] === 'classic')) return { prefs: { name: words[0] } }
-  return { problem: 'Usage: /factory-theme [hacker|classic]. With no argument it shows the current look.' }
+  const prefs: Partial<ThemePrefs> = {}
+  for (const w of words) {
+    if ((w === 'hacker' || w === 'classic') && prefs.name === undefined) prefs.name = w
+    else if ((w === 'ascii' || w === 'auto') && prefs.glyphs === undefined) prefs.glyphs = w
+    else return { problem: THEME_USAGE }
+  }
+  return words.length === 0 ? {} : { prefs }
 }
 
-export function themeCaps(noColor: string | undefined, claudeTheme: string | undefined): ThemeCaps {
+export function themeCaps(noColor: string | undefined, claudeTheme: string | undefined, locale?: string, term?: string): ThemeCaps {
   const name = (claudeTheme ?? '').toLowerCase()
-  return { noColor: (noColor ?? '') !== '', ansi: name.includes('ansi'), scheme: name.includes('light') ? 'light' : 'dark' }
+  const dumb = term === 'dumb' || term === 'linux'
+  return { noColor: (noColor ?? '') !== '', ansi: name.includes('ansi'), scheme: name.includes('light') ? 'light' : 'dark', utf8: !dumb && (locale === undefined || /utf-?8/i.test(locale)) }
 }
 
-export function hackerTheme(caps: ThemeCaps): Theme {
+function hackerLabel(ascii: boolean): (text: string) => string {
+  return text => {
+    const m = /^(\S+) (.+)$/.exec(text)
+    if (!m || /^[\x20-\x7E]+$/.test(m[1]!)) return text
+    return ascii ? m[2]! : LABEL_SWAP[m[1]!] ? `${LABEL_SWAP[m[1]!]} ${m[2]}` : text
+  }
+}
+
+export function hackerTheme(caps: ThemeCaps, ascii = !caps.utf8): Theme {
   const p: Palette = caps.noColor ? HACKER_PALETTE.none : caps.ansi ? HACKER_PALETTE.ansi : HACKER_PALETTE[caps.scheme]
+  const g = ascii ? HACKER_GLYPHS.ascii : HACKER_GLYPHS.unicode
   return {
     ...CLASSIC_THEME,
     name: 'hacker',
+    ascii,
     mark: {
-      done: { glyph: '✓', color: p.primary },
-      doing: { glyph: '▶', color: p.warn },
-      todo: { glyph: '○', color: undefined },
-      blocked: { glyph: '✗', color: p.error },
-      proposed: { glyph: '·', color: undefined },
+      done: { glyph: g.mark.done, color: p.primary },
+      doing: { glyph: g.mark.doing, color: p.warn },
+      todo: { glyph: g.mark.todo, color: undefined },
+      blocked: { glyph: g.mark.blocked, color: p.error },
+      proposed: { glyph: g.mark.proposed, color: undefined },
     },
-    step: { done: { glyph: '✓', color: p.primary }, doing: { glyph: '●', color: p.warn }, todo: { glyph: '○', color: undefined } },
+    step: { done: { glyph: g.step.done, color: p.primary }, doing: { glyph: g.step.doing, color: p.warn }, todo: { glyph: g.step.todo, color: undefined } },
+    agentGlyph: status => g.agent[status] ?? g.mark.proposed,
+    bar: (done, total, width) => (ascii ? `[${progressBar(done, total, width, g.barFull, g.barEmpty)}]` : progressBar(done, total, width, g.barFull, g.barEmpty)),
+    head: badge => `${g.sigil} factory [${badge}]`,
+    label: hackerLabel(ascii),
+    rule: (label, columns) => {
+      const head = `${g.ruleLead} ${label}`
+      if (columns === undefined) return head
+      const pad = columns - head.length - 1
+      return pad > 0 ? `${head} ${g.ruleFill.repeat(pad)}` : head.slice(0, Math.max(0, columns))
+    },
+    eventMark: g.eventMark,
+    changeMark: g.changeMark,
+    arrow: g.arrow,
+    fold: g.fold,
     running: p.primary,
     ok: p.primary,
     warn: p.warn,
@@ -1417,12 +1498,20 @@ export function hackerTheme(caps: ThemeCaps): Theme {
 }
 
 export function theme(prefs: ThemePrefs = DEFAULT_THEME_PREFS, caps: ThemeCaps = DEFAULT_THEME_CAPS): Theme {
-  return prefs.name === 'hacker' ? hackerTheme(caps) : CLASSIC_THEME
+  return prefs.name === 'hacker' ? hackerTheme(caps, prefs.glyphs === 'ascii' || !caps.utf8) : CLASSIC_THEME
 }
 
 export function themeReport(prefs: ThemePrefs, caps: ThemeCaps): string {
-  const tier = prefs.name === 'classic' ? '' : caps.noColor ? ' (no color, NO_COLOR is set)' : caps.ansi ? ' (16 colors)' : caps.scheme === 'light' ? ' (light)' : ' (dark)'
-  return `Look: ${prefs.name}${tier}. ${prefs.name === 'classic' ? '/factory-theme hacker switches to the hacker palette.' : '/factory-theme classic switches back.'} The choice is yours alone, kept outside the repo, and never needs a re-approval.`
+  const parts = prefs.name === 'classic' ? [] : [caps.noColor ? 'no color, NO_COLOR is set' : caps.ansi ? '16 colors' : caps.scheme, ...(prefs.glyphs === 'ascii' ? ['ascii glyphs'] : !caps.utf8 ? ['ascii glyphs, the locale is not UTF-8'] : [])]
+  return `Look: ${prefs.name}${parts.length > 0 ? ` (${parts.join(', ')})` : ''}. ${prefs.name === 'classic' ? '/factory-theme hacker switches to the hacker look.' : '/factory-theme classic switches back; /factory-theme ascii forces plain ASCII glyphs and auto undoes it.'} The choice is yours alone, kept outside the repo, and never needs a re-approval.`
+}
+
+export function loopBadge(v: Pick<FactoryView, 'running' | 'current' | 'rows' | 'more' | 'blockedCount' | 'doneCount' | 'total'>): LoopBadge {
+  if (v.running) return 'RUN'
+  const left = v.current !== null || v.rows.some(r => r.mark !== 'blocked') || v.more > 0
+  if (!left && (v.blockedCount ?? 0) > 0) return 'FAIL'
+  if (!left && (v.total ?? v.doneCount) > 0) return 'DONE'
+  return 'HOLD'
 }
 
 function luminance(hex: string): number {
@@ -1561,23 +1650,23 @@ export function checksReport(checks: readonly DoctorCheck[]): string {
   return [`Factory checks: ${head}`, ...checks.map(checksLine)].join('\n')
 }
 
-export function statusLine(v: FactoryView): string {
+export function statusLine(v: FactoryView, t: Theme = CLASSIC_THEME): string {
   if (!v.approved) return 'factory: design not approved'
   const parts: string[] = []
   const at = v.stage === null ? -1 : STAGES.indexOf(v.stage)
   if (v.running) {
-    parts.push(`factory ▶ ${v.current ?? 'picking next'}`)
-    if (v.current !== null && at >= 0) parts.push(`${v.stage} ${progressBar(at + 1, STAGES.length, 5)} ${at + 1}/${STAGES.length}`)
+    parts.push(`${t.head('RUN')} ${v.current ?? 'picking next'}`)
+    if (v.current !== null && at >= 0) parts.push(`${v.stage} ${t.bar(at + 1, STAGES.length, 5)} ${at + 1}/${STAGES.length}`)
     if (v.current !== null && (v.attempt ?? 0) > 1) parts.push(`attempt ${v.attempt}/${v.maxAttempts ?? '?'}`)
     if (v.current !== null && (v.reviewRound ?? 0) > 0) parts.push(`review ${v.reviewRound}/${v.maxReviewRounds ?? '?'}`)
-  } else parts.push(`factory ⏸ ${oneLine(v.pausedReason ?? 'stopped', 70)}`)
+  } else parts.push(`${t.head(loopBadge(v))} ${oneLine(v.pausedReason ?? 'stopped', 70)}`)
   const total = v.total ?? v.doneCount + v.rows.length + v.more
   const todo = Math.max(0, total - v.doneCount - (v.blockedCount ?? 0))
-  parts.push(`${v.doneCount}/${total} done ${progressBar(v.doneCount, total, 6)}`)
+  parts.push(`${v.doneCount}/${total} done ${t.bar(v.doneCount, total, 6)}`)
   parts.push(todo > 0 ? `${todo} to do` : 'nothing left')
   if ((v.blockedCount ?? 0) > 0) parts.push(`${v.blockedCount} blocked`)
   if (v.runUsd != null) {
-    parts.push(v.budgetUsd > 0 ? `${formatUsd(v.runUsd)}/${formatUsd(v.budgetUsd)} ${progressBar(v.runUsd, v.budgetUsd, 6)}` : `${formatUsd(v.runUsd)} spent`)
+    parts.push(v.budgetUsd > 0 ? `${formatUsd(v.runUsd)}/${formatUsd(v.budgetUsd)} ${t.bar(v.runUsd, v.budgetUsd, 6)}` : `${formatUsd(v.runUsd)} spent`)
   }
   const active = (v.agents ?? []).filter(a => a.id !== 'main' && (a.status === 'running' || a.status === 'waiting' || a.status === 'pending'))
   if (active.length > 0) parts.push(`${active.length} agent${active.length === 1 ? '' : 's'}`)

@@ -13,6 +13,11 @@ minor version may change behavior).
   follows your Claude theme (dark, light or 16-color) and honors `NO_COLOR`.
   The choice is stored in your plugin store, outside the repo, so it never
   changes the approval hash. `classic` stays the default.
+- The hacker look also changes the shape of the interface: a `❯ factory [RUN]`
+  header with `[RUN]`, `[HOLD]`, `[DONE]` and `[FAIL]` badges, `▰▱` bars, `──`
+  section rules sized to the pane, and control glyphs that never render
+  double-width. `/factory-theme ascii` (or a locale that is not UTF-8, or
+  `TERM=dumb`) switches to plain ASCII. State is never shown by color alone.
 - `scripts/test-serial.sh` runs the test files one at a time, for a busy machine
   where the parallel run times out.
 

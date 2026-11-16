@@ -35,6 +35,7 @@ import {
   DEFAULT_THEME_PREFS,
   budgetColor,
   checkColor,
+  loopBadge,
   checksLine,
   checksReport,
   controlsFor,
@@ -658,6 +659,9 @@ async function loadTheme($: Dollar): Promise<void> {
   let prefs: ThemePrefs = DEFAULT_THEME_PREFS
   let noColor: string | undefined
   let claudeTheme: string | undefined
+  let lcAll: string | undefined
+  let lang: string | undefined
+  let term: string | undefined
   try {
     prefs = parseThemePrefs(await $.store.get(THEME_KEY))
   } catch {}
@@ -665,10 +669,19 @@ async function loadTheme($: Dollar): Promise<void> {
     noColor = await $.env.get('NO_COLOR')
   } catch {}
   try {
+    lcAll = await $.env.get('LC_ALL')
+  } catch {}
+  try {
+    lang = await $.env.get('LANG')
+  } catch {}
+  try {
+    term = await $.env.get('TERM')
+  } catch {}
+  try {
     const row = (await $.config.list()).find(r => r.key === 'theme')
     if (typeof row?.value === 'string') claudeTheme = row.value
   } catch {}
-  await update($, themeAtom, () => ({ prefs, caps: themeCaps(noColor, claudeTheme) }))
+  await update($, themeAtom, () => ({ prefs, caps: themeCaps(noColor, claudeTheme, lcAll || lang, term) }))
 }
 
 async function currentTheme($: Dollar): Promise<Theme> {
@@ -769,7 +782,7 @@ async function refreshOnce($: Dollar): Promise<void> {
         return JSON.stringify(prev) === JSON.stringify(next) ? prev : next
       })
     }
-    const text = snap.state.approved ? statusLine(shown) : snap.items.length > 0 ? 'factory: design drafted · /factory-approve when it is pushed · /factory for help' : undefined
+    const text = snap.state.approved ? statusLine(shown, await currentTheme($)) : snap.items.length > 0 ? 'factory: design drafted · /factory-approve when it is pushed · /factory for help' : undefined
     if (text !== lastStatusText) {
       lastStatusText = text
       status($, text)
@@ -1571,7 +1584,7 @@ export const register: Register = (on, _options) => {
       ['factory-pause', 'Code factory: stop advancing after the current turn, keeping the item, attempts and pending review', undefined, true],
       ['factory-status', 'Code factory: show progress, the current item, spend and blocked items', undefined, false],
       ['factory-log', 'Code factory: show the event timeline, for one item or all', '[ID]', true],
-      ['factory-theme', 'Code factory: choose the look of the band and pane, hacker or classic', '[hacker|classic]', true],
+      ['factory-theme', 'Code factory: choose the look of the band and pane, hacker or classic', '[hacker|classic] [ascii|auto]', true],
       ['factory-skip', 'Code factory: mark an item blocked so the loop moves on', '<ID> [reason]', false],
       ['factory-retry', 'Code factory: unblock an item and reset its attempts', '<ID>', false],
       ['factory-costs', 'Code factory: show spend per repo and per item', '[repo|all] | reset <repo>', true],
@@ -1674,6 +1687,7 @@ export const register: Register = (on, _options) => {
       }
     }
     await loadTheme($)
+    await refreshOnce($)
     const tc = await read($, themeAtom)
     return { text: themeReport(tc?.prefs ?? DEFAULT_THEME_PREFS, tc?.caps ?? themeCaps(undefined, undefined)) }
   })
@@ -2137,7 +2151,7 @@ export const register: Register = (on, _options) => {
       <Box flexDirection="column" paddingX={1}>
         <Box gap={1}>
           <Text bold color={v.running ? t.running : undefined} dimColor={!v.running} wrap="truncate-end">
-            {v.running ? `factory ▶ ${v.current ?? 'picking next'}` : `factory ⏸ ${oneLine(v.pausedReason ?? 'stopped', compact ? 24 : 60)}`}
+            {v.running ? `${t.head('RUN')} ${v.current ?? 'picking next'}` : `${t.head(loopBadge(v))} ${oneLine(v.pausedReason ?? 'stopped', compact ? 24 : 60)}`}
           </Text>
           <Text dimColor>{`${v.doneCount}/${total} done ${t.bar(v.doneCount, total, compact ? 4 : 8)}${(v.blockedCount ?? 0) > 0 ? ` · ${v.blockedCount} blocked` : ''}`}</Text>
           {!compact && v.runUsd != null && (
@@ -2151,7 +2165,7 @@ export const register: Register = (on, _options) => {
           </Button>
           {(compact ? runControls(v) : controlsFor(v)).map(c => (
             <Button plain key={c.key} onPress={() => pressControl($, c)}>
-              [{c.label}]
+              [{t.label(c.label)}]
             </Button>
           ))}
         </Box>
@@ -2177,7 +2191,7 @@ export const register: Register = (on, _options) => {
         ))}
         {(v.doneCount > 0 || v.more > 0) && (
           <Text dimColor>
-            {v.doneCount > 0 ? `✓ ${v.doneCount} done` : ''}
+            {v.doneCount > 0 ? `${t.mark.done.glyph} ${v.doneCount} done` : ''}
             {v.doneCount > 0 && v.more > 0 ? ' · ' : ''}
             {v.more > 0 ? `+${v.more} more` : ''}
           </Text>
@@ -2187,10 +2201,10 @@ export const register: Register = (on, _options) => {
             {oneLine(agentLine(t, a), compact ? 60 : 110)}
           </Button>
         ))}
-        {!compact && v.changes.length > 0 && <Text dimColor>Δ {v.changes.join(' · ')}</Text>}
+        {!compact && v.changes.length > 0 && <Text dimColor>{t.changeMark} {v.changes.join(' · ')}</Text>}
         {!compact && (v.events?.length ?? 0) > 0 && (
           <Text dimColor wrap="truncate-end">
-            ⋯ {v.events.join(' · ')}
+            {t.eventMark} {v.events.join(' · ')}
           </Text>
         )}
       </Box>
@@ -2201,6 +2215,7 @@ export const register: Register = (on, _options) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
     const t = await currentTheme($)
+    const rule = (label: string): string => t.rule(label, e.props.bodyColumns === undefined ? undefined : e.props.bodyColumns - 2)
     const Input = 'Input' in els ? els.Input : null
     const v = await read($, view)
     const open = await read($, openAgent)
@@ -2219,7 +2234,7 @@ export const register: Register = (on, _options) => {
     ))
     const guideButtons = guideControls(v).map(c => (
       <Button plain key={`guide-${c.key}`} onPress={() => pressControl($, c)}>
-        [{c.label}]
+        [{t.label(c.label)}]
       </Button>
     ))
     if (!v || !v.approved) {
@@ -2230,11 +2245,11 @@ export const register: Register = (on, _options) => {
           <Text> </Text>
           {guideRows}
           <Text> </Text>
-          <Text wrap="wrap">➜ {nextHint(v)}</Text>
+          <Text wrap="wrap">{t.arrow} {nextHint(v)}</Text>
           <Box gap={1}>
             {guideButtons}
             <Button plain key="doctor" onPress={() => pressControl($, { key: 'doctor', label: '✔ check', command: 'factory-doctor' })}>
-              [✔ check setup]
+              [{t.label('✔ check setup')}]
             </Button>
           </Box>
           {(checks ?? []).map((c, i) => (
@@ -2253,21 +2268,21 @@ export const register: Register = (on, _options) => {
     return (
       <Box flexDirection="column" paddingX={1}>
         <Text bold color={v.running ? t.running : undefined}>
-          {statusLine(v)}
+          {statusLine(v, t)}
         </Text>
         <Box gap={1}>
           {runControls(v).map(c => (
             <Button plain key={c.key} onPress={() => pressControl($, c)}>
-              [{c.label}]
+              [{t.label(c.label)}]
             </Button>
           ))}
           {guideButtons}
           <Button plain key="doctor" onPress={() => pressControl($, { key: 'doctor', label: '✔ check', command: 'factory-doctor' })}>
-            [✔ check setup]
+            [{t.label('✔ check setup')}]
           </Button>
         </Box>
         <Text dimColor wrap="wrap">
-          ➜ {nextHint(v)}
+          {t.arrow} {nextHint(v)}
         </Text>
         <Box gap={1}>
           {guide.map((st, i) => (
@@ -2277,7 +2292,7 @@ export const register: Register = (on, _options) => {
           ))}
         </Box>
         <Text> </Text>
-        <Text bold>Plan {t.bar(v.doneCount, total, 20)} {v.doneCount}/{total}</Text>
+        <Text bold>{rule(`Plan ${t.bar(v.doneCount, total, 20)} ${v.doneCount}/${total}`)}</Text>
         {v.rows.map(r => (
           <Box key={r.id} gap={1}>
             <Text color={t.mark[r.mark].color} bold={r.mark === 'doing'} dimColor={r.mark === 'proposed'}>
@@ -2315,17 +2330,17 @@ export const register: Register = (on, _options) => {
           <Box flexDirection="column">
             <Text> </Text>
             <Text bold color={t.error}>
-              Blocked · {v.blockedCount ?? blocked.length}
+              {rule(`Blocked · ${v.blockedCount ?? blocked.length}`)}
             </Text>
             {blocked.map(b => (
               <Box key={`blocked-${b.id}`} flexDirection="column">
                 <Box gap={1}>
-                  <Text color={t.error}>✗ {b.id}</Text>
+                  <Text color={t.error}>{t.mark.blocked.glyph} {b.id}</Text>
                   <Text dimColor wrap="truncate-end">
                     {b.title}
                   </Text>
                   <Button plain key={`retry-${b.id}`} onPress={() => pressControl($, { key: `retry-${b.id}`, label: `↻ retry ${b.id}`, command: 'factory-retry', args: b.id })}>
-                    [↻ retry]
+                    [{t.label('↻ retry')}]
                   </Button>
                 </Box>
                 {b.reason !== '' && (
@@ -2342,9 +2357,7 @@ export const register: Register = (on, _options) => {
           <Box flexDirection="column">
             <Text> </Text>
             <Text bold>
-              {v.current} {t.bar(steps.filter(s => s.state === 'done').length + (steps.some(s => s.state === 'doing') ? 0.5 : 0), steps.length, 20)}
-              {v.running && v.elapsedMs != null ? ` · ${formatDuration(v.elapsedMs)}` : ''}
-              {v.runUsd != null && v.itemUsd != null ? ` · ${formatUsd(v.itemUsd)}` : ''}
+              {rule(`${v.current} ${t.bar(steps.filter(s => s.state === 'done').length + (steps.some(s => s.state === 'doing') ? 0.5 : 0), steps.length, 20)}${v.running && v.elapsedMs != null ? ` · ${formatDuration(v.elapsedMs)}` : ''}${v.runUsd != null && v.itemUsd != null ? ` · ${formatUsd(v.itemUsd)}` : ''}`)}
             </Text>
             {steps.map(st => (
               <Box key={st.label} gap={1}>
@@ -2362,16 +2375,16 @@ export const register: Register = (on, _options) => {
           <Box flexDirection="column">
             <Text> </Text>
             <Text bold color={budgetColor(t, v)}>
-              Spend {v.budgetUsd > 0 ? `${formatUsd(v.runUsd)} of ${formatUsd(v.budgetUsd)} ${t.bar(v.runUsd, v.budgetUsd, 20)}` : `${formatUsd(v.runUsd)} this run (no budget set)`}
+              {rule(`Spend ${v.budgetUsd > 0 ? `${formatUsd(v.runUsd)} of ${formatUsd(v.budgetUsd)} ${t.bar(v.runUsd, v.budgetUsd, 20)}` : `${formatUsd(v.runUsd)} this run (no budget set)`}`)}
             </Text>
           </Box>
         )}
         <Text> </Text>
-        <Text bold>Agents{agents.length === 0 ? ' · none running' : ` · ${agents.length}`}</Text>
+        <Text bold>{rule(`Agents${agents.length === 0 ? ' · none running' : ` · ${agents.length}`}`)}</Text>
         {agents.map(a => (
           <Box key={a.id} flexDirection="column">
             <Button plain dimColor={!ACTIVE_AGENT.has(a.status)} key={`agent-${a.id}`} onPress={() => void update($, openAgent, cur => (cur === a.id ? null : a.id)).then(() => refreshOnce($))}>
-              {`${open === a.id ? '▾' : '▸'} ${agentLine(t, a)}`}
+              {`${open === a.id ? t.fold.open : t.fold.closed} ${agentLine(t, a)}`}
             </Button>
             {open === a.id && (
               <Box flexDirection="column" paddingLeft={3}>
@@ -2399,7 +2412,7 @@ export const register: Register = (on, _options) => {
         {checks !== null && checks.length > 0 && (
           <Box flexDirection="column">
             <Text> </Text>
-            <Text bold>Checks</Text>
+            <Text bold>{rule('Checks')}</Text>
             {checks.map((c, i) => (
               <Text key={`chk-${i}`} color={checkColor(t, c.status)} wrap="truncate-end">
                 {checksLine(c)}
@@ -2410,7 +2423,7 @@ export const register: Register = (on, _options) => {
         {(v.events?.length ?? 0) > 0 && (
           <Box flexDirection="column">
             <Text> </Text>
-            <Text bold>Recent</Text>
+            <Text bold>{rule('Recent')}</Text>
             {v.events.map((ev, i) => (
               <Text key={`ev-${i}`} dimColor wrap="truncate-end">
                 {ev}
