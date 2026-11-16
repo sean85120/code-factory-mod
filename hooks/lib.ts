@@ -2011,7 +2011,8 @@ export function statusLine(v: FactoryView, t: Theme = CLASSIC_THEME): string {
     if (v.current !== null && at >= 0) parts.push(`${v.stage} ${t.bar(at + 1, STAGES.length, 5)} ${at + 1}/${STAGES.length}`)
     if (v.current !== null && (v.attempt ?? 0) > 1) parts.push(`attempt ${v.attempt}/${v.maxAttempts ?? '?'}`)
     if (v.current !== null && (v.reviewRound ?? 0) > 0) parts.push(`review ${v.reviewRound}/${v.maxReviewRounds ?? '?'}`)
-  } else parts.push(`${t.head(loopBadge(v))} ${oneLine(v.pausedReason ?? 'stopped', 70)}`)
+  } else if (isAllDone(v)) parts.push(`${t.head('DONE')} all merged · continue? /factory-roadmap or stop`)
+  else parts.push(`${t.head(loopBadge(v))} ${oneLine(v.pausedReason ?? 'stopped', 70)}`)
   const total = v.total ?? v.doneCount + v.rows.length + v.more
   const todo = Math.max(0, total - v.doneCount - (v.blockedCount ?? 0))
   parts.push(`${v.doneCount}/${total} done ${t.bar(v.doneCount, total, 6)}`)
@@ -2836,7 +2837,22 @@ export function nextHint(v: FactoryView | null): string {
     return `Paused${v.pausedReason ? ` (${oneLine(v.pausedReason, 80)})` : ''}. /factory-start carries on${blocked > 0 ? `; ${blocked} blocked item${blocked === 1 ? '' : 's'} can be retried with /factory-retry <ID>` : ''}.${pending}`
   }
   if (proposed > 0) return `${proposed} proposed item${proposed === 1 ? '' : 's'} wait: push the design files, then /factory-approve starts on them.`
-  return `Everything planned is merged. /factory-triage turns open issues into the next items; /factory-roadmap plans the next phase.`
+  return DONE_HINT
+}
+
+export const DONE_QUESTION = 'Nothing left to build. Continue the design, or stop here?'
+export const DONE_HINT = `${DONE_QUESTION} /factory-roadmap plans the next phase, /factory-triage turns open issues into items; stopping here changes nothing.`
+
+export function isAllDone(v: FactoryView | null): boolean {
+  return v !== null && v.approved && !v.running && guidePhase(v) === 'iterate' && countMarks(v, 'proposed') === 0
+}
+
+export function doneControls(): Control[] {
+  return [
+    { key: 'roadmap', label: '➜ design next phase', command: 'factory-roadmap' },
+    { key: 'triage', label: '⚑ triage issues', command: 'factory-triage' },
+    { key: 'finish', label: '■ stop here', command: 'factory-finish' },
+  ]
 }
 
 // The buttons that go with nextHint, for the dashboard.
@@ -2848,6 +2864,7 @@ export function guideControls(v: FactoryView | null): Control[] {
     { key: 'design', label: '✎ amend design', command: 'factory-design' },
   ]
   if (!v || v.running) return []
+  if (isAllDone(v)) return doneControls()
   const out: Control[] = []
   if (countMarks(v, 'proposed') > 0) out.push({ key: 'approve', label: '✔ approve new items', command: 'factory-approve' })
   out.push({ key: 'triage', label: '⚑ triage issues', command: 'factory-triage' })
@@ -2950,19 +2967,26 @@ export const isTrustedAuthor = (association: string): boolean => TRUSTED_ASSOCIA
 export const mayApprove = (permission: string): boolean => WRITE_PERMISSIONS.has(permission.toLowerCase())
 
 const lastLabelEvent = (events: readonly LabelEvent[], label: string): LabelEvent | undefined =>
-  events.filter(e => e.label === label).reduce<LabelEvent | undefined>((best, e) => (best === undefined || e.at >= best.at ? e : best), undefined)
+  events
+    .filter(e => e.label === label && Number.isFinite(e.at))
+    .reduce<LabelEvent | undefined>((best, e) => (best === undefined || e.at >= best.at ? e : best), undefined)
 
 const changedAt = (issue: GateIssue): number => Math.max(issue.editedAt ?? 0, issue.renamedAt ?? 0)
+
+const before = (earlier: number, later: number): boolean => Number.isFinite(earlier) && Number.isFinite(later) && earlier < later
 
 export function triageAllowed(issue: GateIssue, events: readonly LabelEvent[]): boolean {
   if (isTrustedAuthor(issue.association)) return true
   if (!issue.labels.includes(LABEL_TRIAGE)) return false
   const by = lastLabelEvent(events, LABEL_TRIAGE)
-  return by !== undefined && mayApprove(by.permission) && changedAt(issue) <= by.at
+  return by !== undefined && mayApprove(by.permission) && before(changedAt(issue), by.at)
 }
 
 export function findDesignComment(comments: readonly GateComment[], me: string): GateComment | undefined {
-  return comments.filter(c => c.author === me && c.body.includes(DESIGN_MARKER)).at(-1)
+  if (!me) return undefined
+  return comments
+    .filter(c => c.author === me && c.body.includes(DESIGN_MARKER))
+    .reduce<GateComment | undefined>((best, c) => (best === undefined || c.at >= best.at ? c : best), undefined)
 }
 
 export function designFingerprint(issue: GateIssue, designText: string): string {
@@ -2971,6 +2995,7 @@ export function designFingerprint(issue: GateIssue, designText: string): string 
 
 export function issueGate(issue: GateIssue, comments: readonly GateComment[], events: readonly LabelEvent[], me: string, recorded: GoRecord | null): IssueGate {
   if (issue.state.toUpperCase() !== 'OPEN') return { action: 'skip', reason: 'the issue is closed' }
+  if (!me) return { action: 'skip', reason: 'the factory account is unknown' }
   if (!triageAllowed(issue, events)) return { action: 'skip', reason: `the author is not a collaborator; a collaborator can add ${LABEL_TRIAGE}` }
   const design = findDesignComment(comments, me)
   if (!design) return { action: 'design' }
@@ -2978,8 +3003,8 @@ export function issueGate(issue: GateIssue, comments: readonly GateComment[], ev
   const go = lastLabelEvent(events, LABEL_GO)
   if (!go) return { action: 'reopen', reason: `${LABEL_GO} has no recorded label event` }
   if (!mayApprove(go.permission)) return { action: 'reopen', reason: `${LABEL_GO} was added by ${go.actor}, who cannot write to this repository` }
-  if (changedAt(issue) > go.at || (design.editedAt ?? 0) > go.at) return { action: 'reopen', reason: `the issue or the design was edited after ${LABEL_GO} was added` }
-  if (design.at > go.at) return { action: 'reopen', reason: `the design was posted after ${LABEL_GO} was added, so it was not the one approved` }
+  if (!before(changedAt(issue), go.at) || !before(design.editedAt ?? 0, go.at)) return { action: 'reopen', reason: `the issue or the design was edited after ${LABEL_GO} was added, or at the same moment` }
+  if (!before(design.at, go.at)) return { action: 'reopen', reason: `the design was posted after ${LABEL_GO} was added, so it was not the one approved` }
   const hash = designFingerprint(issue, design.body)
   if (!recorded || recorded.issue !== issue.number) return { action: 'record', hash, by: go.actor }
   if (recorded.hash !== hash) return { action: 'reopen', reason: 'the issue or the design changed after it was approved' }
@@ -3143,6 +3168,7 @@ export function designComment(answer: string): string | null {
     .split(DESIGN_MARKER)
     .join('')
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/!(?=\[)/g, '')
     .replace(/<(?=[A-Za-z/!?])/g, '&lt;')
     .replace(/@(?=[A-Za-z0-9_])/g, '@​')
     .trim()

@@ -26,6 +26,10 @@ minor version may change behavior).
   remembers the issue per repo so a new session does not post a second design.
   Turning it on changes the approval hash, so it needs a `/factory-approve`.
   Building from `factory:go` is a later slice.
+- An "all done" screen: when every item is merged, the band, the pane, the
+  status line and the finish toast say so and ask whether to continue the design
+  (`[➜ design next phase]`, `[⚑ triage issues]`) or stop (`[■ stop here]`, which
+  collapses the prompt to one line until the done count changes).
 - The pure decision logic for label-gated issue handling (`issueGate` in
   `hooks/lib.ts`, not wired to anything yet): who may trigger triage, who may
   approve with `factory:go`, a SHA-256 pin of the approved issue and design text,

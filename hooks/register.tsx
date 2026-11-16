@@ -91,6 +91,9 @@ import {
   triageFilter,
   guideReport,
   guideControls,
+  DONE_QUESTION,
+  doneControls,
+  isAllDone,
   journey,
   nextHint,
   sanitizeEvents,
@@ -293,6 +296,13 @@ async function stamp($: Dollar): Promise<number> {
 }
 
 function pressControl($: Dollar, c: Control): void {
+  if (c.command === 'factory-finish') {
+    void read($, view)
+      .then(v => update($, doneDismissed, () => v?.doneCount ?? 0))
+      .then(() => refreshOnce($))
+    toast($, 'factory: stopped here. /factory-roadmap or /factory-triage continues any time.')
+    return
+  }
   const submits = c.command === 'factory-design' || c.command === 'factory-triage' || c.command === 'factory-roadmap'
   if (((c.command === 'factory-start' || c.command === 'factory-approve') && mainTurnOpen && !isFactoryTurn) || (submits && mainTurnOpen)) {
     toast($, `factory: a turn is still running; press again after it finishes, or type /${c.command}`)
@@ -687,6 +697,7 @@ const openAgent = atom({ plugin: 'code-factory', key: 'openAgent' } as const, nu
 const skipTarget = atom({ plugin: 'code-factory', key: 'skipTarget' } as const, null)
 const checksAtom = atom({ plugin: 'code-factory', key: 'checks' } as const, null)
 const themeAtom = atom({ plugin: 'code-factory', key: 'theme' } as const, null)
+const doneDismissed = atom({ plugin: 'code-factory', key: 'doneDismissed' } as const, null)
 const THEME_KEY = 'ui/theme'
 
 async function loadTheme($: Dollar): Promise<void> {
@@ -863,7 +874,7 @@ async function refreshOnce($: Dollar): Promise<void> {
     const spend = { runUsd: spent?.runUsd ?? null, itemUsd: spent?.itemUsd ?? null, budgetUsd: snap.settings.budgetUsd }
     const running = snap.state.autopilot && !snap.state.unreadable
     const now = await stamp($)
-    if (issueTurn !== null && now - issueTurn.at > ISSUE_TURN_MS) issueTurn = null
+    if (issueTurn !== null && !isFactoryTurn && now - issueTurn.at > ISSUE_TURN_MS) issueTurn = null
     const agents = snap.state.approved ? await collectAgents($, running && isFactoryTurn, snap.state.current, now, await read($, openAgent)) : []
     const extra = { maxAttempts: snap.settings.maxAttempts, maxReviewRounds: snap.settings.maxReviewRounds, agents, now, notes: await blockedNotes($, snap.blocked) }
     const build = (prev: FactoryView | null): FactoryView => buildView(items, snap.state, snap.blocked, snap.settings.stopAfterVersion, prev, spend, extra)
@@ -1132,7 +1143,7 @@ async function advance($: Dollar): Promise<void> {
       const epoch = guard.epoch
       await settle($, false)
       await releaseLock($)
-      toast($, `factory finished: ${finished} (${summarize(items, blocked)})`, { timeoutMs: 10000 })
+      toast($, `factory finished: ${finished} (${summarize(items, blocked)}). Continue the design? /factory-roadmap or /factory-triage`, { timeoutMs: 30000 })
       await refreshStatus($)
       if (ask && epoch === loopEpoch && !(await lockedByOther($))) {
         if (hasMerged) await resetContext($, settings)
@@ -2118,6 +2129,7 @@ export const register: Register = (on, _options) => {
       isFactoryTurn = false
       isArmed = false
       expectReport = false
+      issueTurn = null
     }
     if (['composer', 'bridge', 'sdk'].includes(e.origin.kind) && e.text.trimStart().startsWith('/') && !/^\/factory(-|\s|$)/.test(e.text.trimStart()) && markOwner !== null) {
       await settle($, true)
@@ -2430,6 +2442,44 @@ export const register: Register = (on, _options) => {
       void update($, openAgent, () => id).then(() => refreshOnce($))
       openPane()
     }
+    if (isAllDone(v)) {
+      const stopped = (await read($, doneDismissed)) === v.doneCount
+      const choices = doneControls()
+      const shown = stopped ? choices.slice(0, 1) : choices
+      return (
+        <Box flexDirection="column" paddingX={1}>
+          <Box gap={1}>
+            {t.face(vs) !== '' && <Text color={t.vox[vs]}>{t.face(vs)}</Text>}
+            <Text bold color={t.vox[vs]}>
+              {t.head('DONE')} {stopped ? `${v.doneCount}/${total} merged · stopped here` : `All ${total} items merged.`}
+            </Text>
+            <Button plain dimColor key="details" onPress={openPane}>
+              [panel]
+            </Button>
+            {stopped &&
+              shown.map(c => (
+                <Button plain key={c.key} onPress={() => pressControl($, c)}>
+                  [{t.label(c.label)}]
+                </Button>
+              ))}
+          </Box>
+          {!stopped && (
+            <Text bold wrap="wrap">
+              {DONE_QUESTION}
+            </Text>
+          )}
+          {!stopped && (
+            <Box gap={1}>
+              {shown.map(c => (
+                <Button plain key={c.key} onPress={() => pressControl($, c)}>
+                  [{t.label(c.label)}]
+                </Button>
+              ))}
+            </Box>
+          )}
+        </Box>
+      )
+    }
 
     return (
       <Box flexDirection="column" paddingX={1}>
@@ -2593,8 +2643,18 @@ export const register: Register = (on, _options) => {
         <Text bold color={v.running ? t.running : undefined}>
           {statusLine(v, t)}
         </Text>
+        {isAllDone(v) && (
+          <Box flexDirection="column">
+            <Text bold color={t.vox[vs]}>
+              {rule('all done')}
+            </Text>
+            <Text bold wrap="wrap">
+              {DONE_QUESTION}
+            </Text>
+          </Box>
+        )}
         <Box gap={1}>
-          {runControls(v).map(c => (
+          {(isAllDone(v) ? [] : runControls(v)).map(c => (
             <Button plain key={c.key} onPress={() => pressControl($, c)}>
               [{t.label(c.label)}]
             </Button>

@@ -40,6 +40,6 @@ export type FactoryView = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'code-factory': { view: FactoryView | null; openAgent: string | null; skipTarget: string | null; checks: DoctorCheck[] | null; theme: { prefs: ThemePrefs; caps: ThemeCaps } | null }
+    'code-factory': { view: FactoryView | null; openAgent: string | null; skipTarget: string | null; checks: DoctorCheck[] | null; theme: { prefs: ThemePrefs; caps: ThemeCaps } | null; doneDismissed: number | null }
   }
 }
