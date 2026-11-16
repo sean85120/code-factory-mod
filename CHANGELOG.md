@@ -33,6 +33,10 @@ minor version may change behavior).
   issue. An edit to the issue, its title or the design comment, or a label from
   someone without write access, removes the label and builds nothing. A blocked
   item tells the issue once, removes the label and waits for a person.
+  The factory's own account (the one `gh` is logged in as) can never approve,
+  because the model can reach it, so approve from a different account. The item
+  the writer approves is shown as raw text in a code block the factory builds,
+  so a hidden link or a fenced example cannot change what gets built.
 - An "all done" screen: when every item is merged, the band, the pane, the
   status line and the finish toast say so and ask whether to continue the design
   (`[➜ design next phase]`, `[⚑ triage issues]`) or stop (`[■ stop here]`, which

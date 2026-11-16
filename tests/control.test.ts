@@ -2845,7 +2845,7 @@ test('/factory-exit writes nothing when the factory was not running, and the ent
   expect((await bandTexts($)).some(t => t.includes('factory'))).toBe(true)
 })
 
-const ITEM_DESIGN = `${DESIGN_MARKER}\n## Understanding\nA toggle.\n## Proposed approach\nChange src/a.ts.\n## Item\ntype: feature\ntitle: Dark mode toggle\nhow: Add a toggle in the settings screen.\naccept: The toggle switches the theme.\ntests: A UI test for the toggle.\n## Questions\nNone`
+const ITEM_DESIGN = `${DESIGN_MARKER}\n## Understanding\nA toggle.\n## Proposed approach\nChange src/a.ts.\n## Item\n\`\`\`\`text\ntype: feature\ntitle: Dark mode toggle\nhow: Add a toggle in the settings screen.\naccept: The toggle switches the theme.\ntests: A UI test for the toggle.\n\`\`\`\`\n## Questions\nNone`
 const ISSUE_DONE_TODO = '## T-001 [chore] First\n- status: done\n- how: a\n- accept: b\n- tests: c\n'
 const STATE_FILE = ['.factory', '/state', '.json'].join('')
 const BLOCKED_T2 = ['.factory', '/blocked/T-002.md'].join('')
@@ -2905,6 +2905,20 @@ test('a design comment edited after the label withdraws a recorded approval', as
   const fx = buildSetup($, on, [approvedIssue(5)], { store: { 'issue-go/acme/widget': { '5': { hash: 'recorded-for-the-old-text', by: 'maria', at: 1 } } }, run: buildRun([edited]) })
   expect(await watchNow($)).toContain('approval withdrawn')
   expect(ghWrites(fx, '-X DELETE')).toHaveLength(1)
+  expect(fx.files['.factory/todo.md']).toBe(ISSUE_DONE_TODO)
+})
+
+test('an approval by the factory\'s own account is withdrawn and builds nothing', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const own = openIssue(5, {
+    labels: { nodes: [{ name: 'factory:go' }] },
+    comments: { nodes: [{ author: { login: 'factory-bot' }, body: ITEM_DESIGN, createdAt: '2026-11-16T10:00:00Z', lastEditedAt: null }] },
+    timelineItems: { nodes: [{ __typename: 'LabeledEvent', createdAt: '2026-11-16T11:00:00Z', label: { name: 'factory:go' }, actor: { login: 'factory-bot' } }] },
+  })
+  const fx = buildSetup($, on, [own], { run: buildRun([own], 'admin') })
+  expect(await watchNow($)).toContain('approval withdrawn')
+  expect(ghWrites(fx, '-X DELETE')).toHaveLength(1)
+  await watchNow($)
   expect(fx.files['.factory/todo.md']).toBe(ISSUE_DONE_TODO)
 })
 

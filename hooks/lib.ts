@@ -2979,11 +2979,13 @@ const changedAt = (issue: GateIssue): number => Math.max(issue.editedAt ?? 0, is
 
 const before = (earlier: number, later: number): boolean => Number.isFinite(earlier) && Number.isFinite(later) && earlier < later
 
-export function triageAllowed(issue: GateIssue, events: readonly LabelEvent[]): boolean {
+const sameLogin = (a: string, b: string): boolean => a !== '' && a.toLowerCase() === b.toLowerCase()
+
+export function triageAllowed(issue: GateIssue, events: readonly LabelEvent[], me = ''): boolean {
   if (isTrustedAuthor(issue.association)) return true
   if (!issue.labels.includes(LABEL_TRIAGE)) return false
   const by = lastLabelEvent(events, LABEL_TRIAGE)
-  return by !== undefined && mayApprove(by.permission) && before(changedAt(issue), by.at)
+  return by !== undefined && !sameLogin(by.actor, me) && mayApprove(by.permission) && before(changedAt(issue), by.at)
 }
 
 export function findDesignComment(comments: readonly GateComment[], me: string): GateComment | undefined {
@@ -3000,12 +3002,13 @@ export function designFingerprint(issue: GateIssue, designText: string): string 
 export function issueGate(issue: GateIssue, comments: readonly GateComment[], events: readonly LabelEvent[], me: string, recorded: GoRecord | null): IssueGate {
   if (issue.state.toUpperCase() !== 'OPEN') return { action: 'skip', reason: 'the issue is closed' }
   if (!me) return { action: 'skip', reason: 'the factory account is unknown' }
-  if (!triageAllowed(issue, events)) return { action: 'skip', reason: `the author is not a collaborator; a collaborator can add ${LABEL_TRIAGE}` }
+  if (!triageAllowed(issue, events, me)) return { action: 'skip', reason: `the author is not a collaborator; a collaborator can add ${LABEL_TRIAGE}` }
   const design = findDesignComment(comments, me)
   if (!design) return { action: 'design' }
   if (!issue.labels.includes(LABEL_GO)) return { action: 'wait' }
   const go = lastLabelEvent(events, LABEL_GO)
   if (!go) return { action: 'reopen', reason: `${LABEL_GO} has no recorded label event` }
+  if (sameLogin(go.actor, me)) return { action: 'reopen', reason: `${LABEL_GO} was added by the factory's own account, which can never approve; approve from a different account` }
   if (!mayApprove(go.permission)) return { action: 'reopen', reason: `${LABEL_GO} was added by ${go.actor}, who cannot write to this repository` }
   if (!before(changedAt(issue), go.at) || !before(design.editedAt ?? 0, go.at)) return { action: 'reopen', reason: `the issue or the design was edited after ${LABEL_GO} was added, or at the same moment` }
   if (!before(design.at, go.at)) return { action: 'reopen', reason: `the design was posted after ${LABEL_GO} was added, so it was not the one approved` }
@@ -3167,19 +3170,34 @@ export type IssueItem = { type: ItemType; title: string; how: string; accept: st
 const ISSUE_ITEM_TYPES: readonly string[] = ['feature', 'bug', 'chore', 'docs']
 const ISSUE_ITEM_MAX = { title: 120, how: 1500, accept: 800, tests: 800 } as const
 
-const itemLine = (text: string, max: number): string => stripControls(text).replace(/<!--|-->/g, '').replace(/\s+/g, ' ').trim().slice(0, max)
+const itemLine = (text: string, max: number): string => {
+  let t = stripControls(text)
+  while (/<!--|-->/.test(t)) t = t.replace(/<!--|-->/g, '')
+  return t.replace(/\s+/g, ' ').trim().slice(0, max)
+}
 
-export function designItem(body: string): IssueItem | null {
-  const lines = body.split('\n')
-  const at = lines.findIndex(l => /^## Item\b/.test(l))
-  if (at < 0) return null
-  const got: Record<string, string> = {}
-  for (const line of lines.slice(at + 1)) {
-    if (/^## /.test(line)) break
-    const m = /^(?:[-*]\s+)?(type|title|how|accept|tests):\s*(.+)$/i.exec(line.trim())
-    const key = m ? m[1]!.toLowerCase() : ''
-    if (m && got[key] === undefined) got[key] = m[2]!
+const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})/
+const ITEM_HEADING = /^ {0,3}##\s+Item\b/
+const ANY_HEADING = /^ {0,3}#{1,2}\s/
+const ITEM_KEYS = ['type', 'title', 'how', 'accept', 'tests'] as const
+
+function fenceState(lines: readonly string[]): { outside: boolean[]; open: string | null } {
+  const outside: boolean[] = []
+  let open: string | null = null
+  for (const line of lines) {
+    const m = FENCE_LINE.exec(line)
+    if (open === null) {
+      outside.push(true)
+      if (m) open = m[1]!
+    } else {
+      outside.push(false)
+      if (m && m[1]![0] === open[0] && m[1]!.length >= open.length && line.trim() === m[1]) open = null
+    }
   }
+  return { outside, open }
+}
+
+function makeItem(got: Record<string, string | undefined>): IssueItem | null {
   const type = itemLine(got.type ?? '', 20).toLowerCase()
   const title = itemLine(got.title ?? '', ISSUE_ITEM_MAX.title)
   const how = itemLine(got.how ?? '', ISSUE_ITEM_MAX.how)
@@ -3187,6 +3205,64 @@ export function designItem(body: string): IssueItem | null {
   const tests = itemLine(got.tests ?? '', ISSUE_ITEM_MAX.tests)
   if (!ISSUE_ITEM_TYPES.includes(type) || !title || !how || !accept || !tests) return null
   return { type: type as ItemType, title, how, accept, tests }
+}
+
+export function answerItem(answer: string): IssueItem | null {
+  const lines = answer.split('\n')
+  const { outside } = fenceState(lines)
+  const heads = lines.flatMap((l, i) => (outside[i] && ITEM_HEADING.test(l) ? [i] : []))
+  if (heads.length !== 1) return null
+  const got: Record<string, string> = {}
+  for (let j = heads[0]! + 1; j < lines.length; j++) {
+    if (outside[j] && ANY_HEADING.test(lines[j]!)) break
+    const m = /^(?:[-*]\s+)?(type|title|how|accept|tests):\s*(.+)$/i.exec(lines[j]!.trim())
+    const key = m ? m[1]!.toLowerCase() : ''
+    if (m && got[key] === undefined) got[key] = m[2]!
+  }
+  return makeItem(got)
+}
+
+function stripItemSections(answer: string): string {
+  const lines = answer.split('\n')
+  const { outside } = fenceState(lines)
+  let skipping = false
+  return lines
+    .filter((l, i) => {
+      if (outside[i] && ANY_HEADING.test(l)) skipping = ITEM_HEADING.test(l)
+      return !skipping
+    })
+    .join('\n')
+}
+
+function closeFences(text: string): string {
+  const { open } = fenceState(text.split('\n'))
+  return open === null ? text : `${text}\n${open}`
+}
+
+function renderItem(it: IssueItem): string {
+  const rows = [`type: ${it.type}`, `title: ${it.title}`, `how: ${it.how}`, `accept: ${it.accept}`, `tests: ${it.tests}`]
+  const longest = Math.max(0, ...(rows.join('\n').match(/`+/g) ?? []).map(r => r.length))
+  const fence = '`'.repeat(Math.max(4, longest + 1))
+  return `## Item\n${fence}text\n${rows.join('\n')}\n${fence}`
+}
+
+export function designItem(body: string): IssueItem | null {
+  const lines = body.split('\n')
+  const { outside } = fenceState(lines)
+  const heads = lines.flatMap((l, i) => (outside[i] && ITEM_HEADING.test(l) ? [i] : []))
+  if (heads.length !== 1) return null
+  const at = heads[0]!
+  const open = lines[at] === '## Item' ? /^(`{4,})text$/.exec(lines[at + 1] ?? '') : null
+  if (!open || lines[at + 7] !== open[1]) return null
+  const got: Record<string, string> = {}
+  for (let k = 0; k < ITEM_KEYS.length; k++) {
+    const key = ITEM_KEYS[k]!
+    const row = lines[at + 2 + k] ?? ''
+    if (!row.startsWith(`${key}: `)) return null
+    got[key] = row.slice(key.length + 2)
+  }
+  const item = makeItem(got)
+  return item !== null && ITEM_KEYS.every(k => item[k] === got[k]) ? item : null
 }
 
 export function appendIssueItem(raw: string, issue: number, it: IssueItem): { text: string; id: string } | null {
@@ -3203,7 +3279,8 @@ export function appendIssueItem(raw: string, issue: number, it: IssueItem): { te
 
 export function designComment(answer: string): string | null {
   if (!/^## Understanding\b/m.test(answer) || !/^## Proposed approach\b/m.test(answer)) return null
-  const text = safeLines(answer)
+  const item = answerItem(answer)
+  const text = safeLines(stripItemSections(answer))
     .split('\n')
     .filter(l => l.trim() !== 'ROADMAP-DONE')
     .join('\n')
@@ -3215,6 +3292,7 @@ export function designComment(answer: string): string | null {
     .replace(/@(?=[A-Za-z0-9_])/g, '@​')
     .trim()
   if (text.length < 40) return null
-  const cut = text.length > DESIGN_ANSWER_CHARS ? `${text.slice(0, DESIGN_ANSWER_CHARS)}\n[cut]` : text
-  return `${DESIGN_MARKER}\n${cut}\n\n## Approve\nA collaborator with write access approves by adding the \`${LABEL_GO}\` label. Editing the issue or this comment afterwards withdraws the approval.`
+  const cut = closeFences(text.length > DESIGN_ANSWER_CHARS ? `${text.slice(0, DESIGN_ANSWER_CHARS)}\n[cut]` : text)
+  const block = item ? `\n\n${renderItem(item)}` : ''
+  return `${DESIGN_MARKER}\n${cut}${block}\n\n## Approve\nA collaborator with write access approves by adding the \`${LABEL_GO}\` label. Editing the issue or this comment afterwards withdraws the approval.`
 }

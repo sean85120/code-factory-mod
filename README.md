@@ -187,6 +187,12 @@ for a new one. If the item gets stuck, the factory comments once on the issue,
 removes the label, and leaves the decision to you (`/factory-retry <ID>`).
 Without `buildFromLabels` it only reports that an approved issue is ready.
 
+The design comment ends with the item it proposes, as plain text in a code
+block. That block is exactly what gets built. Add the label from a different
+account than the one the factory runs as (the account `gh` is logged in as,
+usually the repo owner). The factory's own account never counts as an approver,
+because a model working in the repo can act as that account.
+
 ## Commands
 
 | Command | What it does |

@@ -1830,15 +1830,15 @@ async function actOnApprovals($: Dollar, snap: Snapshot, got: { issues: WatchedI
   const watched = got.issues.find(i => i.issue.number === row.number)
   const design = watched ? findDesignComment(watched.comments, got.me) : undefined
   const parsed = design ? designItem(design.body) : null
+  const fresh = await load($)
+  if (!fresh.state.approved || (await integrityProblem(fresh)) !== null) return [...notes, `#${row.number}: approved, but the plan is not in an approved state; run /factory-approve`]
+  if (!(await watchIdle($, fresh))) return [...notes, `#${row.number}: approved, waiting for the loop to be idle`]
   const raw = await readText($, TODO_PATH)
   const added = parsed && raw !== null ? appendIssueItem(raw, row.number, parsed) : null
   if (!added) return [...notes, `#${row.number}: approved, but its design has no item section the factory can read safely; fix the design comment and add ${LABEL_GO} again`]
-  const fresh = await load($)
-  if (!fresh.state.approved || (await integrityProblem(fresh)) !== null) return [...notes, `#${row.number}: approved, but the plan is not in an approved state; run /factory-approve`]
   loopEpoch++
   await $.fs.write(TODO_PATH, added.text)
-  const after = await load($)
-  const hash = decisionsHash(after.settings, after.items)
+  const hash = decisionsHash(fresh.settings, parseTodo(added.text))
   await patchState($, s => ({ ...s, approvedHash: hash }))
   await logEvent($, { itemId: added.id, kind: 'roadmap', detail: `issue #${row.number} approved, added as ${added.id}` })
   toast($, `factory: issue #${row.number} approved, building it as ${added.id}`)

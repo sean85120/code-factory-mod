@@ -141,3 +141,17 @@ test('the fingerprint changes with the number, title, body and design text', () 
   expect(designFingerprint(issue(), 'plan 2')).not.toBe(base)
   expect(designFingerprint(issue(), 'plan')).toBe(base)
 })
+
+test('the factory account can never approve, and cannot vouch for a stranger on the triage list', () => {
+  const labeled = issue({ labels: [LABEL_GO] })
+  const body = design().body
+  expect(issueGate(labeled, [design()], [go({ actor: ME })], ME, null)).toMatchObject({ action: 'reopen' })
+  expect(issueGate(labeled, [design()], [go({ actor: 'Factory-Bot' })], ME, null)).toMatchObject({ action: 'reopen' })
+  expect(issueGate(labeled, [design()], [go({ actor: ME })], ME, { issue: 7, hash: designFingerprint(labeled, body) })).toMatchObject({ action: 'reopen' })
+  expect(issueGate(labeled, [design()], [go()], ME, null)).toMatchObject({ action: 'record' })
+  const stranger = issue({ association: 'NONE', labels: [LABEL_TRIAGE] })
+  const own = [{ label: LABEL_TRIAGE, actor: ME, permission: 'admin', at: 50 }]
+  expect(triageAllowed(stranger, own, ME)).toBe(false)
+  expect(triageAllowed(stranger, own, 'someone-else')).toBe(true)
+  expect(issueGate(stranger, [], own, ME, null)).toMatchObject({ action: 'skip' })
+})
