@@ -41,6 +41,11 @@ import {
   voxState,
   VOX_PANE_COLUMNS,
   VOX_RASTER_COLUMNS,
+  HACKER_HOVER,
+  desktopLook,
+  pipelineStates,
+  pipelineSvg,
+  voxSvg,
   VOX_CELL_COLUMNS,
   VOX_CELL_ROWS,
   VOX_FRAME_MS,
@@ -2290,7 +2295,13 @@ export const register: Register = (on, _options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
-    const t = await currentTheme($)
+    const tc = await read($, themeAtom)
+    const desk = e.surface === 'desktop'
+    const look = desk ? desktopLook(tc?.prefs, tc?.caps) : { t: theme(tc?.prefs, tc?.caps), surface: undefined }
+    const t = look.t
+    const surface = look.surface
+    const hoverRow = surface !== undefined ? { hover: { backgroundColor: HACKER_HOVER } } : {}
+    const Svg = desk && 'Svg' in els ? els.Svg : null
     const rule = (label: string): string => t.rule(label, e.props.bodyColumns === undefined ? undefined : e.props.bodyColumns - 2)
     const Input = 'Input' in els ? els.Input : null
     const Raster = e.surface === 'terminal' && 'Raster' in els ? els.Raster : null
@@ -2346,11 +2357,16 @@ export const register: Register = (on, _options) => {
     const voxHex = t.vox[vs]
     const raster = Raster !== null && t.motion && !t.ascii && isHexColor(voxHex) && (e.props.bodyColumns === undefined || e.props.bodyColumns >= VOX_RASTER_COLUMNS) ? voxHex : null
 
+    const svgVox = Svg !== null && surface !== undefined ? voxSvg(vs, voxHex, t.motion) : null
+    const svgPipe = Svg !== null && surface !== undefined && v.current !== null && steps.length > 0 ? pipelineSvg(pipelineStates(steps)) : null
+
     return (
-      <Box flexDirection="column" paddingX={1}>
+      <Box flexDirection="column" paddingX={1} backgroundColor={surface}>
         {showVox && (
           <Box gap={2}>
-            {Raster !== null && raster !== null ? (
+            {Svg !== null && svgVox !== null ? (
+              <Svg key="vox-svg" source={svgVox.source} alt={svgVox.alt} isInteractive />
+            ) : Raster !== null && raster !== null ? (
               <Raster key="vox" columns={VOX_CELL_COLUMNS} rows={VOX_CELL_ROWS} cells={voxCellsNow(vs, raster)} />
             ) : (
               <Box flexDirection="column">
@@ -2397,7 +2413,7 @@ export const register: Register = (on, _options) => {
         <Text> </Text>
         <Text bold>{rule(`Plan ${t.bar(v.doneCount, total, 20)} ${v.doneCount}/${total}`)}</Text>
         {v.rows.map(r => (
-          <Box key={r.id} gap={1}>
+          <Box key={r.id} gap={1} {...hoverRow}>
             <Text color={t.mark[r.mark].color} bold={r.mark === 'doing'} dimColor={r.mark === 'proposed'}>
               {t.mark[r.mark].glyph} {r.id}
             </Text>
@@ -2456,6 +2472,7 @@ export const register: Register = (on, _options) => {
             ))}
           </Box>
         )}
+        {Svg !== null && svgPipe !== null && <Svg key="pipe-svg" source={svgPipe.source} alt={svgPipe.alt} isInteractive />}
         {v.current !== null && steps.length > 0 && (
           <Box flexDirection="column">
             <Text> </Text>

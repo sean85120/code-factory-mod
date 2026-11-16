@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { CLASSIC_THEME, DEFAULT_THEME_CAPS, VOX_CELL_COLUMNS, VOX_CELL_ROWS, faceCells, isHexColor, poseAt, unpackCells, VOX_STATES, VOX_WIDTH, hackerTheme, loopBadge, voxArt, voxFace, voxSpeech, voxState, HACKER_BACKGROUND, HACKER_PALETTE, budgetColor, checkColor, contrastRatio, decisionsHash, parseSettings, parseThemeArg, parseThemePrefs, parseTodo, progressBar, theme, themeCaps, themeReport } from '../hooks/lib'
+import { HACKER_HOVER, STAGES, desktopLook, pipelineStates, pipelineSvg, voxSvg } from '../hooks/lib'
 
 test('the classic theme reproduces the marks, step glyphs, agent glyphs and colors the band always drew', () => {
   const t = theme()
@@ -297,4 +298,38 @@ test('only a six-digit hex color can paint the face, and the motion preference p
   expect(parseThemeArg('motion on').prefs).toHaveProperty('motion', undefined)
   for (const bad of ['motion', 'motion maybe', 'motion off motion on', 'off']) expect(parseThemeArg(bad).problem).toContain('Usage: /factory-theme')
   expect(themeReport({ name: 'hacker', glyphs: 'auto', motion: 'off' }, DEFAULT_THEME_CAPS)).toContain('motion off')
+})
+
+test('pipelineSvg draws only fixed stage words and the alt names every stage state', () => {
+  const svg = pipelineSvg(['done', 'doing', 'todo', 'todo', 'todo'])
+  expect(svg.alt).toBe('Pipeline: build done, review running, PR waiting, CI waiting, merge waiting')
+  for (const s of STAGES) expect(svg.source).toContain(`>${s}</text>`)
+  expect(svg.source).not.toMatch(/<script|on[a-z]+=|href=/i)
+  expect(pipelineSvg([]).alt).toContain('build waiting')
+  expect(pipelineStates([{ label: 'review', state: 'doing' }, { label: 'build', state: 'done' }])).toEqual(['done', 'doing', 'todo', 'todo', 'todo'])
+})
+
+test('voxSvg gives every state its own drawing, a described alt, no script, and a motion block that honours reduced motion', () => {
+  const sources = VOX_STATES.map(s => voxSvg(s, '#3DF58A'))
+  expect(new Set(sources.map(x => x.source)).size).toBe(VOX_STATES.length)
+  expect(new Set(sources.map(x => x.alt)).size).toBe(VOX_STATES.length)
+  for (const x of sources) {
+    expect(x.source.startsWith('<svg')).toBe(true)
+    expect(x.source).not.toMatch(/<script|on[a-z]+=|href=/i)
+    expect(x.source).toContain('prefers-reduced-motion: no-preference')
+    expect(x.source.length).toBeLessThan(131072)
+  }
+  expect(voxSvg('run', '#3DF58A', false).source).not.toContain('<style>')
+  expect(voxSvg('run', 'red; } x{').source).toContain('#3DF58A')
+})
+
+test('desktopLook paints the dark console under the hacker look whatever the Claude theme and nothing for classic or NO_COLOR', () => {
+  const hacker = { name: 'hacker', glyphs: 'auto', motion: 'on' } as never
+  const light = desktopLook(hacker, { ...DEFAULT_THEME_CAPS, scheme: 'light' })
+  expect(light.surface).toBe(HACKER_BACKGROUND.dark)
+  expect(light.t.running).toBe('#3DF58A')
+  expect(desktopLook(hacker, { ...DEFAULT_THEME_CAPS, ansi: true }).t.running).toBe('#3DF58A')
+  expect(desktopLook(hacker, { ...DEFAULT_THEME_CAPS, noColor: true }).surface).toBeUndefined()
+  expect(desktopLook(undefined, undefined).surface).toBeUndefined()
+  expect(HACKER_HOVER).toMatch(/^#[0-9A-F]{6}$/)
 })

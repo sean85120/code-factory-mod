@@ -135,7 +135,7 @@ have approved the item it became.
 | `/factory-costs [repo\|all]` | Spend per repository and per item |
 | `/factory-skip <ID> [reason]`, `/factory-retry <ID>` | Set an item aside, or bring it back |
 | `/factory-doctor` | Check that git, gh and the design files are ready |
-| `/factory-theme [hacker\|classic] [ascii\|auto] [motion on\|off]` | Choose the look of the band and pane, force plain ASCII glyphs, and turn the mascot's animation on or off; it is yours alone and never needs a re-approval |
+| `/factory-theme [hacker\|classic] [ascii\|auto] [motion on\|off]` | Choose the look of the band and pane, force plain ASCII glyphs, and turn the mascot's animation on or off (on the Claude desktop app the hacker pane is a dark console with an animated SVG Vox); it is yours alone and never needs a re-approval |
 
 ## Settings
 
