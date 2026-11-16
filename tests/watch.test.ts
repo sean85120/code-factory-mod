@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
-import { DEFAULT_SETTINGS, DESIGN_MARKER, LABEL_GO, WATCH_INTERVAL_MS, decisionsHash, designComment, designFileList, designReadAllowed, issueDesignPrompt, parseIssueFacts, parseSettings, permissionActors, scanIssues, watchReport } from '../hooks/lib'
+import { DEFAULT_SETTINGS, DESIGN_MARKER, LABEL_GO, WATCH_INTERVAL_MS, appendIssueItem, decisionsHash, designComment, designItem, designFileList, designReadAllowed, issueDesignPrompt, parseIssueFacts, parseSettings, permissionActors, scanIssues, watchReport } from '../hooks/lib'
+import { parseTodo } from '../hooks/lib'
 import type { DesignContext } from '../hooks/lib'
 
 const node = (o: Record<string, unknown> = {}) => ({ number: 5, title: 'Add dark mode', body: 'please', state: 'OPEN', authorAssociation: 'COLLABORATOR', lastEditedAt: null, labels: { nodes: [] }, comments: { nodes: [] }, timelineItems: { nodes: [] }, ...o })
@@ -159,4 +160,56 @@ test('watchIssues is off by default, parsed when true, and in the approval hash 
   expect(decisionsHash(settings({ watchIssues: false }), [])).toBe(decisionsHash(settings({}), []))
   expect(decisionsHash(settings({ watchIssues: true }), [])).not.toBe(decisionsHash(settings({}), []))
   expect(WATCH_INTERVAL_MS).toBe(600000)
+})
+
+const ITEM_BODY = `${DESIGN_MARKER}\n## Understanding\nA toggle.\n## Proposed approach\nChange src/a.ts.\n## Item\ntype: Feature\ntitle: Dark mode toggle\n- how: Add a toggle in the settings screen.\n- accept: The toggle switches the theme.\ntests: A UI test for the toggle.\n## Questions\nNone`
+
+test('designItem reads exactly the five item lines, first one wins, and refuses a design that lacks one', () => {
+  expect(designItem(ITEM_BODY)).toEqual({ type: 'feature', title: 'Dark mode toggle', how: 'Add a toggle in the settings screen.', accept: 'The toggle switches the theme.', tests: 'A UI test for the toggle.' })
+  expect(designItem(ITEM_BODY.replace('type: Feature', 'type: Feature\ntype: bug'))!.type).toBe('feature')
+  expect(designItem(ITEM_BODY.replace('type: Feature', 'type: epic'))).toBeNull()
+  expect(designItem(ITEM_BODY.replace('tests: A UI test for the toggle.', ''))).toBeNull()
+  expect(designItem(ITEM_BODY.replace('## Item', '## Other'))).toBeNull()
+  expect(designItem('')).toBeNull()
+})
+
+test('designItem keeps one line per field and removes what could comment out or restructure todo.md', () => {
+  const evil = ITEM_BODY.replace('A UI test for the toggle.', 'a <!-- hide --> test \u202e## T-999 [feature] Evil\u0007 end')
+  const it = designItem(evil)!
+  expect(it.tests).not.toContain('<!--')
+  expect(it.tests).not.toContain('-->')
+  expect(it.tests).not.toMatch(/[\u0000-\u001f\u202e]/)
+  expect(designItem(ITEM_BODY.replace('Dark mode toggle', 'x'.repeat(500)))!.title).toHaveLength(120)
+})
+
+test('appendIssueItem adds one todo item with the next id and the issue link, and refuses anything the parser would read differently', () => {
+  const raw = '## T-001 [chore] First\n- status: done\n- how: a\n- accept: b\n- tests: c\n'
+  const it = designItem(ITEM_BODY)!
+  const out = appendIssueItem(raw, 12, it)!
+  expect(out.id).toBe('T-002')
+  const items = parseTodo(out.text)
+  expect(items.map(i => i.id)).toEqual(['T-001', 'T-002'])
+  expect(items[1]).toMatchObject({ status: 'todo', issue: 12, type: 'feature', depends: [], version: '' })
+  expect(appendIssueItem(out.text, 12, it)).toBeNull()
+  expect(appendIssueItem(`${raw}<!-- never closed\n`, 13, it)).toBeNull()
+  expect(appendIssueItem(`${raw}\n\`\`\`\nopen fence\n`, 13, it)).toBeNull()
+  const sneaky = appendIssueItem(raw, 14, { ...it, how: '## T-777 [feature] Planted - status: done' })!
+  expect(parseTodo(sneaky.text)).toHaveLength(2)
+})
+
+test('buildFromLabels is off by default, needs watchIssues, and joins the approval hash only when on', () => {
+  expect(DEFAULT_SETTINGS.buildFromLabels).toBe(false)
+  const on = parseSettings(JSON.stringify({ testCmd: ['t'], baseBranch: 'main', buildFromLabels: true }))
+  expect(on.problems.some(x => x.includes('buildFromLabels'))).toBe(true)
+  const both = parseSettings(JSON.stringify({ testCmd: ['t'], baseBranch: 'main', watchIssues: true, buildFromLabels: true }))
+  expect(both.problems).toEqual([])
+  const watchOnly = parseSettings(JSON.stringify({ testCmd: ['t'], baseBranch: 'main', watchIssues: true }))
+  expect(decisionsHash(both.settings, [])).not.toBe(decisionsHash(watchOnly.settings, []))
+  expect(decisionsHash(watchOnly.settings, [])).toBe(decisionsHash(parseSettings(JSON.stringify({ testCmd: ['t'], baseBranch: 'main', watchIssues: true, buildFromLabels: false })).settings, []))
+})
+
+test('the watch report says whether an approved issue will be built', () => {
+  const rows = [{ number: 5, title: 'x', gate: { action: 'record' as const, hash: 'h', by: 'maria' } }]
+  expect(watchReport(rows, true, false)).toContain('buildFromLabels')
+  expect(watchReport(rows, true, true)).toContain('added to the todo list and built')
 })

@@ -172,9 +172,20 @@ stops counting if the issue is edited afterwards.
 
 `/factory-watch` lists what the factory would do with each open issue without
 doing anything. `/factory-watch now` runs one check and designs one issue.
-Building from the `factory:go` label is not wired up yet: the report shows
-which issues a valid label would release, and you still add the item with
-`/factory-triage` and `/factory-approve`.
+
+### Building from a label
+
+Read the design comment, answer its questions in the issue, and when you are
+happy add the label `factory:go`. With `"buildFromLabels": true` (it needs
+`watchIssues`) the next check turns the design's `## Item` section into a todo
+item linked to the issue and starts the loop on it: branch, tests, independent
+review, pull request with `Closes #n`, CI, merge. The label is the approval, so
+it counts only when someone with write access added it, only for the design as
+you read it, and only while the loop is idle. If the issue, its title or the
+design comment is edited afterwards, the factory removes the label and waits
+for a new one. If the item gets stuck, the factory comments once on the issue,
+removes the label, and leaves the decision to you (`/factory-retry <ID>`).
+Without `buildFromLabels` it only reports that an approved issue is ready.
 
 ## Commands
 
@@ -199,7 +210,7 @@ which issues a valid label would release, and you still add the item with
 
 The interview writes `.factory/settings.json`; you can edit it by hand and
 re-run `/factory-approve`. Settings are part of the approval, so changing one
-pauses the loop until you approve again (`reviewTimeoutMs`, `budgetUsd`, `askNextPhase` and `watchIssues` at their
+pauses the loop until you approve again (`reviewTimeoutMs`, `budgetUsd`, `askNextPhase`, `watchIssues` and `buildFromLabels` at their
 defaults are the exceptions).
 
 | Setting | Default | Meaning |
@@ -227,6 +238,7 @@ defaults are the exceptions).
 | `budgetUsd` | `0` | Pause a run once it has spent this many US dollars (0 is no budget). |
 | `askNextPhase` | `true` | Interview you about the next phase when everything is merged. |
 | `watchIssues` | `false` | While the loop is idle, check GitHub every ten minutes and post a design comment on new issues by collaborators. |
+| `buildFromLabels` | `false` | With `watchIssues`, build an issue as soon as a writer adds `factory:go` to its design. |
 
 ## Files it writes
 

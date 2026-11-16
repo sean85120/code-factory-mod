@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { ROADMAP_CEILING_MS, ROADMAP_DONE, ROADMAP_IDLE_MS, ROADMAP_MAX_TURNS, WATCH_INTERVAL_MS, branchFor, decisionsHash, parseSettings, parseTodo, reviewAgentPrompt } from '../hooks/lib'
+import { DESIGN_MARKER, ROADMAP_CEILING_MS, ROADMAP_DONE, ROADMAP_IDLE_MS, ROADMAP_MAX_TURNS, WATCH_INTERVAL_MS, branchFor, decisionsHash, parseSettings, parseTodo, reviewAgentPrompt } from '../hooks/lib'
 
 const TODO = `## T-001 [chore] First
 - status: todo
@@ -2843,4 +2843,110 @@ test('/factory-exit writes nothing when the factory was not running, and the ent
   await clock.advance(1000)
   await $.command.run({ command: 'factory-status' } as never)
   expect((await bandTexts($)).some(t => t.includes('factory'))).toBe(true)
+})
+
+const ITEM_DESIGN = `${DESIGN_MARKER}\n## Understanding\nA toggle.\n## Proposed approach\nChange src/a.ts.\n## Item\ntype: feature\ntitle: Dark mode toggle\nhow: Add a toggle in the settings screen.\naccept: The toggle switches the theme.\ntests: A UI test for the toggle.\n## Questions\nNone`
+const ISSUE_DONE_TODO = '## T-001 [chore] First\n- status: done\n- how: a\n- accept: b\n- tests: c\n'
+const STATE_FILE = ['.factory', '/state', '.json'].join('')
+const BLOCKED_T2 = ['.factory', '/blocked/T-002.md'].join('')
+const approvedIssue = (n: number, o: { designAt?: string; designEdited?: string | null; goAt?: string; body?: string } = {}) =>
+  openIssue(n, {
+    labels: { nodes: [{ name: 'factory:go' }] },
+    comments: { nodes: [{ author: { login: 'factory-bot' }, body: o.body ?? ITEM_DESIGN, createdAt: o.designAt ?? '2026-11-16T10:00:00Z', lastEditedAt: o.designEdited ?? null }] },
+    timelineItems: { nodes: [{ __typename: 'LabeledEvent', createdAt: o.goAt ?? '2026-11-16T11:00:00Z', label: { name: 'factory:go' }, actor: { login: 'maria' } }] },
+  })
+const buildRun = (nodes: unknown[], perm = 'write') => (cmd: string) => (cmd.startsWith('gh api graphql') ? ghIssues(nodes) : cmd.includes('/collaborators/') ? perm : undefined)
+const buildSetup = ($: any, on: any, nodes: unknown[], extra: Record<string, unknown> = {}) => {
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
+  return setup($, on, { settings: { watchIssues: true, buildFromLabels: true }, todo: ISSUE_DONE_TODO, run: buildRun(nodes), ...extra, state: { approvedDone: ['T-001'], ...(extra.state as object | undefined) } })
+}
+const watchNow = async ($: any): Promise<string> => (await $.command.run({ command: 'factory-watch', args: 'now' } as never)).text as string
+const ghWrites = (fx: { live: { ran: string[] } }, what: string) => fx.live.ran.filter(c => c.startsWith('gh api') && c.includes(what))
+
+test('a valid factory:go is recorded, then the issue becomes a todo item, the approval hash follows it, and the loop starts on it', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = buildSetup($, on, [approvedIssue(5)])
+  fx.live.usd = 1
+  expect(await watchNow($)).toContain('#5: approval recorded (maria)')
+  expect(fx.files['.factory/todo.md']).toBe(ISSUE_DONE_TODO)
+  const text = await watchNow($)
+  expect(text).toContain('#5: added as T-002')
+  const todo = fx.files['.factory/todo.md']!
+  expect(parseTodo(todo).map(i => [i.id, i.status, i.issue])).toEqual([['T-001', 'done', undefined], ['T-002', 'todo', 5]])
+  const state = JSON.parse(fx.files[STATE_FILE]!)
+  expect(state.approvedHash).toBe(decisionsHash(parseSettings(JSON.stringify({ testCmd: ['unit'], baseBranch: 'main', requireReview: false, contextReset: 'none', watchIssues: true, buildFromLabels: true })).settings, parseTodo(todo)))
+  expect(state.autopilot).toBe(true)
+  await clock.advance(2000)
+  expect(fx.live.submitted.some(m => m.startsWith('CODE FACTORY: work item T-002'))).toBe(true)
+  expect(await watchNow($)).not.toContain('added as')
+  expect(parseTodo(fx.files['.factory/todo.md']!)).toHaveLength(2)
+})
+
+test('without buildFromLabels an approved issue is reported and nothing is written', async ($, on) => {
+  const fx = setup($, on, { settings: { watchIssues: true }, todo: ISSUE_DONE_TODO, state: { approvedDone: ['T-001'] }, run: buildRun([approvedIssue(5)]) })
+  const text = await watchNow($)
+  expect(text).toContain('buildFromLabels')
+  expect(text).not.toContain('recorded')
+  expect(fx.files['.factory/todo.md']).toBe(ISSUE_DONE_TODO)
+})
+
+test('an approval by someone without write access is withdrawn: label removed, nothing recorded or built', async ($, on) => {
+  const fx = buildSetup($, on, [approvedIssue(5)], { run: buildRun([approvedIssue(5)], 'read') })
+  const text = await watchNow($)
+  expect(text).toContain('approval withdrawn')
+  expect(ghWrites(fx, '-X DELETE').some(c => c.includes('issues/5/labels/factory%3Ago'))).toBe(true)
+  await watchNow($)
+  expect(fx.files['.factory/todo.md']).toBe(ISSUE_DONE_TODO)
+})
+
+test('a design comment edited after the label withdraws a recorded approval', async ($, on) => {
+  const edited = approvedIssue(5, { designEdited: '2026-11-16T12:00:00Z', body: ITEM_DESIGN.replace('Dark mode toggle', 'Something else') })
+  const fx = buildSetup($, on, [approvedIssue(5)], { store: { 'issue-go/acme/widget': { '5': { hash: 'recorded-for-the-old-text', by: 'maria', at: 1 } } }, run: buildRun([edited]) })
+  expect(await watchNow($)).toContain('approval withdrawn')
+  expect(ghWrites(fx, '-X DELETE')).toHaveLength(1)
+  expect(fx.files['.factory/todo.md']).toBe(ISSUE_DONE_TODO)
+})
+
+test('an approved design with no readable item section is not built and says so', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const bad = approvedIssue(5, { body: ITEM_DESIGN.replace('type: feature', 'type: epic') })
+  const fx = buildSetup($, on, [bad])
+  await watchNow($)
+  expect(await watchNow($)).toContain('no item section the factory can read safely')
+  expect(fx.files['.factory/todo.md']).toBe(ISSUE_DONE_TODO)
+})
+
+test('an approved issue waits while the loop is running and does not touch the plan', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const fx = buildSetup($, on, [approvedIssue(5)], { state: { autopilot: true } })
+  await watchNow($)
+  expect(await watchNow($)).toContain('waiting for the loop to be idle')
+  expect(fx.files['.factory/todo.md']).toBe(ISSUE_DONE_TODO)
+})
+
+test('a plan that is no longer approved as written is not extended by an approval label', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const fx = buildSetup($, on, [approvedIssue(5)], { state: { approvedHash: 'stale' } })
+  await watchNow($)
+  const text = await watchNow($)
+  expect(text).not.toContain('added as')
+  expect(fx.files['.factory/todo.md']).toBe(ISSUE_DONE_TODO)
+})
+
+test('a blocked item that came from an issue tells the issue once and withdraws the approval', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const todo = `${ISSUE_DONE_TODO}\n## T-002 [feature] Dark mode toggle\n- status: todo\n- how: a\n- accept: b\n- tests: c\n- issue: #5\n`
+  const fx = buildSetup($, on, [approvedIssue(5)], { todo, files: { [BLOCKED_T2]: 'Blocked by the factory after 4 attempts.\n' }, store: { 'issue-go/acme/widget': { '5': { hash: 'h', by: 'maria', at: 1 } } } })
+  const text = await watchNow($)
+  expect(text).toContain('T-002 is blocked; the issue was told')
+  const told = ghWrites(fx, 'issues/5/comments')
+  expect(told).toHaveLength(1)
+  expect(told[0]).toContain('/factory-retry T-002')
+  expect(told[0]).not.toContain('attempts')
+  expect(ghWrites(fx, '-X DELETE')).toHaveLength(1)
+  await watchNow($)
+  await watchNow($)
+  expect(ghWrites(fx, 'issues/5/comments')).toHaveLength(1)
+  expect(ghWrites(fx, '-X DELETE')).toHaveLength(1)
 })

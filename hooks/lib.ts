@@ -47,6 +47,7 @@ export type Settings = {
   budgetUsd: number
   askNextPhase: boolean
   watchIssues: boolean
+  buildFromLabels: boolean
 }
 
 export type ReviewMark = { sha: string; danger: number; medium: number; security?: number }
@@ -108,6 +109,7 @@ export const DEFAULT_SETTINGS: Settings = {
   budgetUsd: 0,
   askNextPhase: true,
   watchIssues: false,
+  buildFromLabels: false,
 }
 
 export const DEFAULT_STATE: FactoryState = {
@@ -413,6 +415,8 @@ export function parseSettings(text: string | null): { settings: Settings; proble
   }
   if (typeof raw.askNextPhase === 'boolean') s.askNextPhase = raw.askNextPhase
   if (typeof raw.watchIssues === 'boolean') s.watchIssues = raw.watchIssues
+  if (typeof raw.buildFromLabels === 'boolean') s.buildFromLabels = raw.buildFromLabels
+  if (s.buildFromLabels && !s.watchIssues) problems.push('settings.json `buildFromLabels` needs `watchIssues` to be true.')
   return { settings: s, problems }
 }
 
@@ -432,8 +436,8 @@ export function decisionsHash(settings: Settings, items: Item[]): string {
   const frozen = items
     .filter(i => i.status !== 'proposed')
     .map(i => [i.id, i.type, i.title, i.how, i.accept, i.tests, i.depends.join(','), i.version, ...(i.issue ? [`issue=${i.issue}`] : [])].join('|'))
-  const { reviewTimeoutMs: _timeout, budgetUsd, askNextPhase, watchIssues, ...hashed } = settings
-  const added = { ...(budgetUsd !== DEFAULT_SETTINGS.budgetUsd ? { budgetUsd } : {}), ...(askNextPhase !== DEFAULT_SETTINGS.askNextPhase ? { askNextPhase } : {}), ...(watchIssues !== DEFAULT_SETTINGS.watchIssues ? { watchIssues } : {}) }
+  const { reviewTimeoutMs: _timeout, budgetUsd, askNextPhase, watchIssues, buildFromLabels, ...hashed } = settings
+  const added = { ...(budgetUsd !== DEFAULT_SETTINGS.budgetUsd ? { budgetUsd } : {}), ...(askNextPhase !== DEFAULT_SETTINGS.askNextPhase ? { askNextPhase } : {}), ...(watchIssues !== DEFAULT_SETTINGS.watchIssues ? { watchIssues } : {}), ...(buildFromLabels !== DEFAULT_SETTINGS.buildFromLabels ? { buildFromLabels } : {}) }
   return fnv1a(JSON.stringify(Object.keys(added).length > 0 ? [hashed, frozen, added] : [hashed, frozen]))
 }
 
@@ -1258,7 +1262,7 @@ Do this:
    j. Spend: an optional US-dollar budget per run (settings.budgetUsd, 0 for none; the loop pauses when one run reaches it) and whether the factory should interview them about the next phase once every item is done (settings.askNextPhase, default true).
 3. Record everything as you go, so it survives the session:
    - .factory/design.md: overview, non-goals, architecture, version plan, and a "## Decisions" section (one entry per decision: question, options, choice, why).
-   - .factory/settings.json: {"baseBranch":"main","testCmd":["bash","-lc","<full test command>"],"buildCmd":["bash","-lc","<build command>"],"e2eCmd":["bash","-lc","<e2e command>"],"e2eFor":["feature","bug"],"testTimeoutMs":600000,"mergeMethod":"squash","maxAttempts":4,"maxItemsPerRun":0,"allowNoCI":false,"requireTestChanges":true,"requireReview":true,"reviewCommand":"/review-fix","maxReviewRounds":3,"contextReset":"clear","stopAfterVersion":"<e.g. 0.3.0>","tagRelease":false,"requireBranchProtection":false,"allowTestRemoval":false,"reviewTimeoutMs":1800000,"budgetUsd":0,"askNextPhase":true,"watchIssues":false}   (omit buildCmd/e2eCmd only if the person says there is nothing to build or no UI; each command may run at most 10 minutes; budgetUsd pauses the loop once one run has spent that many US dollars, 0 means no budget; askNextPhase makes the factory interview the person about the next phase once every item is done; watchIssues, false unless the person asks, makes the factory look for new GitHub issues by collaborators every ten minutes while the loop is idle and post a design plus questions as an issue comment, never building before a collaborator adds the factory:go label)
+   - .factory/settings.json: {"baseBranch":"main","testCmd":["bash","-lc","<full test command>"],"buildCmd":["bash","-lc","<build command>"],"e2eCmd":["bash","-lc","<e2e command>"],"e2eFor":["feature","bug"],"testTimeoutMs":600000,"mergeMethod":"squash","maxAttempts":4,"maxItemsPerRun":0,"allowNoCI":false,"requireTestChanges":true,"requireReview":true,"reviewCommand":"/review-fix","maxReviewRounds":3,"contextReset":"clear","stopAfterVersion":"<e.g. 0.3.0>","tagRelease":false,"requireBranchProtection":false,"allowTestRemoval":false,"reviewTimeoutMs":1800000,"budgetUsd":0,"askNextPhase":true,"watchIssues":false,"buildFromLabels":false}   (omit buildCmd/e2eCmd only if the person says there is nothing to build or no UI; each command may run at most 10 minutes; budgetUsd pauses the loop once one run has spent that many US dollars, 0 means no budget; askNextPhase makes the factory interview the person about the next phase once every item is done; watchIssues, false unless the person asks, makes the factory look for new GitHub issues by collaborators every ten minutes while the loop is idle and post a design plus questions as an issue comment, never building before a collaborator adds the factory:go label; buildFromLabels, false unless the person asks and only valid with watchIssues, also lets the factory turn an issue into a todo item and build it once someone with write access adds the factory:go label to the posted design)
    - .factory/todo.md in exactly this format, in priority order, one block per item:
        ## T-001 [feature] Short title      (type is feature, bug, chore or docs)
        - status: proposed
@@ -3083,18 +3087,18 @@ export function scanIssues(issues: readonly WatchedIssue[], me: string, perms: R
   })
 }
 
-export function gateText(g: IssueGate): string {
+export function gateText(g: IssueGate, canBuild = false): string {
   if (g.action === 'design') return 'design: will post a design and questions'
   if (g.action === 'wait') return `waiting: designed, a collaborator adds ${LABEL_GO} to approve`
-  if (g.action === 'record' || g.action === 'build') return 'approved: ready to build (the build step comes in a later release)'
+  if (g.action === 'record' || g.action === 'build') return canBuild ? 'approved: will be added to the todo list and built' : 'approved: ready to build (set "buildFromLabels": true to let the factory build it)'
   if (g.action === 'reopen') return `approval withdrawn: ${g.reason}`
   return `skipped: ${g.reason}`
 }
 
-export function watchReport(rows: readonly WatchRow[], enabled: boolean): string {
+export function watchReport(rows: readonly WatchRow[], enabled: boolean, canBuild = false): string {
   const head = `Issue watch (${enabled ? 'on' : 'off: set "watchIssues": true in .factory/settings.json and run /factory-approve to let the factory act'}): ${rows.length} open issue${rows.length === 1 ? '' : 's'}`
   if (rows.length === 0) return head
-  return safeLines([head, ...rows.map(r => `  #${r.number} ${oneLine(r.title, 50)} → ${gateText(r.gate)}`)].join('\n'))
+  return safeLines([head, ...rows.map(r => `  #${r.number} ${oneLine(r.title, 50)} → ${gateText(r.gate, canBuild)}`)].join('\n'))
 }
 
 export type DesignContext = {
@@ -3154,8 +3158,47 @@ Steps
 3. Write your final message with exactly these sections:
    ## Understanding: what the issue asks, in two or three sentences.
    ## Proposed approach: the files and functions to change and why, the tests that will prove it, and the risks.
-   ## Item: type, title, how, accept and tests, in the format of .factory/todo.md.
+   ## Item: exactly five lines under this heading, one each: type: feature, bug, chore or docs; title: a short title; how: how to build it; accept: what must be true when it is done; tests: the tests that prove it. Each is a single line.
    ## Questions: numbered, only where a wrong guess would waste the build (naming, behavior, scope). Write "None" if there are none.`
+}
+
+export type IssueItem = { type: ItemType; title: string; how: string; accept: string; tests: string }
+
+const ISSUE_ITEM_TYPES: readonly string[] = ['feature', 'bug', 'chore', 'docs']
+const ISSUE_ITEM_MAX = { title: 120, how: 1500, accept: 800, tests: 800 } as const
+
+const itemLine = (text: string, max: number): string => stripControls(text).replace(/<!--|-->/g, '').replace(/\s+/g, ' ').trim().slice(0, max)
+
+export function designItem(body: string): IssueItem | null {
+  const lines = body.split('\n')
+  const at = lines.findIndex(l => /^## Item\b/.test(l))
+  if (at < 0) return null
+  const got: Record<string, string> = {}
+  for (const line of lines.slice(at + 1)) {
+    if (/^## /.test(line)) break
+    const m = /^(?:[-*]\s+)?(type|title|how|accept|tests):\s*(.+)$/i.exec(line.trim())
+    const key = m ? m[1]!.toLowerCase() : ''
+    if (m && got[key] === undefined) got[key] = m[2]!
+  }
+  const type = itemLine(got.type ?? '', 20).toLowerCase()
+  const title = itemLine(got.title ?? '', ISSUE_ITEM_MAX.title)
+  const how = itemLine(got.how ?? '', ISSUE_ITEM_MAX.how)
+  const accept = itemLine(got.accept ?? '', ISSUE_ITEM_MAX.accept)
+  const tests = itemLine(got.tests ?? '', ISSUE_ITEM_MAX.tests)
+  if (!ISSUE_ITEM_TYPES.includes(type) || !title || !how || !accept || !tests) return null
+  return { type: type as ItemType, title, how, accept, tests }
+}
+
+export function appendIssueItem(raw: string, issue: number, it: IssueItem): { text: string; id: string } | null {
+  const items = parseTodo(raw)
+  if (items.some(i => i.issue === issue)) return null
+  const id = nextItemId(items)
+  const block = `## ${id} [${it.type}] ${it.title}\n- status: todo\n- how: ${it.how}\n- accept: ${it.accept}\n- tests: ${it.tests}\n- issue: #${issue}\n`
+  const text = `${raw}${raw.endsWith('\n') ? '\n' : '\n\n'}${block}`
+  const back = parseTodo(text)
+  const made = back.find(i => i.id === id)
+  const same = made !== undefined && made.type === it.type && made.title === it.title && made.how === it.how && made.accept === it.accept && made.tests === it.tests && made.status === 'todo' && made.issue === issue && made.depends.length === 0 && made.version === ''
+  return back.length === items.length + 1 && same ? { text, id } : null
 }
 
 export function designComment(answer: string): string | null {

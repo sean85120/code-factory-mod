@@ -79,6 +79,10 @@ import {
   scanIssues,
   DESIGN_DOC_CHARS,
   designComment,
+  type WatchRow,
+  designItem,
+  appendIssueItem,
+  findDesignComment,
   designFileList,
   designReadAllowed,
   LABEL_GO,
@@ -1464,7 +1468,7 @@ async function retryCmd($: Dollar, args: string): Promise<{ text: string }> {
   return { text: `${id} is eligible again${isCurrent ? ' with its attempts and review rounds reset' : ''}. ${snap.state.autopilot ? 'The running loop picks it up in order.' : '/factory-start runs it.'}` }
 }
 
-async function startCmd($: Dollar): Promise<{ text: string }> {
+async function startCmd($: Dollar, openPane = true): Promise<{ text: string }> {
   factoryOff = false
   dropRoadmap()
   const snap = await load($)
@@ -1487,7 +1491,7 @@ async function startCmd($: Dollar): Promise<{ text: string }> {
   $.clock.after(300, () => {
     void advance($)
   })
-  await openDashboard($)
+  if (openPane) await openDashboard($)
   return { text: 'Factory running; the dashboard is open (/factory-dashboard off or its [close] button closes it). Esc or typing your own prompt pauses the loop; /factory-stop stops it; new sessions in this repo resume it.' }
 }
 
@@ -1759,6 +1763,89 @@ async function rememberDesigned($: Dollar, n: number): Promise<void> {
   }
 }
 
+const GO_PREFIX = 'issue-go/'
+
+type GoEntry = { hash: string; by: string; at: number }
+
+async function goEntries($: Dollar): Promise<Record<string, GoEntry>> {
+  try {
+    const v = await $.store.get(`${GO_PREFIX}${await costRepo($)}`)
+    return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, GoEntry>) : {}
+  } catch {
+    return {}
+  }
+}
+
+async function putGo($: Dollar, n: number, entry: GoEntry | null): Promise<void> {
+  try {
+    const all = await goEntries($)
+    if (entry) all[String(n)] = entry
+    else delete all[String(n)]
+    await $.store.set(`${GO_PREFIX}${await costRepo($)}`, all)
+  } catch {
+    return
+  }
+}
+
+function goRecords(all: Record<string, GoEntry>): { issue: number; hash: string }[] {
+  return Object.entries(all).flatMap(([k, v]) => (v && typeof v.hash === 'string' && Number(k) > 0 ? [{ issue: Number(k), hash: v.hash }] : []))
+}
+
+async function withdrawApproval($: Dollar, n: number): Promise<void> {
+  await putGo($, n, null)
+  await run($, ['gh', 'api', '-X', 'DELETE', `repos/{owner}/{repo}/issues/${n}/labels/${encodeURIComponent(LABEL_GO)}`], 30000)
+}
+
+async function watchIdle($: Dollar, snap: Snapshot): Promise<boolean> {
+  return !(snap.state.autopilot || (await integrityProblem(snap)) !== null || (await lockedByOther($)) || launchedHere !== null || isAdvancing || roadmapPending || mainTurnOpen || instructions !== null || issueTurn !== null || (await turnBusy($)))
+}
+
+async function actOnApprovals($: Dollar, snap: Snapshot, got: { issues: WatchedIssue[]; me: string }, rows: readonly WatchRow[]): Promise<string[]> {
+  const notes: string[] = []
+  const entries = await goEntries($)
+  const withdrawn = new Set<number>()
+  for (const r of rows) {
+    if (r.gate.action === 'reopen') {
+      await withdrawApproval($, r.number)
+      withdrawn.add(r.number)
+      await logEvent($, { itemId: null, kind: 'roadmap', detail: `issue #${r.number} approval withdrawn` })
+      notes.push(`#${r.number}: approval withdrawn and the ${LABEL_GO} label removed`)
+    } else if (r.gate.action === 'record' && !snap.items.some(i => i.issue === r.number && snap.blocked.has(i.id))) {
+      await putGo($, r.number, { hash: r.gate.hash, by: r.gate.by, at: await $.clock.now() })
+      notes.push(`#${r.number}: approval recorded (${oneLine(r.gate.by, 40)})`)
+    }
+  }
+  for (const item of snap.items) {
+    const n = item.issue
+    if (!n || !snap.blocked.has(item.id) || entries[String(n)] === undefined) continue
+    if (!withdrawn.has(n)) await withdrawApproval($, n)
+    const body = `The factory stopped work on ${item.id} for this issue and it needs a person. Nothing more will happen until someone decides. Change the design if needed and add the \`${LABEL_GO}\` label again, or run /factory-retry ${item.id} in the factory session.`
+    await run($, ['gh', 'api', `repos/{owner}/{repo}/issues/${n}/comments`, '-f', `body=${body}`], 60000)
+    await logEvent($, { itemId: item.id, kind: 'blocked', detail: `issue #${n} told, approval withdrawn` })
+    notes.push(`#${n}: ${item.id} is blocked; the issue was told and the approval withdrawn`)
+  }
+  const row = rows.find(r => r.gate.action === 'build' && !snap.items.some(i => i.issue === r.number))
+  if (!row) return notes
+  if (!(await watchIdle($, snap))) return [...notes, `#${row.number}: approved, waiting for the loop to be idle`]
+  const watched = got.issues.find(i => i.issue.number === row.number)
+  const design = watched ? findDesignComment(watched.comments, got.me) : undefined
+  const parsed = design ? designItem(design.body) : null
+  const raw = await readText($, TODO_PATH)
+  const added = parsed && raw !== null ? appendIssueItem(raw, row.number, parsed) : null
+  if (!added) return [...notes, `#${row.number}: approved, but its design has no item section the factory can read safely; fix the design comment and add ${LABEL_GO} again`]
+  const fresh = await load($)
+  if (!fresh.state.approved || (await integrityProblem(fresh)) !== null) return [...notes, `#${row.number}: approved, but the plan is not in an approved state; run /factory-approve`]
+  loopEpoch++
+  await $.fs.write(TODO_PATH, added.text)
+  const after = await load($)
+  const hash = decisionsHash(after.settings, after.items)
+  await patchState($, s => ({ ...s, approvedHash: hash }))
+  await logEvent($, { itemId: added.id, kind: 'roadmap', detail: `issue #${row.number} approved, added as ${added.id}` })
+  toast($, `factory: issue #${row.number} approved, building it as ${added.id}`)
+  const started = await startCmd($, false)
+  return [...notes, `#${row.number}: added as ${added.id}. ${started.text}`]
+}
+
 async function designContext($: Dollar, w: WatchedIssue): Promise<{ files: string[]; ctx: DesignContext } | null> {
   const ls = await run($, ['git', 'ls-files', '-s', '-z'], 30000)
   if (ls.exitCode !== 0) return null
@@ -1823,17 +1910,21 @@ async function pollIssues($: Dollar, mode: 'timer' | 'now' | 'report'): Promise<
     if (!snap.state.approved) return { text: 'Issue watch: the design is not approved yet; /factory-approve first.' }
     const got = await fetchWatch($)
     if ('error' in got) return { text: `Issue watch: ${got.error}` }
-    const rows = scanIssues(got.issues, got.me, got.perms)
-    const text = watchReport(rows, enabled)
+    const canBuild = enabled && snap.settings.buildFromLabels
+    const rows = scanIssues(got.issues, got.me, got.perms, canBuild ? goRecords(await goEntries($)) : [])
+    const text = watchReport(rows, enabled, canBuild)
     if (mode === 'report' || !enabled) return { text }
+    if (canBuild) {
+      const acted = await actOnApprovals($, snap, got, rows)
+      if (acted.length > 0) return { text: `${text}\n${acted.join('\n')}` }
+    }
     const designed = await designedIssues($)
     const row = rows.find(r => r.gate.action === 'design' && !(String(r.number) in designed) && (designTries.get(r.number) ?? 0) < MAX_DESIGN_TRIES)
     const watched = row ? got.issues.find(i => i.issue.number === row.number) : undefined
     if (!row || !watched) return { text }
     const built = await designContext($, watched)
     if (!built) return { text: `${text}\n(Could not list the repo files, so no design was started.)` }
-    const busy = snap.state.autopilot || (await integrityProblem(snap)) !== null || (await lockedByOther($)) || launchedHere !== null || isAdvancing || roadmapPending || mainTurnOpen || instructions !== null || issueTurn !== null || (await turnBusy($))
-    if (busy) return { text: `${text}\n(Not acting now: the loop or a turn is busy.)` }
+    if (!(await watchIdle($, snap))) return { text: `${text}\n(Not acting now: the loop or a turn is busy.)` }
     if (!(await claimIssue($, row.number))) return { text: `${text}\n(Issue #${row.number} was claimed in the last 45 minutes, by another session or an earlier try; not acting.)` }
     designTries.set(row.number, (designTries.get(row.number) ?? 0) + 1)
     roadmapPending = true
