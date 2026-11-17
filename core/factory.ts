@@ -78,6 +78,7 @@ import {
   workPrompt,
 } from '../hooks/lib.ts'
 import type { EventKind, FactoryState, Item, LoopEvent, ReviewMark, Settings } from '../hooks/lib.ts'
+import { isAbsolute, relative, resolve } from 'node:path'
 
 export type Run = { exitCode: number; stdout: string; stderr: string }
 
@@ -1185,11 +1186,37 @@ export type Factory = ReturnType<typeof createFactory>
 // `*** Delete File: x`, `*** Move to: x`).
 export function patchPaths(patch: string): string[] {
   const out: string[] = []
-  for (const m of patch.matchAll(/^\*\*\*\s+(?:Add|Update|Delete) File:\s*(.+?)\s*$|^\*\*\*\s+Move to:\s*(.+?)\s*$/gm)) {
+  // Codex trims each line before it reads a header, so indented headers count.
+  for (const m of patch.matchAll(/^\s*\*\*\*\s+(?:Add|Update|Delete) File:\s*(.+?)\s*$|^\s*\*\*\*\s+Move to:\s*(.+?)\s*$/gm)) {
     const p = (m[1] ?? m[2] ?? '').trim()
     if (p && !out.includes(p)) out.push(p)
   }
   return out
+}
+
+// A shell call can run in its own working directory (Codex `workdir`, OpenCode
+// `workdir`). The gates read paths from the command text, so a command run from
+// inside .factory/ is checked as if it had changed into it first.
+export function gateCommand(command: string, root: string, callDir: string | null): string {
+  if (!callDir) return command
+  const rel = relative(root, resolve(root, callDir))
+  return rel === FACTORY_DIR || rel.startsWith(`${FACTORY_DIR}/`) || rel.startsWith(`${FACTORY_DIR}\\`) ? `cd ${rel.split('\\').join('/')} && ${command}` : command
+}
+
+// Every path a patch touches, as written and as resolved against the folder it
+// is applied in (the call's working directory and a leading `cd <dir> &&`,
+// which Codex honours), made relative to the repository when inside it.
+export function patchTargets(command: string, root: string, callDir: string | null): string[] {
+  const cd = /^\s*cd\s+('[^']*'|"[^"]*"|[^\s;&|]+)\s*&&/.exec(command)?.[1]?.replace(/^['"]|['"]$/g, '') ?? ''
+  const base = resolve(root, callDir ?? '.', cd)
+  const out = new Set<string>()
+  for (const p of patchPaths(command)) {
+    out.add(p)
+    const abs = resolve(base, p)
+    const rel = relative(root, abs)
+    out.add(rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel.split('\\').join('/') : abs)
+  }
+  return [...out]
 }
 
 // The text of the last assistant message in a transcript the host returns.

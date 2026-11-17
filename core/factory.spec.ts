@@ -3,7 +3,7 @@ import { test } from 'node:test'
 
 import { branchFor, decisionsHash, DEFAULT_STATE, parseSettings, parseTodo, reviewAgentPrompt } from '../hooks/lib.ts'
 import type { FactoryState } from '../hooks/lib.ts'
-import { createFactory, forHost, isAgentConfigPath, lastAssistantText, patchPaths, PENDING_REVIEWER } from './factory.ts'
+import { createFactory, forHost, gateCommand, isAgentConfigPath, lastAssistantText, patchPaths, patchTargets, PENDING_REVIEWER } from './factory.ts'
 import type { Host, Run, Runtime } from './factory.ts'
 
 const SETTINGS = { baseBranch: 'main', testCmd: ['npm', 'test'] }
@@ -450,4 +450,15 @@ test('patch paths and the last assistant text are read from host payloads', () =
     { type: 'assistant', content: [{ type: 'tool' }, { type: 'text', text: 'FACTORY-REVIEW: danger=0 medium=0 security=0 sha=abcdef0' }] },
   ]
   assert.equal(lastAssistantText(messages), 'FACTORY-REVIEW: danger=0 medium=0 security=0 sha=abcdef0')
+})
+
+test('commands and patches run from another folder are checked as if run from the repository', () => {
+  assert.equal(gateCommand('echo x > state.json', '/repo', '/repo/.factory'), 'cd .factory && echo x > state.json')
+  assert.equal(gateCommand('echo x > state.json', '/repo', '.factory/blocked'), 'cd .factory/blocked && echo x > state.json')
+  assert.equal(gateCommand('npm test', '/repo', '/repo/src'), 'npm test')
+  assert.equal(gateCommand('npm test', '/repo', null), 'npm test')
+  const body = "apply_patch <<'EOF'\n*** Begin Patch\n  *** Update File: state.json\n*** End Patch\nEOF"
+  assert.deepEqual(patchTargets(`cd .factory && ${body}`, '/repo', null), ['state.json', '.factory/state.json'])
+  assert.deepEqual(patchTargets(body, '/repo', '/repo/.factory'), ['state.json', '.factory/state.json'])
+  assert.deepEqual(patchTargets('*** Update File: ../../etc/x', '/repo', '/repo/src'), ['../../etc/x', '/etc/x'])
 })

@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto'
 
 import type { Plugin } from '@opencode/plugin'
 
-import { createFactory, lastAssistantText, patchPaths } from '../core/factory.ts'
+import { createFactory, gateCommand, lastAssistantText, patchPaths } from '../core/factory.ts'
 import type { Host, Prompt, Runtime } from '../core/factory.ts'
 import { EMPTY_RUNTIME, nodeIo } from '../core/io.ts'
 import { REVIEW_TAG } from '../hooks/lib.ts'
@@ -155,7 +155,8 @@ const plugin: Plugin.Plugin = {
     await ctx.tool.hook('execute.before', async e => {
       const input = asInput(e.input)
       if (e.tool === 'shell' || e.tool === 'bash') {
-        const deny = await factory.guardShell(str(input.command), actor(e.sessionID))
+        const callDir = str(input.workdir) || str(input.cwd) || null
+        const deny = await factory.guardShell(gateCommand(str(input.command), dir, callDir), actor(e.sessionID))
         if (deny) throw new Error(deny)
         return
       }

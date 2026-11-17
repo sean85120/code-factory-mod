@@ -11,7 +11,7 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { createFactory, patchPaths, PENDING_REVIEWER } from '../core/factory.ts'
+import { createFactory, gateCommand, patchTargets, PENDING_REVIEWER } from '../core/factory.ts'
 import type { Host, Prompt, Reply } from '../core/factory.ts'
 import { fileRuntime, nodeIo, writeAtomic } from '../core/io.ts'
 import { FACTORY_DIR, REVIEW_TAG } from '../hooks/lib.ts'
@@ -293,20 +293,23 @@ async function dispatch(event: string, input: HookInput, dir: string, dataDir: s
             return withNotices(deny('code-factory: run git and gh commands from the factory\'s repository while the loop runs, not from another worktree or clone.'))
           }
           const command = shellCommand(toolInput)
-          // Codex applies an `apply_patch <<'EOF' ... EOF` shell command itself,
-          // so its files get the same checks as the apply_patch tool's.
-          const patched = patchPaths(command)
+          const callDir = input.cwd ? real(input.cwd) : null
+          // Codex applies an `apply_patch <<'EOF' ... EOF` shell command itself
+          // (after an optional `cd <dir> &&`, in the call's workdir), so its
+          // files get the same checks as the apply_patch tool's.
+          const patched = patchTargets(command, dir, callDir)
           if (patched.length > 0) {
             const denied = await factory.guardWrite(patched, actor)
             if (denied) return withNotices(deny(denied))
           }
-          const reason = await factory.guardShell(command, actor)
+          const reason = await factory.guardShell(gateCommand(command, dir, callDir), actor)
           if (reason) return withNotices(deny(reason))
           if (bareInteractiveShell(command) && (await factory.guardsLive())) return withNotices(deny('code-factory: no interactive shells or REPLs while the factory loop runs; run each command directly so the gates can check it.'))
           return withNotices({})
         }
         if (tool === 'apply_patch' || tool === 'Edit' || tool === 'Write') {
-          const paths = [...patchPaths(shellCommand(toolInput) || str(toolInput.patch) || str(toolInput.input)), str(toolInput.file_path), str(toolInput.path)].filter(Boolean)
+          const callDir = input.cwd ? real(input.cwd) : null
+          const paths = [...patchTargets(shellCommand(toolInput) || str(toolInput.patch) || str(toolInput.input), dir, callDir), str(toolInput.file_path), str(toolInput.path)].filter(Boolean)
           const reason = await factory.guardWrite(paths, actor)
           return withNotices(reason ? deny(reason) : {})
         }

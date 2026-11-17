@@ -115,6 +115,7 @@ test('the gates throw, which stops the tool call', async () => {
   await assert.rejects(async () => before({ tool: 'write', sessionID: 'ses_main', input: { path: '.factory/state.json', content: '{}' } }), /controlled by the person/)
   await assert.rejects(async () => before({ tool: 'edit', sessionID: 'ses_main', input: { path: 'opencode.json', oldString: 'a', newString: 'b' } }), /cannot be changed/)
   await before({ tool: 'shell', sessionID: 'ses_main', input: { command: 'git status' } })
+  await assert.rejects(async () => before({ tool: 'shell', sessionID: 'ses_main', input: { command: 'echo {} > state.json', workdir: '.factory' } }), /controlled by the person/)
   p.cleanup()
 })
 

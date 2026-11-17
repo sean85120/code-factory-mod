@@ -203,6 +203,24 @@ test('a patch sent as a shell command gets the same file checks as the apply_pat
   assert.match(JSON.stringify(await pre(patch('src/app.ts'))), /review agent is still running/)
 })
 
+test('patch headers indented, a leading cd, or a workdir inside .factory/ still reach the file checks', async () => {
+  const { dir, data } = repo({ autopilot: true, current: 'T-001' })
+  const env = { PLUGIN_DATA: data }
+  const bash = (command: string, cwd = dir) => handle({ hook_event_name: 'PreToolUse', cwd, session_id: 's', tool_name: 'Bash', tool_input: { command } }, env, dir)
+  const tool = (command: string, cwd = dir) => handle({ hook_event_name: 'PreToolUse', cwd, session_id: 's', tool_name: 'apply_patch', tool_input: { command } }, env, dir)
+  const patch = (path: string, indent = '') => `*** Begin Patch\n${indent}*** Update File: ${path}\n@@\n-a\n+b\n*** End Patch`
+  const heredoc = (body: string, prefix = '') => `${prefix}apply_patch <<'EOF'\n${body}\nEOF`
+  for (const indent of ['  ', '\t']) assert.match(JSON.stringify(await tool(patch('.factory/state.json', indent))), /controlled by the person/, JSON.stringify(indent))
+  assert.match(JSON.stringify(await bash(heredoc(patch('state.json'), 'cd .factory && '))), /controlled by the person/)
+  assert.match(JSON.stringify(await bash(heredoc(patch('hooks.json'), 'cd .codex && '))), /cannot be changed/)
+  mkdirSync(join(dir, '.codex'))
+  assert.match(JSON.stringify(await bash(heredoc(patch('state.json')), join(dir, '.factory'))), /controlled by the person/)
+  assert.match(JSON.stringify(await tool(patch('hooks.json'), join(dir, '.codex'))), /cannot be changed/)
+  // A plain shell write from inside .factory/.
+  assert.match(JSON.stringify(await bash('echo {} > state.json', join(dir, '.factory'))), /controlled by the person/)
+  assert.deepEqual(await bash('cat state.json', join(dir, '.factory')), {})
+})
+
 test('while the gates are on, a call that is only an interactive shell or REPL is refused; commands are not rewritten', async () => {
   for (const c of ['bash', 'zsh -l', '/bin/sh -i', 'exec bash --login', 'python3', 'node']) assert.equal(bareInteractiveShell(c), true, c)
   for (const c of ['bash -lc "npm test"', 'bash script.sh', 'python3 -m pytest', 'node --test', 'npm test', 'git status', 'echo bash']) assert.equal(bareInteractiveShell(c), false, c)
