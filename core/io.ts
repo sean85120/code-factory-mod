@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 
 import type { Host, Run, Runtime } from './factory.ts'
@@ -103,8 +103,16 @@ export function fileRuntime(dataDir: string, repoDir: string): { load: () => Pro
       }
     },
     async save(r: Runtime): Promise<void> {
-      await mkdir(dirname(file), { recursive: true })
-      await writeFile(file, JSON.stringify(r))
+      await writeAtomic(file, JSON.stringify(r))
     },
   }
+}
+
+// Hooks of one session can run as concurrent processes: a reader must never see
+// a half-written file, so files are written beside the target and renamed over it.
+export async function writeAtomic(file: string, text: string): Promise<void> {
+  await mkdir(dirname(file), { recursive: true })
+  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
+  await writeFile(tmp, text)
+  await rename(tmp, file)
 }

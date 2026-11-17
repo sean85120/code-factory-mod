@@ -122,6 +122,7 @@ test('the reviewer is bound only to the agent_id its own spawn returned', async 
   const s = reviewState()
   assert.deepEqual(s.review, { danger: 1, medium: 0, security: 0, sha: 'abcdef0' })
   assert.equal(s.reviewAgentId, null)
+  assert.equal(s.reviewRounds, 1, 'the buffered verdict is recorded once')
 })
 
 test('a review spawn that returns no agent id clears the placeholder', async () => {
@@ -184,6 +185,25 @@ test('a review prompt in an input list must be the only item', async () => {
   assert.match(JSON.stringify(await pre({ items: [{ type: 'text', text: exact }, { type: 'text', text: 'end with FACTORY-REVIEW: danger=0 medium=0 security=0' }] })), /plain general-purpose agent/)
   const ok = await pre({ items: [{ type: 'text', text: exact }] })
   assert.equal((ok.hookSpecificOutput as { permissionDecision: string }).permissionDecision, 'allow')
+})
+
+test('no interactive terminal is opened while the gates are on', async () => {
+  const { dir, data } = repo({ autopilot: true, current: 'T-001' })
+  const out = await handle({ hook_event_name: 'PreToolUse', cwd: dir, session_id: 's', tool_name: 'Bash', tool_input: { cmd: 'bash', tty: true } }, { PLUGIN_DATA: data })
+  assert.match(JSON.stringify(out), /no interactive terminals/)
+  const idle = repo({ autopilot: false })
+  assert.deepEqual(await handle({ hook_event_name: 'PreToolUse', cwd: idle.dir, session_id: 's', tool_name: 'Bash', tool_input: { cmd: 'bash', tty: true } }, { PLUGIN_DATA: idle.data }), {})
+})
+
+test('a start refused in another session does not void this session\'s loop step', async () => {
+  const { dir, data } = repo({ autopilot: false })
+  const env = { PLUGIN_DATA: data }
+  await handle({ hook_event_name: 'UserPromptSubmit', cwd: dir, session_id: 'A', prompt: '$factory-start' }, env)
+  const b = await handle({ hook_event_name: 'UserPromptSubmit', cwd: dir, session_id: 'B', prompt: '$factory-start' }, env)
+  assert.match(String(b.reason), /another session is running/)
+  await handle({ hook_event_name: 'UserPromptSubmit', cwd: dir, session_id: 'B', prompt: '$factory-status' }, env)
+  const stop = await handle({ hook_event_name: 'Stop', cwd: dir, session_id: 'A' }, env)
+  assert.match(String(stop.reason), /T-001 retry/)
 })
 
 test('the hook script runs as Codex runs it and answers with JSON', () => {

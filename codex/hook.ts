@@ -5,14 +5,14 @@
 // plugin's data directory.
 
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { createFactory, patchPaths, PENDING_REVIEWER } from '../core/factory.ts'
-import type { Host, Prompt, Reply, Runtime } from '../core/factory.ts'
-import { fileRuntime, nodeIo } from '../core/io.ts'
+import type { Host, Prompt, Reply } from '../core/factory.ts'
+import { fileRuntime, nodeIo, writeAtomic } from '../core/io.ts'
 import { FACTORY_DIR, REVIEW_TAG } from '../hooks/lib.ts'
 
 export const NOTES = {
@@ -116,20 +116,11 @@ export async function handle(input: HookInput, env: Env = process.env): Promise<
   const dir = input.cwd || process.cwd()
   const io = nodeIo(dir)
   const dataDir = env.PLUGIN_DATA || env.CLAUDE_PLUGIN_DATA || join(env.HOME || homedir(), '.codex', 'code-factory')
-  // The epoch is shared by every session in the repo (a stop anywhere ends a
-  // step everywhere); the turn and its nonce belong to this session alone, so
-  // another session starting or ending a turn never disarms this one.
-  const shared = fileRuntime(dataDir, dir)
-  const own = fileRuntime(dataDir, `${dir}\0${input.session_id ?? 'unknown'}`)
-  const store = {
-    load: async (): Promise<Runtime> => {
-      const [a, b] = await Promise.all([shared.load(), own.load()])
-      return { epoch: a.epoch, turn: b.turn, nonce: b.nonce }
-    },
-    save: async (r: Runtime): Promise<void> => {
-      await Promise.all([shared.save({ epoch: r.epoch, turn: null, nonce: '' }), own.save({ epoch: 0, turn: r.turn, nonce: r.nonce })])
-    },
-  }
+  // The flags belong to this session alone, as Claude Code's are in memory: a
+  // command typed in another session of the same repo neither disarms this
+  // session's turn nor voids its loop step. A stop or pause from anywhere still
+  // reaches the step, which re-checks autopilot and the lock before it writes.
+  const store = fileRuntime(dataDir, `${dir}\0${input.session_id ?? 'unknown'}`)
   const notices: string[] = []
   const host: Host = {
     name: 'Codex',
@@ -161,26 +152,35 @@ export async function handle(input: HookInput, env: Env = process.env): Promise<
   }
 }
 
-// Reviewer stops that arrived before the review spawn reported the reviewer's id.
-type EarlyStop = { agent: string; message: string; at: number }
+// Reviewer stops that arrived before the review spawn reported the reviewer's
+// id, one file per agent. Whoever renames the file first (the stop handler or
+// the spawn's PostToolUse) records the verdict, so it is never counted twice.
 const EARLY_MS = 3600000
 
-function earlyFile(dataDir: string, dir: string): string {
-  return join(dataDir, `early-stops-${createHash('sha256').update(dir).digest('hex').slice(0, 16)}.json`)
+function earlyFile(dataDir: string, dir: string, agent: string): string {
+  return join(dataDir, 'early-stops', `${createHash('sha256').update(dir).digest('hex').slice(0, 16)}-${createHash('sha256').update(agent).digest('hex').slice(0, 16)}.json`)
 }
 
-async function readEarly(dataDir: string, dir: string): Promise<EarlyStop[]> {
+async function bufferStop(dataDir: string, dir: string, agent: string, message: string): Promise<void> {
+  await writeAtomic(earlyFile(dataDir, dir, agent), JSON.stringify({ agent, message, at: Date.now() }))
+}
+
+async function claimStop(dataDir: string, dir: string, agent: string): Promise<string | null> {
+  const file = earlyFile(dataDir, dir, agent)
+  const claimed = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.claimed`
   try {
-    const raw = JSON.parse(await readFile(earlyFile(dataDir, dir), 'utf8')) as unknown
-    return Array.isArray(raw) ? (raw as EarlyStop[]).filter(e => e && typeof e.agent === 'string' && typeof e.message === 'string' && Date.now() - Number(e.at) < EARLY_MS) : []
+    await rename(file, claimed)
   } catch {
-    return []
+    return null
   }
-}
-
-async function writeEarly(dataDir: string, dir: string, list: EarlyStop[]): Promise<void> {
-  await mkdir(dataDir, { recursive: true })
-  await writeFile(earlyFile(dataDir, dir), JSON.stringify(list.slice(-10)))
+  try {
+    const e = JSON.parse(await readFile(claimed, 'utf8')) as { agent?: unknown; message?: unknown; at?: unknown }
+    return e.agent === agent && typeof e.message === 'string' && Date.now() - Number(e.at) < EARLY_MS ? e.message : null
+  } catch {
+    return null
+  } finally {
+    await rm(claimed, { force: true })
+  }
 }
 
 const MESSAGE_TOOLS = new Set(['send_input', 'send_message', 'SendMessage', 'resume_agent'])
@@ -216,6 +216,9 @@ async function dispatch(event: string, input: HookInput, dir: string, dataDir: s
       const toolInput = asObj(input.tool_input)
       try {
         if (tool === 'Bash') {
+          // Input written to an interactive terminal later (write_stdin) passes
+          // no hook, so no terminal is opened while the gates are on.
+          if (toolInput.tty === true && (await factory.guardsLive())) return withNotices(deny('code-factory: no interactive terminals (tty) while the factory loop runs; run each command directly so the gates can check it.'))
           const reason = await factory.guardShell(shellCommand(toolInput), actor)
           return withNotices(reason ? deny(reason) : {})
         }
@@ -261,12 +264,8 @@ async function dispatch(event: string, input: HookInput, dir: string, dataDir: s
           await factory.reviewLaunchFailed()
           notices.push('factory: the review agent was not started (no agent id in the spawn result); spawn it again')
         } else if (await factory.reviewLaunched(id)) {
-          const early = await readEarly(dataDir, dir)
-          const stop = early.find(e => e.agent === id)
-          if (stop) {
-            await writeEarly(dataDir, dir, early.filter(e => e !== stop))
-            await factory.reviewFinished(id, stop.message)
-          }
+          const message = await claimStop(dataDir, dir, id)
+          if (message !== null) await factory.reviewFinished(id, message)
         }
       }
       return withNotices({})
@@ -274,10 +273,13 @@ async function dispatch(event: string, input: HookInput, dir: string, dataDir: s
     case 'SubagentStop': {
       if (!input.agent_id) return {}
       if ((await factory.readState()).reviewAgentId === PENDING_REVIEWER) {
-        await writeEarly(dataDir, dir, [...(await readEarly(dataDir, dir)), { agent: input.agent_id, message: input.last_assistant_message ?? '', at: Date.now() }])
-        // The spawn may have bound this agent while the stop was being saved;
-        // a verdict recorded twice is ignored the second time.
+        await bufferStop(dataDir, dir, input.agent_id, input.last_assistant_message ?? '')
+        // The spawn may have bound this agent while the stop was being saved:
+        // then whichever side claims the buffered stop first records it.
         if ((await factory.readState()).reviewAgentId !== input.agent_id) return {}
+        const message = await claimStop(dataDir, dir, input.agent_id)
+        if (message !== null) await factory.reviewFinished(input.agent_id, message)
+        return withNotices({})
       }
       await factory.reviewFinished(input.agent_id, input.last_assistant_message ?? '')
       return withNotices({})

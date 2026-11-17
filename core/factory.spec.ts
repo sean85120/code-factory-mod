@@ -362,6 +362,7 @@ test('another session holding the lock keeps this one hands-off', async () => {
   assert.equal(await f.advance(), null)
   assert.equal(await f.guardShell('git push origin main'), null)
   assert.match((await f.command('factory-start', '')).text, /another session is running/)
+  assert.equal(w.runtime.epoch, 0, 'a refused start does not void anyone\'s loop step')
 })
 
 test('approve refuses design files that are not on the base branch, and gives the push steps', async () => {

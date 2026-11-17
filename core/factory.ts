@@ -662,8 +662,8 @@ export function createFactory(host: Host) {
     if (!pickNext(startItems, snap.blocked, snap.settings.stopAfterVersion) && !snap.state.current && !releasePending(snap.settings, snap.state, startItems)) {
       return { text: say(`Nothing to do: ${summarize(startItems, snap.blocked)}. /factory-design plans the next phase; /factory-retry <ID> unblocks an item.`) }
     }
-    await bumpEpoch()
     if (!(await acquireLock())) return { text: say('Cannot start: another session is running the factory in this repo (its lock was refreshed in the last two minutes).') }
+    await bumpEpoch()
     await ensureGitignore()
     const ts = host.now()
     await patchState(fresh => ({ ...withEvent(fresh, ts, { itemId: fresh.current, kind: 'resumed', detail: 'new run' }), autopilot: true, pausedReason: null, doneThisRun: 0, releaseAttempts: 0, attempts: fresh.current ? fresh.attempts : 0 }))
