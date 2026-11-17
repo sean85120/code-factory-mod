@@ -28,6 +28,9 @@ minor version may change behavior).
   band, dashboard, dollar ledger, issue watcher and the triage and next-phase
   interviews stay Claude Code only. A plan with `budgetUsd` set is refused on
   these hosts instead of being run without a budget.
+- The state-file guard also counts `apply_patch`/`applypatch` as commands that
+  write files, so a patch to `.factory/state.json` run through the shell is
+  refused like `sed -i`.
 - `/factory-exit` leaves factory mode: it stops the loop if it is running, closes
   the dashboard, clears the status line, hides the band, and drops an open
   interview's instructions and guards. A factory turn that is still running keeps

@@ -6,14 +6,16 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { createFactory, gateCommand, patchTargets, PENDING_REVIEWER } from '../core/factory.ts'
 import type { Host, Prompt, Reply } from '../core/factory.ts'
-import { fileRuntime, nodeIo, writeAtomic } from '../core/io.ts'
+import { fileRuntime, GIT_ELSEWHERE_DENY, gitElsewhere, nodeIo, real, repoTop, writeAtomic } from '../core/io.ts'
+
+export { repoTop }
 import { FACTORY_DIR, REVIEW_TAG } from '../hooks/lib.ts'
 
 export const NOTES = {
@@ -125,15 +127,6 @@ const deny = (reason: string): HookOutput => ({ hookSpecificOutput: { hookEventN
 
 export type Env = { PLUGIN_DATA?: string; CLAUDE_PLUGIN_DATA?: string; HOME?: string }
 
-// Paths are compared after symlinks are resolved (on macOS /var is /private/var).
-function real(p: string): string {
-  try {
-    return realpathSync(p)
-  } catch {
-    return resolve(p)
-  }
-}
-
 // Files that mark a folder's .factory/ as this factory's. state.json and
 // lock.json are among them because the model may not delete those, so a loop
 // whose todo.md and settings.json were removed still keeps its gates.
@@ -151,18 +144,6 @@ export function factoryRoot(start: string): string | null {
   for (;;) {
     if (d !== home && FACTORY_MARKERS.some(m => existsSync(join(d, FACTORY_DIR, m)))) return d
     if (d === top) return null
-    const up = dirname(d)
-    if (up === d) return null
-    d = up
-  }
-}
-
-// The top folder of the git repository holding `start` (a .git folder or a
-// worktree's .git file), or null outside one.
-export function repoTop(start: string): string | null {
-  let d = real(start)
-  for (;;) {
-    if (existsSync(join(d, '.git'))) return d
     const up = dirname(d)
     if (up === d) return null
     d = up
@@ -285,13 +266,7 @@ async function dispatch(event: string, input: HookInput, dir: string, dataDir: s
       const toolInput = asObj(input.tool_input)
       try {
         if (tool === 'Bash') {
-          // The gates read the branch and HEAD of the factory's repository; a git
-          // or gh command run from another worktree or clone would be checked
-          // against the wrong branch.
-          const callTop = input.cwd ? repoTop(input.cwd) : null
-          if (callTop !== null && callTop !== repoTop(dir) && /\b(?:git|gh)\b/.test(shellCommand(toolInput)) && (await factory.guardsLive())) {
-            return withNotices(deny('code-factory: run git and gh commands from the factory\'s repository while the loop runs, not from another worktree or clone.'))
-          }
+          if (gitElsewhere(shellCommand(toolInput), dir, input.cwd ?? null) && (await factory.guardsLive())) return withNotices(deny(GIT_ELSEWHERE_DENY))
           const command = shellCommand(toolInput)
           const callDir = input.cwd ? real(input.cwd) : null
           // Codex applies an `apply_patch <<'EOF' ... EOF` shell command itself

@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join } from 'node:path'
+import { existsSync, realpathSync } from 'node:fs'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 import type { Host, Run, Runtime } from './factory.ts'
 
@@ -115,3 +116,35 @@ export async function writeAtomic(file: string, text: string): Promise<void> {
   await writeFile(tmp, text)
   await rename(tmp, file)
 }
+
+// Paths are compared after symlinks are resolved (on macOS /var is /private/var).
+export function real(p: string): string {
+  try {
+    return realpathSync(p)
+  } catch {
+    return resolve(p)
+  }
+}
+
+// The top folder of the git repository holding `start` (a .git folder or a
+// worktree's .git file), or null outside one.
+export function repoTop(start: string): string | null {
+  let d = real(start)
+  for (;;) {
+    if (existsSync(join(d, '.git'))) return d
+    const up = dirname(d)
+    if (up === d) return null
+    d = up
+  }
+}
+
+// A git or gh command run from another repository or worktree: the gates read
+// the factory repository's branch and HEAD, so they would check it against the
+// wrong branch.
+export function gitElsewhere(command: string, root: string, callDir: string | null): boolean {
+  if (!callDir || !/\b(?:git|gh)\b/.test(command)) return false
+  const top = repoTop(resolve(root, callDir))
+  return top !== null && top !== repoTop(root)
+}
+
+export const GIT_ELSEWHERE_DENY = "code-factory: run git and gh commands from the factory's repository while the loop runs, not from another worktree or clone."

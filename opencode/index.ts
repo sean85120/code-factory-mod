@@ -8,7 +8,7 @@ import type { Plugin } from '@opencode/plugin'
 
 import { createFactory, gateCommand, lastAssistantText, patchPaths } from '../core/factory.ts'
 import type { Host, Prompt, Runtime } from '../core/factory.ts'
-import { EMPTY_RUNTIME, nodeIo } from '../core/io.ts'
+import { EMPTY_RUNTIME, GIT_ELSEWHERE_DENY, gitElsewhere, nodeIo } from '../core/io.ts'
 import { REVIEW_TAG } from '../hooks/lib.ts'
 
 export const NOTES = {
@@ -156,6 +156,7 @@ const plugin: Plugin.Plugin = {
       const input = asInput(e.input)
       if (e.tool === 'shell' || e.tool === 'bash') {
         const callDir = str(input.workdir) || str(input.cwd) || null
+        if (gitElsewhere(str(input.command), dir, callDir) && (await factory.guardsLive())) throw new Error(GIT_ELSEWHERE_DENY)
         const deny = await factory.guardShell(gateCommand(str(input.command), dir, callDir), actor(e.sessionID))
         if (deny) throw new Error(deny)
         return
