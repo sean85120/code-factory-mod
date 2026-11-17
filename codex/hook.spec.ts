@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -200,6 +200,9 @@ test('no shell or interpreter that reads its program from stdin is started while
   assert.equal(opensInterpreter('$SHELL -l'), true)
   assert.equal(opensInterpreter("python3 - <<'PY'\nprint(1)\nPY"), false)
   assert.equal(opensInterpreter('echo ls | python3'), false)
+  assert.equal(opensInterpreter('cat 2>&1 | python3'), true)
+  assert.equal(opensInterpreter('docker exec -it app sh'), true)
+  for (const ok of ['node --test', 'node -v', 'command -v node', 'gh pr create --body "done; xargs no longer used"', 'npm test 2>&1 | tee log.txt']) assert.equal(opensInterpreter(ok), false, ok)
   const { dir, data } = repo({ autopilot: true, current: 'T-001' })
   assert.match(JSON.stringify(await hook({ hook_event_name: 'PreToolUse', cwd: dir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'bash' } }, { PLUGIN_DATA: data })), /no interactive shells/)
   const idle = repo({ autopilot: false })
@@ -239,6 +242,24 @@ test('the repository is the nearest .factory/ inside the git repo, never another
   await handle({ hook_event_name: 'UserPromptSubmit', cwd: proj, session_id: 's', prompt: '$factory-design' }, { PLUGIN_DATA: data }, join(proj, 'src'))
   assert.ok(readFileSync(join(proj, '.factory/todo.md'), 'utf8').startsWith('# Todo'))
   assert.equal(readFileSync(join(home, '.factory/settings.json'), 'utf8'), '{"droid": true}')
+})
+
+test('a loop whose todo.md and settings.json were deleted keeps its gates', async () => {
+  const { dir, data } = repo({ autopilot: true, current: 'T-001' })
+  rmSync(join(dir, '.factory/todo.md'))
+  rmSync(join(dir, '.factory/settings.json'))
+  const push = await hook({ hook_event_name: 'PreToolUse', cwd: dir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'git push origin main' } }, { PLUGIN_DATA: data })
+  assert.equal((push.hookSpecificOutput as { permissionDecision: string }).permissionDecision, 'deny')
+})
+
+test('outside a git repository there is no factory, and $factory commands say to run git init', async () => {
+  const plain = mkdtempSync(join(tmpdir(), 'cf-plain-'))
+  mkdirSync(join(plain, '.factory'))
+  writeFileSync(join(plain, '.factory/settings.json'), '{"droid": true}')
+  assert.equal(factoryRoot(join(plain, 'x')), null)
+  const out = await handle({ hook_event_name: 'UserPromptSubmit', cwd: plain, session_id: 's', prompt: '$factory-design' }, { PLUGIN_DATA: plain }, plain)
+  assert.match(String(out.reason), /git init/)
+  assert.equal(readFileSync(join(plain, '.factory/settings.json'), 'utf8'), '{"droid": true}')
 })
 
 test('while the loop runs, git commands from another worktree are refused', async () => {

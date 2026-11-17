@@ -156,7 +156,8 @@ function parseStage(text: string): Stage {
     while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]!)) tokens.shift()
     const head = (tokens[0] ?? '').split('/').pop() ?? ''
     const opts = WRAPPERS[head]
-    if (!opts) break
+    // `command -v node` only looks a command up.
+    if (!opts || (head === 'command' && /^-[vV]$/.test(tokens[1] ?? ''))) break
     tokens.shift()
     while (tokens.length > 0 && (opts.test(tokens[0]!) || tokens[0] === '--')) {
       const t = tokens.shift()!
@@ -170,12 +171,18 @@ function parseStage(text: string): Stage {
 
 // Runs whatever arrives on its stdin: a shell or interpreter given no program
 // (or told to read one: -i, -s, -), `script` (a shell in a terminal) and `xargs`.
+// Options that make an interpreter do something other than read a program from
+// stdin: print its version or help, run its test runner, check syntax.
+const NOT_INTERACTIVE = new Set(['-v', '-V', '--version', '-h', '--help', '--test', '--check', '-n', '--run'])
+
 function runsStdin(st: Stage): boolean {
   if (st.name === 'xargs') return true
   if (st.name === 'script') return !st.args.some(a => /^-[A-Za-z]*c$/.test(a) || a === '--command')
+  // `docker exec -it app sh`, `kubectl exec -it pod -- bash`: a shell elsewhere on this terminal.
+  if (/^(?:docker|podman|kubectl)$/.test(st.name)) return st.args.some(a => a === 'exec' || a === 'run' || a === 'attach') && st.args.some(a => /^-[A-Za-z]*i[A-Za-z]*$/.test(a) || a === '--interactive' || a === '--stdin')
   if (!INTERPRETER.test(st.name)) return false
-  if (st.args.some(t => t === '-i' || t === '--interactive' || t === '-s' || t === '-')) return true
-  return !st.args.some(t => !t.startsWith('-') || /^-[A-Za-z]*[ce]$/.test(t) || t === '--eval' || t === '--command' || t === '-m')
+  if (st.args.some(t => t === '-i' || t === '--interactive' || t === '-s' || t === '-' || t === '/dev/stdin' || t === '/dev/tty')) return true
+  return !st.args.some(t => !t.startsWith('-') || /^-[A-Za-z]*[ce]$/.test(t) || t === '--eval' || t === '--command' || t === '-m' || NOT_INTERACTIVE.has(t))
 }
 
 // A pipeline stage that starts a shell or interpreter whose stdin stays open to
@@ -183,7 +190,13 @@ function runsStdin(st: Stage): boolean {
 // hook sees. A stage fed by a heredoc, a file or another command's output is
 // fine, except through a bare `cat`/`tee`, which pass the terminal on.
 export function opensInterpreter(command: string): boolean {
-  const text = command.replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1([^\n]*)\n[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g, '<<HEREDOC $3')
+  const text = command
+    // Heredoc bodies are data, not commands.
+    .replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1([^\n]*)\n[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g, '<<HEREDOC $3')
+    // Quoted text (commit messages, PR bodies) is an argument, not a command.
+    .replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, 'Q')
+    // fd redirections such as 2>&1 or &> are not command separators.
+    .replace(/\d*>&(?:\d+|-)|\d*<&(?:\d+|-)|&>>?/g, ' ')
   return text.split(/&&|\|\||[;&\n]/).some(pipeline => {
     let open = true
     return pipeline.split('|').some((part, k) => {
@@ -199,14 +212,6 @@ const deny = (reason: string): HookOutput => ({ hookSpecificOutput: { hookEventN
 
 export type Env = { PLUGIN_DATA?: string; CLAUDE_PLUGIN_DATA?: string; HOME?: string }
 
-// The repository the factory runs in: the nearest folder holding .factory/,
-// looked up from where the session runs. A hook's `cwd` is the tool call's own
-// working directory (a shell call's `workdir`), which the model chooses, so it
-// is only a fallback: a call run from src/ or /tmp must not leave the gates off.
-// The walk stops at the repository's top folder (the first one holding .git),
-// so a .factory folder above the project (another tool's, such as ~/.factory)
-// is never taken for it; a folder counts only when it holds the factory's own
-// settings.json or todo.md.
 // Paths are compared after symlinks are resolved (on macOS /var is /private/var).
 function real(p: string): string {
   try {
@@ -216,12 +221,25 @@ function real(p: string): string {
   }
 }
 
+// Files that mark a folder's .factory/ as this factory's. state.json and
+// lock.json are among them because the model may not delete those, so a loop
+// whose todo.md and settings.json were removed still keeps its gates.
+const FACTORY_MARKERS = ['state.json', 'lock.json', 'settings.json', 'todo.md', 'design.md']
+
+// The repository the factory runs in: the nearest folder holding the factory's
+// .factory/, between `start` and the top folder of the git repository holding
+// it. Outside a git repository there is none, and the home folder never is
+// one, so another tool's ~/.factory is never taken for the project.
 export function factoryRoot(start: string): string | null {
+  const top = repoTop(start)
+  if (top === null) return null
+  const home = real(homedir())
   let d = real(start)
   for (;;) {
-    if (existsSync(join(d, FACTORY_DIR, 'settings.json')) || existsSync(join(d, FACTORY_DIR, 'todo.md'))) return d
+    if (d !== home && FACTORY_MARKERS.some(m => existsSync(join(d, FACTORY_DIR, m)))) return d
+    if (d === top) return null
     const up = dirname(d)
-    if (existsSync(join(d, '.git')) || up === d) return null
+    if (up === d) return null
     d = up
   }
 }
@@ -238,13 +256,19 @@ export function repoTop(start: string): string | null {
   }
 }
 
+// The session's repository is looked up from where the session runs (the hook
+// process's own directory). A hook's `cwd` is the tool call's own working
+// directory (a shell call's `workdir`), which the model chooses, so it is only a
+// fallback: a call run from src/ or /tmp must not leave the gates off.
 export async function handle(input: HookInput, env: Env = process.env, sessionDir: string = process.cwd()): Promise<HookOutput> {
   const event = input.hook_event_name ?? ''
   const root = factoryRoot(sessionDir) ?? (input.cwd ? factoryRoot(input.cwd) : null)
   // A repo without .factory/ is not using the factory: nothing to do or guard,
   // except a $factory command (the design interview creates .factory/).
   if (!root && !(event === 'UserPromptSubmit' && commandOf(str(input.prompt)))) return {}
-  const dir = root ?? repoTop(sessionDir) ?? sessionDir
+  const top = root ?? repoTop(sessionDir)
+  if (top === null) return { decision: 'block', reason: 'code-factory works in a git repository whose origin is on GitHub; run `git init` (and add the origin) first.' }
+  const dir = top
   const io = nodeIo(dir)
   const dataDir = env.PLUGIN_DATA || env.CLAUDE_PLUGIN_DATA || join(env.HOME || homedir(), '.codex', 'code-factory')
   // The flags belong to this session alone, as Claude Code's are in memory: a
