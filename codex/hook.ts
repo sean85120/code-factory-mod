@@ -17,7 +17,7 @@ import { fileRuntime, nodeIo, writeAtomic } from '../core/io.ts'
 import { FACTORY_DIR, REVIEW_TAG } from '../hooks/lib.ts'
 
 export const NOTES = {
-  work: `Host notes (Codex): the "Agent tool" above is spawn_agent here. For the review, spawn one agent whose message is the review prompt, unchanged and with no other options, then wait for it to finish with the wait tool; the factory reads the FACTORY-REVIEW line from the reviewer's own final message. Ask the person nothing; the loop runs unattended. The person's commands are typed as $factory-start, $factory-stop and so on.`,
+  work: `Host notes (Codex): run every shell command directly; never open an interactive shell, REPL, pager or editor, or a terminal (tty) you type into later, because the factory's checks only see the commands you run. The "Agent tool" above is spawn_agent here. For the review, spawn one agent whose message is the review prompt, unchanged and with no other options, then wait for it to finish with the wait tool; the factory reads the FACTORY-REVIEW line from the reviewer's own final message. Ask the person nothing; the loop runs unattended. The person's commands are typed as $factory-start, $factory-stop and so on.`,
   design: `Host notes (Codex): ask the person your questions directly in your reply, one short round (1-4 questions) at a time, and end your turn to wait for the answers (use request_user_input instead when it is available). The person's commands are typed as $factory-approve and $factory-start.`,
   waitForReviewer: `CODE FACTORY: the review agent for the current item is still running. Wait for it to finish (call the wait tool on it); do not spawn a second reviewer and do not change the code meanwhile. Then continue the work item: open the PR if its verdict is clean, otherwise fix the findings and review again as step 6 says.`,
 }
@@ -112,30 +112,14 @@ export function responseOk(response: unknown): boolean {
   return typeof code === 'number' ? code === 0 : true
 }
 
-// Codex keeps a shell call's terminal open after the call returns, and input
-// sent to it later (write_stdin) passes no hook. While the gates are on every
-// shell command is therefore run with its stdin closed (from /dev/null), in the
-// syntax of the shell that will run it, so nothing it starts can read such
-// input; a shell this cannot be written for is refused. Returns the rewritten
-// command, or null when the shell is not one of these.
-export function closeStdin(command: string, shell: string): string | null {
-  if (!command.trim()) return command
-  const name = shell.split(/[\\/]/).pop()?.replace(/\.exe$/i, '') ?? ''
-  if (/^(?:bash|zsh|sh|dash|ksh|mksh|ash)$/.test(name)) return `{\n${command}\n} </dev/null`
-  if (name === 'fish') return `begin\n${command}\nend </dev/null`
-  return null
+// A call that is nothing but an interactive shell or REPL (`bash`, `zsh -l`,
+// `python3`). Codex keeps a call's terminal open, and commands typed into it
+// later through write_stdin pass no hook, so this obvious form is refused while
+// the gates are on. It is a deterrent, not a boundary: like bash -c, eval or a
+// script file, other routes to a terminal are an accepted limit (see CLAUDE.md).
+export function bareInteractiveShell(command: string): boolean {
+  return /^\s*(?:exec\s+)?(?:\S*\/)?(?:bash|zsh|sh|dash|ksh|fish|python[0-9.]*|node|bun|deno|irb|ruby|perl|php|lua)(?:\s+(?:-[il]+|--login|--interactive))*\s*$/.test(command)
 }
-
-// The command as the model wrote it, from one closeStdin rewrote (PostToolUse
-// may carry the rewritten one).
-export function unwrapStdin(command: string): string {
-  const m = /^\{\n([\s\S]*)\n\} <\/dev\/null$/.exec(command) ?? /^begin\n([\s\S]*)\nend <\/dev\/null$/.exec(command)
-  return m ? m[1]! : command
-}
-
-// Reopening the terminal by hand (its device, or the stdout/stderr descriptors
-// that point at it) would undo closeStdin.
-export const REOPENS_TERMINAL = /\/dev\/(?:tty|pts\/|fd\/[0-2]\b|std(?:in|out|err)\b)|\/proc\/(?:self|\$\$|\d+)\/fd\/[0-2]\b|<&\s*[12]\b|<>\s*\/dev/
 
 const deny = (reason: string): HookOutput => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } })
 
@@ -311,14 +295,8 @@ async function dispatch(event: string, input: HookInput, dir: string, dataDir: s
           const command = shellCommand(toolInput)
           const reason = await factory.guardShell(command, actor)
           if (reason) return withNotices(deny(reason))
-          if (!(await factory.guardsLive())) return withNotices({})
-          if (REOPENS_TERMINAL.test(command)) return withNotices(deny('code-factory: do not reopen the terminal (/dev/tty, the stdout or stderr descriptors) while the factory loop runs; input sent to it is never checked.'))
-          const shell = str(toolInput.shell) || process.env.SHELL || '/bin/sh'
-          const closed = closeStdin(command, shell)
-          if (closed === null) return withNotices(deny(`code-factory: the factory loop runs shell commands through bash, zsh, sh or fish only (this call uses ${shell.split(/[\\/]/).pop()}).`))
-          // An argv-style call (the older shell tool) has no terminal to write to later.
-          if (closed === command || typeof (toolInput.command ?? toolInput.cmd) !== 'string') return withNotices({})
-          return withNotices({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', updatedInput: { ...toolInput, command: closed } } })
+          if (bareInteractiveShell(command) && (await factory.guardsLive())) return withNotices(deny('code-factory: no interactive shells or REPLs while the factory loop runs; run each command directly so the gates can check it.'))
+          return withNotices({})
         }
         if (tool === 'apply_patch' || tool === 'Edit' || tool === 'Write') {
           const paths = [...patchPaths(shellCommand(toolInput) || str(toolInput.patch) || str(toolInput.input)), str(toolInput.file_path), str(toolInput.path)].filter(Boolean)
@@ -351,7 +329,7 @@ async function dispatch(event: string, input: HookInput, dir: string, dataDir: s
     case 'PostToolUse': {
       const tool = input.tool_name ?? ''
       if (tool === 'Bash') {
-        const note = await factory.afterShell(unwrapStdin(shellCommand(input.tool_input)), responseText(input.tool_response), responseOk(input.tool_response))
+        const note = await factory.afterShell(shellCommand(input.tool_input), responseText(input.tool_response), responseOk(input.tool_response))
         return withNotices(note ? { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: note } } : {})
       }
       // The reviewer is bound only to the id its own spawn returned, never to

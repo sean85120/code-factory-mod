@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { decisionsHash, DEFAULT_STATE, parseSettings, parseTodo } from '../hooks/lib.ts'
-import { agentIdFrom, closeStdin, commandOf, factoryRoot, handle, REOPENS_TERMINAL, repoTop, responseOk, shellCommand, unwrapStdin } from './hook.ts'
+import { agentIdFrom, bareInteractiveShell, commandOf, factoryRoot, handle, repoTop, responseOk, shellCommand } from './hook.ts'
 import type { Env, HookInput } from './hook.ts'
 
 // The session runs in the repo the input names, as Codex runs hooks in the session's directory.
@@ -84,6 +84,7 @@ test('$factory-start hands the work item to this turn, and Stop continues with t
   const ctx = String((out.hookSpecificOutput as { additionalContext: string }).additionalContext)
   assert.match(ctx, /CODE FACTORY: work item T-001/)
   assert.match(ctx, /spawn_agent/)
+  assert.match(ctx, /never open an interactive shell/)
   assert.match(ctx, /\$factory-/)
   assert.equal(stateOf(dir).autopilot, true)
 
@@ -193,31 +194,14 @@ test('a review prompt in an input list must be the only item', async () => {
   assert.equal((ok.hookSpecificOutput as { permissionDecision: string }).permissionDecision, 'allow')
 })
 
-test('while the gates are on, every shell command runs with its stdin closed', async () => {
-  // In a real shell: input waiting on stdin never reaches the command.
-  for (const shell of ['bash', 'sh', 'zsh']) {
-    const which = spawnSync('sh', ['-c', `command -v ${shell}`], { encoding: 'utf8' })
-    if (which.status !== 0) continue
-    const cmd = closeStdin("cat; echo end; python3 - <<'PY'\nprint('heredoc ok')\nPY", shell)!
-    const r = spawnSync(shell, ['-c', cmd], { input: 'echo INJECTED\n', encoding: 'utf8' })
-    assert.equal(r.stdout.includes('INJECTED'), false, shell)
-    assert.match(r.stdout, /end\nheredoc ok/, shell)
-  }
-  assert.match(closeStdin('ls', '/opt/homebrew/bin/fish') ?? '', /^begin\nls\nend <\/dev\/null$/)
-  assert.equal(unwrapStdin(closeStdin('git commit -m x', 'bash')!), 'git commit -m x')
-  assert.equal(closeStdin('ls', 'pwsh'), null)
-  for (const evade of ['bash </dev/tty', 'exec 0<&1; bash', 'python3 < /proc/self/fd/2', 'cat /dev/stdin | sh']) assert.ok(REOPENS_TERMINAL.test(evade), evade)
-  for (const ok of ['npm test 2>&1 | tee log', 'git commit -m "x"', 'echo hi >&2']) assert.equal(REOPENS_TERMINAL.test(ok), false, ok)
-
+test('while the gates are on, a call that is only an interactive shell or REPL is refused; commands are not rewritten', async () => {
+  for (const c of ['bash', 'zsh -l', '/bin/sh -i', 'exec bash --login', 'python3', 'node']) assert.equal(bareInteractiveShell(c), true, c)
+  for (const c of ['bash -lc "npm test"', 'bash script.sh', 'python3 -m pytest', 'node --test', 'npm test', 'git status', 'echo bash']) assert.equal(bareInteractiveShell(c), false, c)
   const { dir, data } = repo({ autopilot: true, current: 'T-001' })
-  const pre = (toolInput: unknown) => hook({ hook_event_name: 'PreToolUse', cwd: dir, session_id: 's', tool_name: 'Bash', tool_input: toolInput }, { PLUGIN_DATA: data })
-  const out = await pre({ command: 'bash', shell: '/bin/zsh' })
-  const h = out.hookSpecificOutput as { permissionDecision: string; updatedInput: { command: string } }
-  assert.equal(h.permissionDecision, 'allow')
-  assert.equal(h.updatedInput.command, '{\nbash\n} </dev/null')
-  assert.match(JSON.stringify(await pre({ command: 'bash </dev/tty' })), /do not reopen the terminal/)
-  assert.match(JSON.stringify(await pre({ command: 'ls', shell: 'pwsh' })), /bash, zsh, sh or fish only/)
-  // Not live: commands are left as they are.
+  const pre = (command: string) => hook({ hook_event_name: 'PreToolUse', cwd: dir, session_id: 's', tool_name: 'Bash', tool_input: { command } }, { PLUGIN_DATA: data })
+  assert.match(JSON.stringify(await pre('bash')), /no interactive shells or REPLs/)
+  // Allowed commands pass unchanged, so Codex's own approval rules still match them.
+  assert.deepEqual(await pre('npm test 2>&1 | tee log'), {})
   const idle = repo({ autopilot: false })
   assert.deepEqual(await hook({ hook_event_name: 'PreToolUse', cwd: idle.dir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'bash' } }, { PLUGIN_DATA: idle.data }), {})
 })
