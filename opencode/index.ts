@@ -41,12 +41,17 @@ function resultText(result: unknown): string {
   return [content, str(output.output), str(r.output)].filter(Boolean).join('\n')
 }
 
-function childSessionId(result: unknown): string | null {
-  const out = asInput(asInput(result).output)
-  if (/^ses_[A-Za-z0-9]+$/.test(str(out.sessionID))) return str(out.sessionID)
-  const m = /\b(ses_[A-Za-z0-9]{6,})\b/.exec(JSON.stringify(result ?? ''))
-  return m ? m[1]! : null
+// The child session a `subagent` call started, from the call's own result only.
+export function childSessionId(result: unknown, caller: string): string | null {
+  const id = str(asInput(asInput(result).output).sessionID)
+  return /^ses_[A-Za-z0-9]+$/.test(id) && id !== caller ? id : null
 }
+
+// The review spawn carries the agent, a description and the prompt, nothing
+// that changes the agent or resumes an existing session.
+const REVIEW_KEYS = new Set(['agent', 'subagent_type', 'description', 'prompt'])
+export const plainReviewCall = (input: Input): boolean =>
+  (input.agent === 'general' || input.subagent_type === 'general') && Object.entries(input).every(([k, v]) => REVIEW_KEYS.has(k) || v === undefined || v === null || v === false || v === '')
 
 const plugin: Plugin.Plugin = {
   id: 'code-factory',
@@ -106,8 +111,10 @@ const plugin: Plugin.Plugin = {
           name,
           description: `code-factory: ${c.description}`,
           execute: async ({ sessionID, prompt }) => {
-            loopSession = sessionID
             const reply = await factory.command(name, prompt.text ?? '')
+            // Only a command that hands out work makes this the factory's session;
+            // /factory-status typed elsewhere must not take the loop over.
+            if (reply.prompt) loopSession = sessionID
             const recent = name === 'factory-status' && notes.length > 0 ? `\n\nRecent notices:\n${notes.join('\n')}` : ''
             await tell(sessionID, `${reply.text}${recent}`)
             if (reply.prompt) await submit(sessionID, reply.prompt)
@@ -127,6 +134,8 @@ const plugin: Plugin.Plugin = {
     await ctx.session.hook('experimental.idle', async e => {
       const state = await factory.readState()
       if (state.reviewAgentId !== null && e.sessionID === state.reviewAgentId) {
+        // The reviewer waiting for its own verifier agents has not finished.
+        if (e.background.length > 0) return
         const messages = await ctx.session.context({ sessionID: e.sessionID })
         await factory.reviewFinished(e.sessionID, lastAssistantText(messages as readonly unknown[]))
         return
@@ -152,9 +161,12 @@ const plugin: Plugin.Plugin = {
         return
       }
       if (e.tool === 'subagent' || e.tool === 'task') {
-        const prompt = str(input.prompt)
-        const plain = (input.agent === 'general' || input.subagent_type === 'general') && input.model === undefined
-        const r = await factory.reviewSpawn(prompt, actor(e.sessionID), plain)
+        // Resuming an existing child session is a message to a running agent.
+        if (str(input.sessionID) || str(input.task_id)) {
+          const deny = await factory.guardAgentMessage(actor(e.sessionID))
+          if (deny) throw new Error(deny)
+        }
+        const r = await factory.reviewSpawn(str(input.prompt), actor(e.sessionID), plainReviewCall(input))
         if (r && 'deny' in r) throw new Error(r.deny)
         if (r && 'prompt' in r) e.input = { ...input, prompt: r.prompt }
       }
@@ -163,9 +175,11 @@ const plugin: Plugin.Plugin = {
     await ctx.tool.hook('execute.after', async e => {
       const input = asInput(e.input)
       if ((e.tool === 'subagent' || e.tool === 'task') && str(input.prompt).includes(REVIEW_TAG)) {
-        const id = e.status === 'completed' ? childSessionId(e.result) : null
-        if (id) await factory.reviewLaunched(id)
-        else await factory.reviewLaunchFailed()
+        const id = e.status === 'completed' ? childSessionId(e.result, e.sessionID) : null
+        if (id) {
+          children.add(id)
+          await factory.reviewLaunched(id)
+        } else await factory.reviewLaunchFailed()
         return
       }
       if (e.tool !== 'shell' && e.tool !== 'bash') return

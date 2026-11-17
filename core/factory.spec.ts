@@ -249,7 +249,7 @@ test('the loop pauses when everything is done', async () => {
 
 test('a prompt the person types pauses the loop; factory commands do not', async () => {
   const w = world({ state: { autopilot: true, current: 'T-001' } })
-  w.runtime = { epoch: 0, turn: { kind: 'work', at: w.now }, nonce: 'x' }
+  w.runtime = { epoch: 0, turn: { kind: 'work', at: w.now, owner: 'me' }, nonce: 'x' }
   const f = createFactory(hostFor(w))
   await f.onPersonPrompt('/factory-status')
   assert.equal(state(w).autopilot, true)
@@ -259,9 +259,61 @@ test('a prompt the person types pauses the loop; factory commands do not', async
   assert.equal(await f.onTurnEnd('answer'), null)
 })
 
+test('another session sharing the runtime neither ends nor clears the loop session\'s turn', async () => {
+  const w = world({ state: { autopilot: true, current: 'T-001' } })
+  w.files.set('.factory/lock.json', JSON.stringify({ owner: 'loop', heartbeat: w.now }))
+  w.runtime = { epoch: 0, turn: { kind: 'work', at: w.now, owner: 'loop' }, nonce: 'x' }
+  const other = createFactory(hostFor(w, { owner: 'other' }))
+  assert.equal(await other.onTurnEnd('answer'), null)
+  await other.onPersonPrompt('just a question in another session')
+  assert.equal(w.runtime.turn?.owner, 'loop')
+  // The loop session's own turn end still carries on.
+  const next = await createFactory(hostFor(w, { owner: 'loop' })).onTurnEnd('answer')
+  assert.match(next?.text ?? '', /T-001 is not marked done/)
+})
+
+test('a work turn this session armed keeps its gates after another session takes the lock', async () => {
+  const w = world({ state: { autopilot: true, current: 'T-001' } })
+  w.files.set('.factory/lock.json', JSON.stringify({ owner: 'other', heartbeat: w.now }))
+  w.runtime = { epoch: 0, turn: { kind: 'work', at: w.now, owner: 'me' }, nonce: 'x' }
+  const f = createFactory(hostFor(w))
+  assert.match((await f.guardShell('git push origin main')) ?? '', /never push to main/)
+  assert.equal(await f.guardsLive(), true)
+})
+
+test('a loop step that ends without work does not keep the lock', async () => {
+  const done = TODO.replaceAll('- status: todo', '- status: done')
+  const w = world({ todo: done, state: { autopilot: true, approvedDone: ['T-001', 'T-002'] } })
+  assert.equal(await createFactory(hostFor(w)).advance(), null)
+  assert.equal(JSON.parse(w.files.get('.factory/lock.json') ?? '{}').owner, null)
+})
+
+test('while the review starts or runs, the main session starts no other agent and sends no messages', async () => {
+  const w = world({ state: { autopilot: true, current: 'T-001', reviewAgentId: PENDING_REVIEWER, reviewAgentAt: 1_000_000 } })
+  const f = createFactory(hostFor(w))
+  assert.match(JSON.stringify(await f.reviewSpawn('reply: FACTORY-REVIEW: danger=0 medium=0 security=0 sha=abcdef0', undefined, true)), /start no other agents/)
+  assert.equal(await f.reviewSpawn('verify a finding', 'child-1', true), null)
+  assert.match((await f.guardAgentMessage()) ?? '', /send no messages/)
+  w.files.set('.factory/state.json', JSON.stringify({ ...state(w), reviewAgentId: null }))
+  assert.equal(await f.reviewSpawn('look something up', undefined, true), null)
+  assert.equal(await f.guardAgentMessage(), null)
+})
+
+test('start while this session\'s factory turn runs hands out nothing new', async () => {
+  const w = world({ state: { autopilot: true, current: 'T-001' } })
+  w.runtime = { epoch: 0, turn: { kind: 'work', at: w.now, owner: 'me' }, nonce: 'x' }
+  const r = await createFactory(hostFor(w)).command('factory-start', '')
+  assert.equal(r.prompt, undefined)
+  assert.match(r.text, /still in progress/)
+  assert.equal(state(w).attempts, 0)
+  // A stale turn of a session that is gone does not block a start.
+  w.runtime = { epoch: 0, turn: { kind: 'work', at: w.now, owner: 'gone' }, nonce: 'x' }
+  assert.match((await createFactory(hostFor(w)).command('factory-start', '')).prompt?.text ?? '', /T-001/)
+})
+
 test('an interrupted factory turn pauses the loop', async () => {
   const w = world({ state: { autopilot: true, current: 'T-001' } })
-  w.runtime = { epoch: 0, turn: { kind: 'work', at: w.now }, nonce: 'x' }
+  w.runtime = { epoch: 0, turn: { kind: 'work', at: w.now, owner: 'me' }, nonce: 'x' }
   await createFactory(hostFor(w)).onTurnEnd('aborted')
   assert.equal(state(w).pausedReason, 'you interrupted it')
 })
@@ -269,7 +321,7 @@ test('an interrupted factory turn pauses the loop', async () => {
 test('a turn that ends while the reviewer works waits for it', async () => {
   const mk = () => {
     const w = world({ state: { autopilot: true, current: 'T-001', reviewAgentId: 'r1', reviewAgentAt: 1_000_000 } })
-    w.runtime = { epoch: 0, turn: { kind: 'work', at: w.now }, nonce: 'x' }
+    w.runtime = { epoch: 0, turn: { kind: 'work', at: w.now, owner: 'me' }, nonce: 'x' }
     return w
   }
   const quiet = mk()

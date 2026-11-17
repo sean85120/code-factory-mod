@@ -90,12 +90,14 @@ export type Prompt = { headline: string; text: string; kind: 'work' | 'design' }
 export type Reply = { text: string; prompt?: Prompt }
 
 // Flags that live as long as a session. `turn` is set while a turn the factory
-// submitted runs; the guards stay armed for a work turn even if the loop gets
+// submitted runs, and belongs to the session (`owner`) that runs it: Codex keeps
+// these flags per repository, so another session in the same repo must neither
+// end nor arm it. The guards stay armed for a work turn even if the loop gets
 // paused halfway. `epoch` is bumped by every pause, stop or start the person
 // makes, so a loop step that started before one never writes after it.
 // `nonce` marks the prompt the factory handed out last (Codex echoes it back
 // through UserPromptSubmit).
-export type Runtime = { epoch: number; turn: { kind: 'work' | 'design'; at: number } | null; nonce: string }
+export type Runtime = { epoch: number; turn: { kind: 'work' | 'design'; at: number; owner: string } | null; nonce: string }
 
 export interface Host {
   readonly name: string
@@ -186,17 +188,19 @@ export function createFactory(host: Host) {
 
   const bumpEpoch = (): Promise<Runtime> => setRt(r => ({ ...r, epoch: r.epoch + 1 }))
 
+  const ownTurn = (r: Runtime): boolean => r.turn !== null && r.turn.owner === host.owner
+
   async function turnBusy(): Promise<boolean> {
     const r = await rt()
-    if (!r.turn) return false
-    if (host.now() - r.turn.at < FACTORY_TURN_TTL_MS) return true
-    await setRt(x => ({ ...x, turn: null }))
+    if (!ownTurn(r)) return false
+    if (host.now() - r.turn!.at < FACTORY_TURN_TTL_MS) return true
+    await setRt(x => (ownTurn(x) ? { ...x, turn: null } : x))
     return false
   }
 
   async function armed(): Promise<boolean> {
     const r = await rt()
-    return r.turn !== null && r.turn.kind === 'work' && host.now() - r.turn.at < FACTORY_TURN_TTL_MS
+    return ownTurn(r) && r.turn!.kind === 'work' && host.now() - r.turn!.at < FACTORY_TURN_TTL_MS
   }
 
   // ---- state --------------------------------------------------------------
@@ -402,7 +406,7 @@ export function createFactory(host: Host) {
 
   async function beginTurn(kind: 'work' | 'design'): Promise<string> {
     const nonce = host.newNonce()
-    await setRt(r => ({ ...r, turn: { kind, at: host.now() }, nonce }))
+    await setRt(r => ({ ...r, turn: { kind, at: host.now(), owner: host.owner }, nonce }))
     return nonce
   }
 
@@ -458,6 +462,17 @@ export function createFactory(host: Host) {
   // One step: verify the current item, then hand out the next prompt. Returns
   // the prompt the host must submit, or null when there is nothing to submit.
   async function advance(): Promise<Prompt | null> {
+    const next = await advanceStep()
+    // A step that ended without a prompt (a pause, a stop that landed meanwhile,
+    // the plan finished) must not leave this session holding the lock.
+    if (next === null) {
+      const s = await readState()
+      if (!s.autopilot || s.unreadable) await releaseLock()
+    }
+    return next
+  }
+
+  async function advanceStep(): Promise<Prompt | null> {
     if (await turnBusy()) return null
     const guard: LoopGuard = { epoch: (await rt()).epoch }
     const snap = await load()
@@ -598,7 +613,7 @@ export function createFactory(host: Host) {
   // A turn ended. Returns the next prompt when the loop goes on.
   async function onTurnEnd(outcome: 'answer' | 'aborted' | 'error'): Promise<Prompt | null> {
     const r = await rt()
-    if (!r.turn) return null
+    if (!ownTurn(r)) return null
     const state = await readState()
     if (outcome === 'answer' && state.autopilot && state.current && state.reviewAgentId !== null) {
       const { settings } = await load()
@@ -611,7 +626,7 @@ export function createFactory(host: Host) {
         return { kind: 'work', headline: 'CODE FACTORY: waiting for the review agent', text: forHost(host.notes.waitForReviewer, host.commandPrefix) }
       }
     }
-    await setRt(x => ({ ...x, turn: null }))
+    await setRt(x => (ownTurn(x) ? { ...x, turn: null } : x))
     if (!state.autopilot) return null
     if (outcome !== 'answer') {
       await pause(state, outcome === 'aborted' ? 'you interrupted it' : 'the turn ended with an error')
@@ -626,7 +641,7 @@ export function createFactory(host: Host) {
     if (/^\s*[/$]factory(?:-|\s|$)/.test(text)) return
     const state = await readState()
     if (state.autopilot && !(await lockedByOther())) await pause(state, 'you sent a prompt; /factory-start resumes')
-    await setRt(r => ({ ...r, turn: null }))
+    await setRt(r => (ownTurn(r) ? { ...r, turn: null } : r))
   }
 
   // ---- commands -----------------------------------------------------------
@@ -644,7 +659,9 @@ export function createFactory(host: Host) {
     await ensureGitignore()
     const ts = host.now()
     await patchState(fresh => ({ ...withEvent(fresh, ts, { itemId: fresh.current, kind: 'resumed', detail: 'new run' }), autopilot: true, pausedReason: null, doneThisRun: 0, releaseAttempts: 0, attempts: fresh.current ? fresh.attempts : 0 }))
-    await setRt(r => ({ ...r, turn: null }))
+    // A factory turn of this session still running carries the loop on when it
+    // ends; handing out another step now would run two at once.
+    if (await turnBusy()) return { text: say('Factory running. A factory turn is still in progress; the loop continues when it ends. /factory-stop stops it; /factory-status shows where it is.') }
     const prompt = await advance()
     const text = say(`Factory running. Typing your own prompt or interrupting a turn pauses the loop; /factory-stop stops it; /factory-status shows where it is.${prompt ? '' : ` Nothing was handed out: ${(await readState()).pausedReason ?? 'see /factory-status'}.`}`)
     return prompt ? { text, prompt } : { text }
@@ -805,7 +822,7 @@ export function createFactory(host: Host) {
     await bumpEpoch()
     const after = await load()
     await writeState({ ...after.state, approved: true, approvedHash: decisionsHash(after.settings, after.items), approvedDone: after.items.filter(i => i.status === 'done').map(i => i.id), pausedReason: after.state.autopilot ? null : 'approved, not started', roadmapAsked: false })
-    await setRt(r => (r.turn?.kind === 'design' ? { ...r, turn: null } : r))
+    await setRt(r => (ownTurn(r) && r.turn!.kind === 'design' ? { ...r, turn: null } : r))
     const lines = after.items.filter(i => i.status === 'todo').map(i => `- ${i.id} [${i.type}] ${i.title}`)
     const warn = !snap.settings.requireBranchProtection && protection.length > 0 ? `\nWarnings (set requireBranchProtection to make them blocking):\n- ${protection.join('\n- ')}\n` : ''
     const head = `Approved. ${warn}${promotedCount > 0 ? `${promotedCount} proposed item(s) promoted to todo.\n` : ''}Queue (in order):\n${lines.join('\n') || '(empty)'}\n`
@@ -869,8 +886,24 @@ export function createFactory(host: Host) {
 
   // ---- guards -------------------------------------------------------------
 
+  // A work turn this session armed keeps its gates even if another session has
+  // since taken the lock (on Codex the lock is only refreshed when a hook runs,
+  // so a long tool call can let it go stale); otherwise the loop must be on and
+  // the lock not held elsewhere.
   async function isLive(state: FactoryState): Promise<boolean> {
-    return state.approved && (state.autopilot || (await armed())) && !(await lockedByOther())
+    if (!state.approved) return false
+    if (await armed()) return true
+    return state.autopilot && !(await lockedByOther())
+  }
+
+  const MESSAGE_DENY = 'code-factory: send no messages to agents while the review agent runs; its report is read as it finishes.'
+
+  // A message to a running agent, or a resumed one, while the review runs could
+  // steer the reviewer; only the reviewer itself may send them.
+  async function guardAgentMessage(actor?: string): Promise<string | null> {
+    const snap = await load()
+    if (!(await isLive(snap.state)) || snap.state.reviewAgentId === null || actor === snap.state.reviewAgentId) return null
+    return reviewPending(snap.state, snap.settings) ? MESSAGE_DENY : null
   }
 
   // `actor` is the subagent or child session making the call, undefined for the main session.
@@ -1023,7 +1056,14 @@ export function createFactory(host: Host) {
   // prompt from the work item. Returns a deny, the prompt to run (with the
   // factory's additions), or null to let a call that is not a review through.
   async function reviewSpawn(prompt: string, actor: string | undefined, plainAgent: boolean): Promise<{ deny: string } | { prompt: string } | null> {
-    if (!prompt.includes(REVIEW_TAG)) return null
+    if (!prompt.includes(REVIEW_TAG)) {
+      // While the reviewer starts or runs, the main session starts no other
+      // agent, so nothing but the reviewer can be taken for it.
+      if (actor !== undefined) return null
+      const snap = await load()
+      if (!(await isLive(snap.state)) || snap.state.reviewAgentId === null || !reviewPending(snap.state, snap.settings)) return null
+      return { deny: 'code-factory: start no other agents while the review agent runs; wait for its verdict.' }
+    }
     if (reviewInFlight) return { deny: 'code-factory: a review agent is already starting; wait for it.' }
     reviewInFlight = true
     try {
@@ -1120,6 +1160,8 @@ export function createFactory(host: Host) {
     reviewLaunched,
     reviewLaunchFailed,
     reviewFinished,
+    guardAgentMessage,
+    guardsLive: async (): Promise<boolean> => isLive(await readState()),
     touchLock,
     readState,
     runtime: rt,

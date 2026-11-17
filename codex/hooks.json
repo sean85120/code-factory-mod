@@ -16,7 +16,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "^(Bash|apply_patch|Edit|Write|spawn_agent|Agent)$",
+        "matcher": "^(Bash|apply_patch|Edit|Write|spawn_agent|Agent|send_input|send_message|SendMessage|resume_agent)$",
         "hooks": [
           {
             "type": "command",
@@ -35,17 +35,6 @@
             "type": "command",
             "command": "node --experimental-strip-types --no-warnings \"$PLUGIN_ROOT/codex/hook.ts\"",
             "timeout": 120
-          }
-        ]
-      }
-    ],
-    "SubagentStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node --experimental-strip-types --no-warnings \"$PLUGIN_ROOT/codex/hook.ts\"",
-            "timeout": 30
           }
         ]
       }

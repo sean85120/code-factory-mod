@@ -78,11 +78,13 @@ function withPrompt(toolInput: Obj, field: string, prompt: string): Obj {
   return { ...toolInput, [k!]: list }
 }
 
-function agentIdFrom(response: unknown): string | null {
+// Only a field that names the agent's id is taken: SubagentStart/SubagentStop
+// identify the reviewer by agent_id, and any other id (a call id, a thread id)
+// would make its verdict unmatchable.
+export function agentIdFrom(response: unknown): string | null {
   const r = asObj(typeof response === 'string' ? safeJson(response) : response)
-  for (const k of ['agent_id', 'agentId', 'id', 'thread_id', 'threadId']) if (/^[A-Za-z0-9_-]{4,}$/.test(str(r[k]))) return str(r[k])
-  const m = /\b(?:agent_id|agentId|thread_id|id)["':=\s]+([A-Za-z0-9_-]{6,})/.exec(typeof response === 'string' ? response : JSON.stringify(response ?? ''))
-  return m ? m[1]! : null
+  for (const k of ['agent_id', 'agentId']) if (/^[A-Za-z0-9_-]{4,}$/.test(str(r[k]))) return str(r[k])
+  return null
 }
 
 function safeJson(text: string): unknown {
@@ -131,11 +133,55 @@ export async function handle(input: HookInput, env: Env = process.env): Promise<
     newNonce: () => randomUUID().slice(0, 8),
   }
   const factory = createFactory(host)
-  const withNotices = (out: HookOutput): HookOutput => (notices.length > 0 ? { ...out, systemMessage: notices.join('\n') } : out)
 
   // A repo without .factory/ is not using the factory: nothing to do or guard.
   if (!(await io.exists(FACTORY_DIR)) && !(event === 'UserPromptSubmit' && commandOf(str(input.prompt)))) return {}
   await factory.touchLock()
+  // The PR gate runs the build and the tests and the Stop step checks the base
+  // branch, each for up to ten minutes: keep the lock fresh meanwhile.
+  const beat = setInterval(() => void factory.touchLock(), 30000)
+  beat.unref?.()
+  try {
+    return await dispatch(event, input, dir, dataDir, factory, notices)
+  } finally {
+    clearInterval(beat)
+  }
+}
+
+// Reviewer stops that arrived before the review spawn reported the reviewer's id.
+type EarlyStop = { agent: string; message: string; at: number }
+const EARLY_MS = 3600000
+
+function earlyFile(dataDir: string, dir: string): string {
+  return join(dataDir, `early-stops-${createHash('sha256').update(dir).digest('hex').slice(0, 16)}.json`)
+}
+
+async function readEarly(dataDir: string, dir: string): Promise<EarlyStop[]> {
+  try {
+    const raw = JSON.parse(await readFile(earlyFile(dataDir, dir), 'utf8')) as unknown
+    return Array.isArray(raw) ? (raw as EarlyStop[]).filter(e => e && typeof e.agent === 'string' && typeof e.message === 'string' && Date.now() - Number(e.at) < EARLY_MS) : []
+  } catch {
+    return []
+  }
+}
+
+async function writeEarly(dataDir: string, dir: string, list: EarlyStop[]): Promise<void> {
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(earlyFile(dataDir, dir), JSON.stringify(list.slice(-10)))
+}
+
+const MESSAGE_TOOLS = new Set(['send_input', 'send_message', 'SendMessage', 'resume_agent'])
+
+// The review spawn may carry the prompt and nothing else that changes the
+// agent (a model, a type, a forked context): an option left at null, false or
+// empty is fine.
+function onlyPrompt(toolInput: Obj, field: string): boolean {
+  const key = field.split('.')[0]
+  return Object.entries(toolInput).every(([k, v]) => k === key || v === null || v === undefined || v === false || v === '')
+}
+
+async function dispatch(event: string, input: HookInput, dir: string, dataDir: string, factory: ReturnType<typeof createFactory>, notices: string[]): Promise<HookOutput> {
+  const withNotices = (out: HookOutput): HookOutput => (notices.length > 0 ? { ...out, systemMessage: notices.join('\n') } : out)
 
   // The full prompt goes in a file and the continuation points at it, because
   // Codex shortens continuation prompts longer than about 2,500 tokens.
@@ -163,12 +209,18 @@ export async function handle(input: HookInput, env: Env = process.env): Promise<
           const reason = await factory.guardWrite(paths, actor)
           return withNotices(reason ? deny(reason) : {})
         }
+        if (MESSAGE_TOOLS.has(tool)) {
+          const reason = await factory.guardAgentMessage(actor)
+          return withNotices(reason ? deny(reason) : {})
+        }
         if (tool === 'spawn_agent' || tool === 'Agent') {
           const field = reviewField(toolInput)
-          if (!field) return {}
+          if (!field) {
+            const r = await factory.reviewSpawn('', actor, true)
+            return withNotices(r && 'deny' in r ? deny(r.deny) : {})
+          }
           const prompt = field.includes('.') ? str(asObj((toolInput[field.split('.')[0]!] as unknown[])[Number(field.split('.')[1])]).text) : str(toolInput[field])
-          const plain = toolInput.model === undefined && toolInput.reasoning_effort === undefined
-          const r = await factory.reviewSpawn(prompt, actor, plain)
+          const r = await factory.reviewSpawn(prompt, actor, onlyPrompt(toolInput, field))
           if (r && 'deny' in r) return withNotices(deny(r.deny))
           if (r && 'prompt' in r) return withNotices({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', updatedInput: withPrompt(toolInput, field, r.prompt) } })
           return {}
@@ -176,8 +228,7 @@ export async function handle(input: HookInput, env: Env = process.env): Promise<
         return {}
       } catch (err) {
         // While the loop is live a broken gate must not let the call through.
-        const state = await factory.readState().catch(() => null)
-        if (state && state.approved && state.autopilot) return deny(`code-factory: the gate failed (${String(err).slice(0, 200)}); the call is refused while the loop runs.`)
+        if (await factory.guardsLive().catch(() => true)) return deny(`code-factory: the gate failed (${String(err).slice(0, 200)}); the call is refused while the loop runs.`)
         return {}
       }
     }
@@ -187,19 +238,31 @@ export async function handle(input: HookInput, env: Env = process.env): Promise<
         const note = await factory.afterShell(shellCommand(input.tool_input), responseText(input.tool_response), responseOk(input.tool_response))
         return withNotices(note ? { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: note } } : {})
       }
+      // The reviewer is bound only to the id its own spawn returned, never to
+      // whichever agent happens to start first.
       if ((tool === 'spawn_agent' || tool === 'Agent') && reviewField(asObj(input.tool_input))) {
         const id = agentIdFrom(input.tool_response)
-        if (id) await factory.reviewLaunched(id)
+        if (!id) {
+          await factory.reviewLaunchFailed()
+          notices.push('factory: the review agent was not started (no agent id in the spawn result); spawn it again')
+        } else if (await factory.reviewLaunched(id)) {
+          const early = await readEarly(dataDir, dir)
+          const stop = early.find(e => e.agent === id)
+          if (stop) {
+            await writeEarly(dataDir, dir, early.filter(e => e !== stop))
+            await factory.reviewFinished(id, stop.message)
+          }
+        }
       }
       return withNotices({})
     }
-    case 'SubagentStart': {
-      const state = await factory.readState()
-      if (state.reviewAgentId === PENDING_REVIEWER && input.agent_id) await factory.reviewLaunched(input.agent_id)
-      return withNotices({})
-    }
     case 'SubagentStop': {
-      if (input.agent_id) await factory.reviewFinished(input.agent_id, input.last_assistant_message ?? '')
+      if (!input.agent_id) return {}
+      if ((await factory.readState()).reviewAgentId === PENDING_REVIEWER) {
+        await writeEarly(dataDir, dir, [...(await readEarly(dataDir, dir)), { agent: input.agent_id, message: input.last_assistant_message ?? '', at: Date.now() }])
+        return {}
+      }
+      await factory.reviewFinished(input.agent_id, input.last_assistant_message ?? '')
       return withNotices({})
     }
     case 'UserPromptSubmit': {

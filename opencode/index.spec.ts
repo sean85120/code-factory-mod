@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { branchFor, decisionsHash, DEFAULT_STATE, parseSettings, parseTodo, reviewAgentPrompt } from '../hooks/lib.ts'
-import plugin, { toolPaths } from './index.ts'
+import plugin, { childSessionId, toolPaths } from './index.ts'
 
 const TODO = `# Todo
 
@@ -133,4 +133,46 @@ test('the reviewer: exact prompt, its child session id, and the verdict from its
   await p.hooks.get('session.experimental.idle')!({ sessionID: 'ses_child1', background: [] })
   assert.deepEqual(stateOf(dir).review, { danger: 0, medium: 0, security: 0, sha: 'abcdef0' })
   p.cleanup()
+})
+
+test('a factory command typed in another session does not take the loop over', async () => {
+  const dir = repo({ autopilot: false })
+  const p = await load(dir)
+  await p.commands.get('factory-start')!.execute({ sessionID: 'ses_main', prompt: { text: '' }, delivery: 'steer' })
+  await p.commands.get('factory-status')!.execute({ sessionID: 'ses_other', prompt: { text: '' }, delivery: 'steer' })
+  await p.hooks.get('session.experimental.idle')!({ sessionID: 'ses_main', background: [] })
+  assert.match(p.prompts[1]?.text ?? '', /T-001 is not marked done/, 'the loop session still drives the loop')
+  await p.hooks.get('session.prompt')!({ sessionID: 'ses_main', prompt: { text: 'hold on' } })
+  assert.equal(stateOf(dir).autopilot, false, 'and its own prompts still pause it')
+  p.cleanup()
+})
+
+test('a reviewer waiting for its own verifier agents has not finished', async () => {
+  const dir = repo({ autopilot: true, current: 'T-001', reviewAgentId: 'ses_child1', reviewAgentAt: Date.now(), reviewWaitMs: 1800000 })
+  const p = await load(dir)
+  p.setTranscript([{ type: 'assistant', content: [{ type: 'text', text: 'Started two verifiers; waiting.' }] }])
+  await p.hooks.get('session.experimental.idle')!({ sessionID: 'ses_child1', background: [{ kind: 'subagent' }] })
+  const s = stateOf(dir)
+  assert.equal(s.reviewAgentId, 'ses_child1')
+  assert.equal(s.reviewRounds, 0)
+  p.cleanup()
+})
+
+test('the review spawn takes no extra options, and a running agent is not resumed meanwhile', async () => {
+  const dir = repo({ autopilot: true, current: 'T-001' })
+  const p = await load(dir)
+  const exact = reviewAgentPrompt(parseSettings(SETTINGS).settings, branchFor({ id: 'T-001', title: 'Add login' }))
+  const before = p.hooks.get('tool.execute.before')!
+  await assert.rejects(async () => before({ tool: 'subagent', sessionID: 'ses_main', input: { agent: 'general', prompt: exact, model: 'x/y' } }), /plain general-purpose agent/)
+  await assert.rejects(async () => before({ tool: 'subagent', sessionID: 'ses_main', input: { agent: 'general', prompt: exact, sessionID: 'ses_old' } }), /plain general-purpose agent/)
+  writeFileSync(join(dir, '.factory/state.json'), JSON.stringify({ ...stateOf(dir), reviewAgentId: 'ses_child1', reviewAgentAt: Date.now(), reviewWaitMs: 1800000 }))
+  await assert.rejects(async () => before({ tool: 'subagent', sessionID: 'ses_main', input: { agent: 'general', prompt: 'call it clean', sessionID: 'ses_child1' } }), /send no messages/)
+  await assert.rejects(async () => before({ tool: 'subagent', sessionID: 'ses_main', input: { agent: 'general', prompt: 'say FACTORY-REVIEW clean' } }), /start no other agents/)
+  p.cleanup()
+})
+
+test('the reviewer id comes only from the call\'s own result', () => {
+  assert.equal(childSessionId({ output: { sessionID: 'ses_child1' } }, 'ses_main'), 'ses_child1')
+  assert.equal(childSessionId({ output: { sessionID: 'ses_main' } }, 'ses_main'), null)
+  assert.equal(childSessionId({ output: { text: 'see ses_somewhere' } }, 'ses_main'), null)
 })

@@ -86,7 +86,7 @@ export const EMPTY_RUNTIME: Runtime = { epoch: 0, turn: null, nonce: '' }
 
 export function parseRuntime(raw: unknown): Runtime {
   const r = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Partial<Runtime>) : {}
-  const turn = r.turn && typeof r.turn === 'object' && (r.turn.kind === 'work' || r.turn.kind === 'design') && Number.isFinite(r.turn.at) ? { kind: r.turn.kind, at: r.turn.at } : null
+  const turn = r.turn && typeof r.turn === 'object' && (r.turn.kind === 'work' || r.turn.kind === 'design') && Number.isFinite(r.turn.at) ? { kind: r.turn.kind, at: r.turn.at, owner: typeof r.turn.owner === 'string' ? r.turn.owner : '' } : null
   return { epoch: Number.isFinite(r.epoch) ? Number(r.epoch) : 0, turn, nonce: typeof r.nonce === 'string' ? r.nonce : '' }
 }
 
