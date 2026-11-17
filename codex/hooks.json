@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "node --experimental-strip-types --no-warnings \"$PLUGIN_ROOT/codex/hook.ts\"",
-            "timeout": 300,
+            "timeout": 2400,
             "additionalContextLimit": 0,
             "statusMessage": "code-factory"
           }

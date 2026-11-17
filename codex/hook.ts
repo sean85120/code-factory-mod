@@ -293,6 +293,13 @@ async function dispatch(event: string, input: HookInput, dir: string, dataDir: s
             return withNotices(deny('code-factory: run git and gh commands from the factory\'s repository while the loop runs, not from another worktree or clone.'))
           }
           const command = shellCommand(toolInput)
+          // Codex applies an `apply_patch <<'EOF' ... EOF` shell command itself,
+          // so its files get the same checks as the apply_patch tool's.
+          const patched = patchPaths(command)
+          if (patched.length > 0) {
+            const denied = await factory.guardWrite(patched, actor)
+            if (denied) return withNotices(deny(denied))
+          }
           const reason = await factory.guardShell(command, actor)
           if (reason) return withNotices(deny(reason))
           if (bareInteractiveShell(command) && (await factory.guardsLive())) return withNotices(deny('code-factory: no interactive shells or REPLs while the factory loop runs; run each command directly so the gates can check it.'))
