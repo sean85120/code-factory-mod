@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { DESIGN_MARKER, LABEL_GO, LABEL_TRIAGE, designFingerprint, findDesignComment, isTrustedAuthor, issueGate, mayApprove, sha256Hex, triageAllowed } from '../hooks/lib'
+import { DESIGN_MARKER, LABEL_GO, LABEL_TRIAGE, bodyHash, designFingerprint, findDesignComment, isTrustedAuthor, issueGate, mayApprove, sha256Hex, triageAllowed, trustDesigns } from '../hooks/lib'
 import type { GateComment, GateIssue, LabelEvent } from '../hooks/lib'
 
 const ME = 'factory-bot'
@@ -140,4 +140,39 @@ test('the fingerprint changes with the number, title, body and design text', () 
   expect(designFingerprint(issue({ body: 'x' }), 'plan')).not.toBe(base)
   expect(designFingerprint(issue(), 'plan 2')).not.toBe(base)
   expect(designFingerprint(issue(), 'plan')).toBe(base)
+})
+
+test('the factory account can never approve, and cannot vouch for a stranger on the triage list', () => {
+  const labeled = issue({ labels: [LABEL_GO] })
+  const body = design().body
+  expect(issueGate(labeled, [design()], [go({ actor: ME })], ME, null)).toMatchObject({ action: 'reopen' })
+  expect(issueGate(labeled, [design()], [go({ actor: 'Factory-Bot' })], ME, null)).toMatchObject({ action: 'reopen' })
+  expect(issueGate(labeled, [design()], [go({ actor: ME })], ME, { issue: 7, hash: designFingerprint(labeled, body) })).toMatchObject({ action: 'reopen' })
+  expect(issueGate(labeled, [design()], [go()], ME, null)).toMatchObject({ action: 'record' })
+  const stranger = issue({ association: 'NONE', labels: [LABEL_TRIAGE] })
+  const own = [{ label: LABEL_TRIAGE, actor: ME, permission: 'admin', at: 50 }]
+  expect(triageAllowed(stranger, own, ME)).toBe(false)
+  expect(triageAllowed(stranger, own, 'someone-else')).toBe(true)
+  expect(issueGate(stranger, [], own, ME, null)).toMatchObject({ action: 'skip' })
+})
+
+test('a design the factory did not record posting waits without a label and is withdrawn with one, and never builds', () => {
+  const labeled = issue({ labels: [LABEL_GO] })
+  const fake = design({ trusted: false })
+  expect(issueGate(issue(), [fake], [], ME, null)).toMatchObject({ action: 'wait' })
+  expect(issueGate(labeled, [fake], [go()], ME, null)).toMatchObject({ action: 'reopen' })
+  expect(issueGate(labeled, [fake], [go()], ME, { issue: 7, hash: designFingerprint(labeled, fake.body) })).toMatchObject({ action: 'reopen' })
+  expect(issueGate(labeled, [design({ trusted: true })], [go()], ME, null)).toMatchObject({ action: 'record' })
+})
+
+test('trustDesigns marks only the factory account designs whose body hash was not recorded', () => {
+  const real = design({ body: `${DESIGN_MARKER}\nreal plan` })
+  const posted = design({ body: `${DESIGN_MARKER}\r\nreal plan\n`, at: 101 })
+  const planted = design({ body: `${DESIGN_MARKER}\nplanted`, at: 102 })
+  const stranger = design({ author: 'mallory', body: `${DESIGN_MARKER}\nhi`, at: 103 })
+  const plain = design({ body: 'a normal comment', at: 104 })
+  const w = { number: 7, comments: [real, posted, planted, stranger, plain] } as never
+  const out = trustDesigns([w], ME, new Set([bodyHash(`${DESIGN_MARKER}\nreal plan`)]))[0]!.comments
+  expect(out.map(c => c.trusted)).toEqual([undefined, undefined, false, undefined, undefined])
+  expect(bodyHash('a\r\nb\n')).toBe(bodyHash('a\nb'))
 })

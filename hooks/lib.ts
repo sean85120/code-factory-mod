@@ -47,6 +47,7 @@ export type Settings = {
   budgetUsd: number
   askNextPhase: boolean
   watchIssues: boolean
+  buildFromLabels: boolean
 }
 
 export type ReviewMark = { sha: string; danger: number; medium: number; security?: number }
@@ -108,6 +109,7 @@ export const DEFAULT_SETTINGS: Settings = {
   budgetUsd: 0,
   askNextPhase: true,
   watchIssues: false,
+  buildFromLabels: false,
 }
 
 export const DEFAULT_STATE: FactoryState = {
@@ -413,6 +415,8 @@ export function parseSettings(text: string | null): { settings: Settings; proble
   }
   if (typeof raw.askNextPhase === 'boolean') s.askNextPhase = raw.askNextPhase
   if (typeof raw.watchIssues === 'boolean') s.watchIssues = raw.watchIssues
+  if (typeof raw.buildFromLabels === 'boolean') s.buildFromLabels = raw.buildFromLabels
+  if (s.buildFromLabels && !s.watchIssues) problems.push('settings.json `buildFromLabels` needs `watchIssues` to be true.')
   return { settings: s, problems }
 }
 
@@ -432,8 +436,8 @@ export function decisionsHash(settings: Settings, items: Item[]): string {
   const frozen = items
     .filter(i => i.status !== 'proposed')
     .map(i => [i.id, i.type, i.title, i.how, i.accept, i.tests, i.depends.join(','), i.version, ...(i.issue ? [`issue=${i.issue}`] : [])].join('|'))
-  const { reviewTimeoutMs: _timeout, budgetUsd, askNextPhase, watchIssues, ...hashed } = settings
-  const added = { ...(budgetUsd !== DEFAULT_SETTINGS.budgetUsd ? { budgetUsd } : {}), ...(askNextPhase !== DEFAULT_SETTINGS.askNextPhase ? { askNextPhase } : {}), ...(watchIssues !== DEFAULT_SETTINGS.watchIssues ? { watchIssues } : {}) }
+  const { reviewTimeoutMs: _timeout, budgetUsd, askNextPhase, watchIssues, buildFromLabels, ...hashed } = settings
+  const added = { ...(budgetUsd !== DEFAULT_SETTINGS.budgetUsd ? { budgetUsd } : {}), ...(askNextPhase !== DEFAULT_SETTINGS.askNextPhase ? { askNextPhase } : {}), ...(watchIssues !== DEFAULT_SETTINGS.watchIssues ? { watchIssues } : {}), ...(buildFromLabels !== DEFAULT_SETTINGS.buildFromLabels ? { buildFromLabels } : {}) }
   return fnv1a(JSON.stringify(Object.keys(added).length > 0 ? [hashed, frozen, added] : [hashed, frozen]))
 }
 
@@ -1268,7 +1272,7 @@ Do this:
    j. Spend: an optional US-dollar budget per run (settings.budgetUsd, 0 for none; the loop pauses when one run reaches it) and whether the factory should interview them about the next phase once every item is done (settings.askNextPhase, default true).
 3. Record everything as you go, so it survives the session:
    - .factory/design.md: overview, non-goals, architecture, version plan, and a "## Decisions" section (one entry per decision: question, options, choice, why).
-   - .factory/settings.json: {"baseBranch":"main","testCmd":["bash","-lc","<full test command>"],"buildCmd":["bash","-lc","<build command>"],"e2eCmd":["bash","-lc","<e2e command>"],"e2eFor":["feature","bug"],"testTimeoutMs":600000,"mergeMethod":"squash","maxAttempts":4,"maxItemsPerRun":0,"allowNoCI":false,"requireTestChanges":true,"requireReview":true,"reviewCommand":"/review-fix","maxReviewRounds":3,"contextReset":"clear","stopAfterVersion":"<e.g. 0.3.0>","tagRelease":false,"requireBranchProtection":false,"allowTestRemoval":false,"reviewTimeoutMs":1800000,"budgetUsd":0,"askNextPhase":true,"watchIssues":false}   (omit buildCmd/e2eCmd only if the person says there is nothing to build or no UI; each command may run at most 10 minutes; budgetUsd pauses the loop once one run has spent that many US dollars, 0 means no budget; askNextPhase makes the factory interview the person about the next phase once every item is done; watchIssues, false unless the person asks, makes the factory look for new GitHub issues by collaborators every ten minutes while the loop is idle and post a design plus questions as an issue comment, never building before a collaborator adds the factory:go label)
+   - .factory/settings.json: {"baseBranch":"main","testCmd":["bash","-lc","<full test command>"],"buildCmd":["bash","-lc","<build command>"],"e2eCmd":["bash","-lc","<e2e command>"],"e2eFor":["feature","bug"],"testTimeoutMs":600000,"mergeMethod":"squash","maxAttempts":4,"maxItemsPerRun":0,"allowNoCI":false,"requireTestChanges":true,"requireReview":true,"reviewCommand":"/review-fix","maxReviewRounds":3,"contextReset":"clear","stopAfterVersion":"<e.g. 0.3.0>","tagRelease":false,"requireBranchProtection":false,"allowTestRemoval":false,"reviewTimeoutMs":1800000,"budgetUsd":0,"askNextPhase":true,"watchIssues":false,"buildFromLabels":false}   (omit buildCmd/e2eCmd only if the person says there is nothing to build or no UI; each command may run at most 10 minutes; budgetUsd pauses the loop once one run has spent that many US dollars, 0 means no budget; askNextPhase makes the factory interview the person about the next phase once every item is done; watchIssues, false unless the person asks, makes the factory look for new GitHub issues by collaborators every ten minutes while the loop is idle and post a design plus questions as an issue comment, never building before a collaborator adds the factory:go label; buildFromLabels, false unless the person asks and only valid with watchIssues, also lets the factory turn an issue into a todo item and build it once someone with write access adds the factory:go label to the posted design)
    - .factory/todo.md in exactly this format, in priority order, one block per item:
        ## T-001 [feature] Short title      (type is feature, bug, chore or docs)
        - status: proposed
@@ -2914,7 +2918,7 @@ export const LABEL_TRIAGE = 'factory:triage'
 export const DESIGN_MARKER = '<!-- code-factory:design -->'
 
 export type GateIssue = { number: number; title: string; body: string; association: string; labels: readonly string[]; state: string; editedAt: number | null; renamedAt: number | null }
-export type GateComment = { author: string; body: string; at: number; editedAt: number | null }
+export type GateComment = { author: string; body: string; at: number; editedAt: number | null; trusted?: boolean }
 export type LabelEvent = { label: string; actor: string; permission: string; at: number }
 export type GoRecord = { issue: number; hash: string }
 
@@ -2985,11 +2989,13 @@ const changedAt = (issue: GateIssue): number => Math.max(issue.editedAt ?? 0, is
 
 const before = (earlier: number, later: number): boolean => Number.isFinite(earlier) && Number.isFinite(later) && earlier < later
 
-export function triageAllowed(issue: GateIssue, events: readonly LabelEvent[]): boolean {
+const sameLogin = (a: string, b: string): boolean => a !== '' && a.toLowerCase() === b.toLowerCase()
+
+export function triageAllowed(issue: GateIssue, events: readonly LabelEvent[], me = ''): boolean {
   if (isTrustedAuthor(issue.association)) return true
   if (!issue.labels.includes(LABEL_TRIAGE)) return false
   const by = lastLabelEvent(events, LABEL_TRIAGE)
-  return by !== undefined && mayApprove(by.permission) && before(changedAt(issue), by.at)
+  return by !== undefined && !sameLogin(by.actor, me) && mayApprove(by.permission) && before(changedAt(issue), by.at)
 }
 
 export function findDesignComment(comments: readonly GateComment[], me: string): GateComment | undefined {
@@ -2999,6 +3005,12 @@ export function findDesignComment(comments: readonly GateComment[], me: string):
     .reduce<GateComment | undefined>((best, c) => (best === undefined || c.at >= best.at ? c : best), undefined)
 }
 
+export const bodyHash = (body: string): string => sha256Hex(body.replace(/\r\n/g, '\n').trim())
+
+export function trustDesigns(issues: readonly WatchedIssue[], me: string, hashes: ReadonlySet<string>): WatchedIssue[] {
+  return issues.map(w => ({ ...w, comments: w.comments.map(c => (c.author === me && c.body.includes(DESIGN_MARKER) && !hashes.has(bodyHash(c.body)) ? { ...c, trusted: false } : c)) }))
+}
+
 export function designFingerprint(issue: GateIssue, designText: string): string {
   return sha256Hex(JSON.stringify([issue.number, issue.title, issue.body, designText]))
 }
@@ -3006,12 +3018,14 @@ export function designFingerprint(issue: GateIssue, designText: string): string 
 export function issueGate(issue: GateIssue, comments: readonly GateComment[], events: readonly LabelEvent[], me: string, recorded: GoRecord | null): IssueGate {
   if (issue.state.toUpperCase() !== 'OPEN') return { action: 'skip', reason: 'the issue is closed' }
   if (!me) return { action: 'skip', reason: 'the factory account is unknown' }
-  if (!triageAllowed(issue, events)) return { action: 'skip', reason: `the author is not a collaborator; a collaborator can add ${LABEL_TRIAGE}` }
+  if (!triageAllowed(issue, events, me)) return { action: 'skip', reason: `the author is not a collaborator; a collaborator can add ${LABEL_TRIAGE}` }
   const design = findDesignComment(comments, me)
   if (!design) return { action: 'design' }
   if (!issue.labels.includes(LABEL_GO)) return { action: 'wait' }
+  if (design.trusted === false) return { action: 'reopen', reason: 'the design comment is not one the factory recorded posting, or it changed since, so it cannot be approved' }
   const go = lastLabelEvent(events, LABEL_GO)
   if (!go) return { action: 'reopen', reason: `${LABEL_GO} has no recorded label event` }
+  if (sameLogin(go.actor, me)) return { action: 'reopen', reason: `${LABEL_GO} was added by the factory's own account, which can never approve; approve from a different account` }
   if (!mayApprove(go.permission)) return { action: 'reopen', reason: `${LABEL_GO} was added by ${go.actor}, who cannot write to this repository` }
   if (!before(changedAt(issue), go.at) || !before(design.editedAt ?? 0, go.at)) return { action: 'reopen', reason: `the issue or the design was edited after ${LABEL_GO} was added, or at the same moment` }
   if (!before(design.at, go.at)) return { action: 'reopen', reason: `the design was posted after ${LABEL_GO} was added, so it was not the one approved` }
@@ -3093,18 +3107,18 @@ export function scanIssues(issues: readonly WatchedIssue[], me: string, perms: R
   })
 }
 
-export function gateText(g: IssueGate): string {
+export function gateText(g: IssueGate, canBuild = false): string {
   if (g.action === 'design') return 'design: will post a design and questions'
   if (g.action === 'wait') return `waiting: designed, a collaborator adds ${LABEL_GO} to approve`
-  if (g.action === 'record' || g.action === 'build') return 'approved: ready to build (the build step comes in a later release)'
+  if (g.action === 'record' || g.action === 'build') return canBuild ? 'approved: will be added to the todo list and built' : 'approved: ready to build (set "buildFromLabels": true to let the factory build it)'
   if (g.action === 'reopen') return `approval withdrawn: ${g.reason}`
   return `skipped: ${g.reason}`
 }
 
-export function watchReport(rows: readonly WatchRow[], enabled: boolean): string {
+export function watchReport(rows: readonly WatchRow[], enabled: boolean, canBuild = false): string {
   const head = `Issue watch (${enabled ? 'on' : 'off: set "watchIssues": true in .factory/settings.json and run /factory-approve to let the factory act'}): ${rows.length} open issue${rows.length === 1 ? '' : 's'}`
   if (rows.length === 0) return head
-  return safeLines([head, ...rows.map(r => `  #${r.number} ${oneLine(r.title, 50)} → ${gateText(r.gate)}`)].join('\n'))
+  return safeLines([head, ...rows.map(r => `  #${r.number} ${oneLine(r.title, 50)} → ${gateText(r.gate, canBuild)}`)].join('\n'))
 }
 
 export type DesignContext = {
@@ -3164,15 +3178,130 @@ Steps
 3. Write your final message with exactly these sections:
    ## Understanding: what the issue asks, in two or three sentences.
    ## Proposed approach: the files and functions to change and why, the tests that will prove it, and the risks.
-   ## Item: type, title, how, accept and tests, in the format of .factory/todo.md.
+   ## Item: exactly five lines under this heading, one each: type: feature, bug, chore or docs; title: a short title; how: how to build it; accept: what must be true when it is done; tests: the tests that prove it. Each is a single line.
    ## Questions: numbered, only where a wrong guess would waste the build (naming, behavior, scope). Write "None" if there are none.`
+}
+
+export type IssueItem = { type: ItemType; title: string; how: string; accept: string; tests: string }
+
+const ISSUE_ITEM_TYPES: readonly string[] = ['feature', 'bug', 'chore', 'docs']
+const ISSUE_ITEM_MAX = { title: 120, how: 1500, accept: 800, tests: 800 } as const
+
+const itemLine = (text: string, max: number): string => {
+  let t = stripControls(text)
+  while (/<!--|-->/.test(t)) t = t.replace(/<!--|-->/g, '')
+  return t.replace(/\s+/g, ' ').trim().slice(0, max)
+}
+
+const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})/
+const ITEM_HEADING = /^ {0,3}##\s+Item\b/
+const ANY_HEADING = /^ {0,3}#{1,2}\s/
+const ITEM_LIKE = /^[ \t>*+\-\d.)]*#{1,6}[ \t]*Item\b/i
+const ITEM_KEYS = ['type', 'title', 'how', 'accept', 'tests'] as const
+
+function fenceState(lines: readonly string[]): { outside: boolean[]; open: string | null } {
+  const outside: boolean[] = []
+  let open: string | null = null
+  for (const line of lines) {
+    const m = FENCE_LINE.exec(line)
+    if (open === null) {
+      outside.push(true)
+      if (m) open = m[1]!
+    } else {
+      outside.push(false)
+      if (m && m[1]![0] === open[0] && m[1]!.length >= open.length && line.trim() === m[1]) open = null
+    }
+  }
+  return { outside, open }
+}
+
+function makeItem(got: Record<string, string | undefined>): IssueItem | null {
+  const type = itemLine(got.type ?? '', 20).toLowerCase()
+  const title = itemLine(got.title ?? '', ISSUE_ITEM_MAX.title)
+  const how = itemLine(got.how ?? '', ISSUE_ITEM_MAX.how)
+  const accept = itemLine(got.accept ?? '', ISSUE_ITEM_MAX.accept)
+  const tests = itemLine(got.tests ?? '', ISSUE_ITEM_MAX.tests)
+  if (!ISSUE_ITEM_TYPES.includes(type) || !title || !how || !accept || !tests) return null
+  return { type: type as ItemType, title, how, accept, tests }
+}
+
+export function answerItem(answer: string): IssueItem | null {
+  const lines = answer.split('\n')
+  const { outside } = fenceState(lines)
+  const heads = lines.flatMap((l, i) => (outside[i] && ITEM_HEADING.test(l) ? [i] : []))
+  if (heads.length !== 1) return null
+  const got: Record<string, string> = {}
+  for (let j = heads[0]! + 1; j < lines.length; j++) {
+    if (outside[j] && ANY_HEADING.test(lines[j]!)) break
+    const m = /^(?:[-*]\s+)?(type|title|how|accept|tests):\s*(.+)$/i.exec(lines[j]!.trim())
+    const key = m ? m[1]!.toLowerCase() : ''
+    if (m && got[key] === undefined) got[key] = m[2]!
+  }
+  return makeItem(got)
+}
+
+function stripItemSections(answer: string): string {
+  const lines = answer.split('\n')
+  const { outside } = fenceState(lines)
+  let skipping = false
+  return lines
+    .filter((l, i) => {
+      if (outside[i] && ANY_HEADING.test(l)) skipping = ITEM_HEADING.test(l)
+      return !skipping
+    })
+    .join('\n')
+}
+
+function closeFences(text: string): string {
+  const { open } = fenceState(text.split('\n'))
+  return open === null ? text : `${text}\n${open}`
+}
+
+function renderItem(it: IssueItem): string {
+  const rows = [`type: ${it.type}`, `title: ${it.title}`, `how: ${it.how}`, `accept: ${it.accept}`, `tests: ${it.tests}`]
+  const longest = Math.max(0, ...(rows.join('\n').match(/`+/g) ?? []).map(r => r.length))
+  const fence = '`'.repeat(Math.max(4, longest + 1))
+  return `## Item\n${fence}text\n${rows.join('\n')}\n${fence}`
+}
+
+export function designItem(body: string): IssueItem | null {
+  const lines = body.split('\n')
+  const { outside } = fenceState(lines)
+  const heads = lines.flatMap((l, i) => (outside[i] && ITEM_HEADING.test(l) ? [i] : []))
+  if (heads.length !== 1) return null
+  const at = heads[0]!
+  const open = lines[at] === '## Item' ? /^(`{4,})text$/.exec(lines[at + 1] ?? '') : null
+  if (!open || lines[at + 7] !== open[1]) return null
+  if (/<[A-Za-z!?/]/.test([...lines.slice(0, at), ...lines.slice(at + 8)].join('\n').split(DESIGN_MARKER).join(''))) return null
+  const got: Record<string, string> = {}
+  for (let k = 0; k < ITEM_KEYS.length; k++) {
+    const key = ITEM_KEYS[k]!
+    const row = lines[at + 2 + k] ?? ''
+    if (!row.startsWith(`${key}: `)) return null
+    got[key] = row.slice(key.length + 2)
+  }
+  const item = makeItem(got)
+  return item !== null && ITEM_KEYS.every(k => item[k] === got[k]) ? item : null
+}
+
+export function appendIssueItem(raw: string, issue: number, it: IssueItem): { text: string; id: string } | null {
+  const items = parseTodo(raw)
+  if (items.some(i => i.issue === issue)) return null
+  const id = nextItemId(items)
+  const block = `## ${id} [${it.type}] ${it.title}\n- status: todo\n- how: ${it.how}\n- accept: ${it.accept}\n- tests: ${it.tests}\n- issue: #${issue}\n`
+  const text = `${raw}${raw.endsWith('\n') ? '\n' : '\n\n'}${block}`
+  const back = parseTodo(text)
+  const made = back.find(i => i.id === id)
+  const same = made !== undefined && made.type === it.type && made.title === it.title && made.how === it.how && made.accept === it.accept && made.tests === it.tests && made.status === 'todo' && made.issue === issue && made.depends.length === 0 && made.version === ''
+  return back.length === items.length + 1 && same ? { text, id } : null
 }
 
 export function designComment(answer: string): string | null {
   if (!/^## Understanding\b/m.test(answer) || !/^## Proposed approach\b/m.test(answer)) return null
-  const text = safeLines(answer)
+  const item = answerItem(answer)
+  const text = safeLines(stripItemSections(answer))
     .split('\n')
-    .filter(l => l.trim() !== 'ROADMAP-DONE')
+    .filter(l => l.trim() !== 'ROADMAP-DONE' && !ITEM_LIKE.test(l))
     .join('\n')
     .split(DESIGN_MARKER)
     .join('')
@@ -3182,6 +3311,7 @@ export function designComment(answer: string): string | null {
     .replace(/@(?=[A-Za-z0-9_])/g, '@​')
     .trim()
   if (text.length < 40) return null
-  const cut = text.length > DESIGN_ANSWER_CHARS ? `${text.slice(0, DESIGN_ANSWER_CHARS)}\n[cut]` : text
-  return `${DESIGN_MARKER}\n${cut}\n\n## Approve\nA collaborator with write access approves by adding the \`${LABEL_GO}\` label. Editing the issue or this comment afterwards withdraws the approval.`
+  const cut = closeFences(text.length > DESIGN_ANSWER_CHARS ? `${text.slice(0, DESIGN_ANSWER_CHARS)}\n[cut]` : text)
+  const block = item ? `${renderItem(item)}\n\n` : ''
+  return `${DESIGN_MARKER}\n${block}${cut}\n\n## Approve\nA collaborator with write access approves by adding the \`${LABEL_GO}\` label. Editing the issue or this comment afterwards withdraws the approval.`
 }
