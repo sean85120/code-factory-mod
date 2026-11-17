@@ -1,0 +1,11 @@
+{
+  "name": "code-factory",
+  "interface": { "displayName": "Code Factory" },
+  "plugins": [
+    {
+      "name": "code-factory",
+      "source": { "source": "local", "path": "./" },
+      "category": "Coding"
+    }
+  ]
+}

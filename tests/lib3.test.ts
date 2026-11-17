@@ -257,6 +257,8 @@ test('classifyBash sees through -C, env prefixes, branch switches and -R', () =>
 test('writing the state file through a script or redirect is caught, reading it is not', () => {
   expect(classifyBash("python3 -c \"open('.factory/state.json','w').write('{}')\"", 'main').touchesFactoryState).toBe(true)
   expect(classifyBash('sed -i s/a/b/ .factory/lock.json', 'main').touchesFactoryState).toBe(true)
+  expect(classifyBash("cd .factory; apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: state.json\n*** End Patch\nEOF", 'main').touchesFactoryState).toBe(true)
+  expect(classifyBash('(cd .factory && applypatch < p.diff) # state.json', 'main').touchesFactoryState).toBe(true)
   expect(classifyBash('git commit -m "update state.json docs"', 'main').touchesFactoryState).toBe(false)
   expect(classifyBash('cat .factory/state.json', 'main').touchesFactoryState).toBe(false)
 })

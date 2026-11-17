@@ -1,0 +1,20 @@
+{
+  "name": "opencode-code-factory",
+  "version": "0.2.0",
+  "description": "Design-first autonomous code factory for OpenCode: interviews you for decisions, then builds the todo list branch by branch and PR by PR until CI-green merges.",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/sean85120/code-factory",
+  "repository": "https://github.com/sean85120/code-factory",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "@opencode/plugin": "2.3.0",
+    "@types/node": "^22.18.0",
+    "typescript": "^5.9.0"
+  }
+}

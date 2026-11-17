@@ -26,3 +26,7 @@ jobs:
         run: claude plugin validate .
       - name: Unit tests
         run: claude plugin test .
+      - name: OpenCode and Codex ports (tests)
+        run: node --experimental-strip-types --test core/*.spec.ts codex/*.spec.ts opencode/*.spec.ts
+      - name: OpenCode and Codex ports (type check)
+        run: npm ci --prefix opencode --no-audit --no-fund && npx --prefix opencode tsc -p opencode

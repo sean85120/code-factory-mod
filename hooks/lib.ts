@@ -881,7 +881,7 @@ export function classifyBash(command: string, base: string, branch = ''): BashFa
   const names = /(?:^|[\s/'"=])(?:state|lock)\.json\b/.test(command) && /\.factory|cd\s+\S*\.factory/.test(command)
   const writeish =
     /(?:^|[^<>])>>?\s*\S/.test(command.replace(/2>&1|>\s*\/dev\/null/g, '')) ||
-    /\b(?:tee|sed\s+-i\S*|mv|cp|rm|truncate|install|ln|dd)\b/.test(command) ||
+    /\b(?:tee|sed\s+-i\S*|mv|cp|rm|truncate|install|ln|dd|apply_?patch)\b/.test(command) ||
     /\b(?:python3?|node|perl|ruby)\b[^|;&\n]*(?:open|write|unlink|rename|rm)/.test(command)
   facts.touchesFactoryState = names && writeish && !/^\s*(?:cat|jq|ls|head|tail|wc|stat)\s[^>|;&]*$/.test(command)
   return facts
