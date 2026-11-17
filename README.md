@@ -214,7 +214,7 @@ defaults are the exceptions).
 | `maxAttempts` | `4` | Tries per item before it is marked blocked. |
 | `maxItemsPerRun` | `0` | Stop after this many merged items in one run (0 is no limit). |
 | `allowNoCI` | `false` | Allow merging when the pull request has no CI checks. |
-| `requireTestChanges` | `true` | A pull request must change test files. |
+| `requireTestChanges` | `true` | A pull request must change test files. A diff of only prose (`.md`, `.mdx`, `.rst`, `.adoc`, license files, images under `docs/`) is exempt, as are `docs` and `chore` items. |
 | `allowTestRemoval` | `false` | Allow a pull request to delete tests. |
 | `requireReview` | `true` | Require a clean independent review for the exact commit. |
 | `reviewCommand` | `"/review-fix"` | Slash command the reviewer runs when it exists; the reviewer follows the built-in review rules either way. See [Requirements](#requirements). |

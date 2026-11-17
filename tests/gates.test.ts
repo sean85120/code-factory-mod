@@ -120,6 +120,23 @@ test('a PR without test changes is refused', async ($, on) => {
   expect(text(await $.tool.call({ tool: 'Bash', command: 'gh pr create --title x' }))).toContain('changes no test files')
 })
 
+test('a docs-only diff opens a PR without test changes, and the file list is read without rename detection', async ($, on) => {
+  const fx = setup($, on, { review: CLEAN, diff: 'README.md\ndocs/img/a.png\nCHANGELOG.md\n' })
+  const r = await $.tool.call({ tool: 'Bash', command: 'gh pr create --title x' })
+  expect(text(r)).not.toContain('code-factory')
+  expect(fx.ran.some(c => c.startsWith('git diff --name-only --no-renames'))).toBe(true)
+})
+
+test('docs mixed with code still need test changes', async ($, on) => {
+  setup($, on, { review: CLEAN, diff: 'README.md\nsrc/a.ts\n' })
+  expect(text(await $.tool.call({ tool: 'Bash', command: 'gh pr create --title x' }))).toContain('changes no test files')
+})
+
+test('a text file that is not prose still needs test changes', async ($, on) => {
+  setup($, on, { review: CLEAN, diff: 'requirements.txt\n' })
+  expect(text(await $.tool.call({ tool: 'Bash', command: 'gh pr create --title x' }))).toContain('changes no test files')
+})
+
 const reviewPrompt = (extra: Record<string, unknown> = {}): string =>
   reviewAgentPrompt(parseSettings(JSON.stringify({ testCmd: ['unit'], baseBranch: 'main', ...extra })).settings, branchFor({ id: 'T-001', title: 'Add thing' }))
 const spawn = ($: any, prompt: string, extra: Record<string, unknown> = {}) =>

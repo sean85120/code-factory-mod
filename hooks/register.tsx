@@ -122,6 +122,7 @@ import {
   decisionsHash,
   evaluateProtection,
   hasTestChanges,
+  isDocsOnly,
   inScope,
   isBillingProblem,
   isLockedByOther,
@@ -2359,9 +2360,9 @@ export const register: Register = (on, _options) => {
 
       // Cheap checks first, then the expensive ones.
       if (settings.requireTestChanges && item?.type !== 'docs' && item?.type !== 'chore') {
-        let diff = await run($, ['git', 'diff', '--name-only', `origin/${base}...HEAD`])
-        if (diff.exitCode !== 0) diff = await run($, ['git', 'diff', '--name-only', `${base}...HEAD`])
-        if (diff.exitCode === 0 && !hasTestChanges(names(diff))) {
+        let diff = await run($, ['git', 'diff', '--name-only', '--no-renames', `origin/${base}...HEAD`])
+        if (diff.exitCode !== 0) diff = await run($, ['git', 'diff', '--name-only', '--no-renames', `${base}...HEAD`])
+        if (diff.exitCode === 0 && !hasTestChanges(names(diff)) && !isDocsOnly(names(diff))) {
           return deny('code-factory: this branch changes no test files. Add tests for the new behavior or the regression test for the bug.')
         }
       }
