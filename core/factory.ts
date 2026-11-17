@@ -507,8 +507,9 @@ export function createFactory(host: Host) {
       if (reviewPending(state, settings)) return null
       const rounds = state.reviewRounds + 1
       const capped = rounds >= settings.maxReviewRounds
-      await halt(capped ? `the review agent gave no verdict ${rounds} times; ${state.current} is blocked` : `the review agent did not report within ${Math.round(reviewWindow(state, settings) / 60000)} min; /factory-start retries`, { reviewAgentId: null, reviewAgentAt: 0, reviewRounds: rounds })
-      if (capped) {
+      const paused = await pause(state, capped ? `the review agent gave no verdict ${rounds} times; ${state.current} is blocked` : `the review agent did not report within ${Math.round(reviewWindow(state, settings) / 60000)} min; /factory-start retries`, { override: { reviewAgentId: null, reviewAgentAt: 0, reviewRounds: rounds }, guard })
+      // A step voided by a stop or another session's start blocks nothing.
+      if (capped && paused) {
         await host.write(`${BLOCKED_DIR}/${state.current}.md`, `The review agent gave no verdict ${rounds} times.\n`)
         await logEvent({ itemId: state.current, kind: 'blocked', detail: `review agent gave no verdict ${rounds} times` })
       }

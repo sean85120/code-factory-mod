@@ -66,8 +66,7 @@ export function nodeIo(dir: string): Io {
       }
     },
     async write(p: string, text: string): Promise<void> {
-      await mkdir(dirname(abs(p)), { recursive: true })
-      await writeFile(abs(p), text)
+      await writeAtomic(abs(p), text)
     },
     async list(p: string): Promise<string[]> {
       try {

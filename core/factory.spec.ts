@@ -308,6 +308,25 @@ test('a review spawn that never reported an agent is cleared when the turn ends'
   assert.ok(w.notices.some(n => /never started/.test(n)))
 })
 
+test('a review that timed out blocks the item only when this step still owns the loop', async () => {
+  const mk = () => world({ settings: { maxReviewRounds: 1 }, state: { autopilot: true, current: 'T-001', reviewAgentId: 'r1', reviewAgentAt: 1, reviewWaitMs: 1000 } })
+  const live = mk()
+  assert.equal(await createFactory(hostFor(live)).advance(), null)
+  assert.ok(live.files.has('.factory/blocked/T-001.md'))
+  // Another session stops the loop while this step reads the lock.
+  const voided = mk()
+  const h = hostFor(voided)
+  const read = h.read.bind(h)
+  let reads = 0
+  h.read = async (p: string) => {
+    if (p === '.factory/lock.json' && ++reads === 3) voided.files.set('.factory/state.json', JSON.stringify({ ...state(voided), autopilot: false, pausedReason: 'stopped by you' }))
+    return read(p)
+  }
+  assert.equal(await createFactory(h).advance(), null)
+  assert.equal(voided.files.has('.factory/blocked/T-001.md'), false)
+  assert.equal(state(voided).pausedReason, 'stopped by you')
+})
+
 test('start while this session\'s factory turn runs hands out nothing new', async () => {
   const w = world({ state: { autopilot: true, current: 'T-001' } })
   w.runtime = { epoch: 0, turn: { kind: 'work', at: w.now, owner: 'me' }, nonce: 'x' }

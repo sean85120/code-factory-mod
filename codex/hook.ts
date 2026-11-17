@@ -6,8 +6,9 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { createFactory, patchPaths, PENDING_REVIEWER } from '../core/factory.ts'
@@ -101,19 +102,60 @@ function responseText(response: unknown): string {
   return [str(r.stdout), str(r.stderr), str(r.output), str(r.aggregated_output), str(r.formatted_output)].filter(Boolean).join('\n') || JSON.stringify(response ?? '')
 }
 
-function responseOk(response: unknown): boolean {
+// Codex hands PostToolUse the command's output text; its exit code is only
+// there when the output says so ("Process exited with code 1"). Without it the
+// command counts as succeeded, which affects only the timeline.
+export function responseOk(response: unknown): boolean {
   const r = asObj(response)
   const code = r.exit_code ?? r.exitCode
-  return typeof code === 'number' ? code === 0 : !/\bexit(?:ed with)? code:? [1-9]/i.test(responseText(response))
+  if (typeof code === 'number') return code === 0
+  const said = [...responseText(response).matchAll(/\bexit(?:ed)?(?: with)? code:?\s*(-?\d+)/gi)].pop()
+  return said ? Number(said[1]) === 0 : true
+}
+
+const INTERPRETER = /^(?:bash|sh|zsh|fish|dash|ksh|csh|tcsh|python[0-9.]*|node|bun|deno|ruby|irb|perl|php|lua|ghci|psql|mysql|sqlite3|redis-cli|mongosh?|ssh|nc|telnet)$/
+
+// A pipeline stage that starts a shell or interpreter reading its program from
+// stdin: no script, no -c/-e, or an explicit -i/-s/-. Written to later with
+// write_stdin, it would run commands no hook sees.
+export function opensInterpreter(command: string): boolean {
+  return command.split(/[;&|\n]+/).some(stage => {
+    const tokens = stage.trim().split(/\s+/).filter(Boolean)
+    while (tokens.length > 0 && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]!) || ['env', 'exec', 'command', 'nohup', 'sudo', 'time'].includes(tokens[0]!))) tokens.shift()
+    const name = (tokens[0] ?? '').split('/').pop() ?? ''
+    if (!INTERPRETER.test(name)) return false
+    const rest = tokens.slice(1)
+    if (rest.some(t => t === '-i' || t === '--interactive' || t === '-s' || t === '-')) return true
+    const runsProgram = rest.some(t => !t.startsWith('-') || /^-[A-Za-z]*[ce]$/.test(t) || t === '--eval' || t === '--command' || t === '-m')
+    return !runsProgram
+  })
 }
 
 const deny = (reason: string): HookOutput => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } })
 
 export type Env = { PLUGIN_DATA?: string; CLAUDE_PLUGIN_DATA?: string; HOME?: string }
 
-export async function handle(input: HookInput, env: Env = process.env): Promise<HookOutput> {
+// The repository the factory runs in: the nearest folder holding .factory/,
+// looked up from where the session runs. A hook's `cwd` is the tool call's own
+// working directory (a shell call's `workdir`), which the model chooses, so it
+// is only a fallback: a call run from src/ or /tmp must not leave the gates off.
+export function factoryRoot(start: string): string | null {
+  let d = resolve(start)
+  for (;;) {
+    if (existsSync(join(d, FACTORY_DIR))) return d
+    const up = dirname(d)
+    if (up === d) return null
+    d = up
+  }
+}
+
+export async function handle(input: HookInput, env: Env = process.env, sessionDir: string = process.cwd()): Promise<HookOutput> {
   const event = input.hook_event_name ?? ''
-  const dir = input.cwd || process.cwd()
+  const root = factoryRoot(sessionDir) ?? (input.cwd ? factoryRoot(input.cwd) : null)
+  // A repo without .factory/ is not using the factory: nothing to do or guard,
+  // except a $factory command (the design interview creates .factory/).
+  if (!root && !(event === 'UserPromptSubmit' && commandOf(str(input.prompt)))) return {}
+  const dir = root ?? sessionDir
   const io = nodeIo(dir)
   const dataDir = env.PLUGIN_DATA || env.CLAUDE_PLUGIN_DATA || join(env.HOME || homedir(), '.codex', 'code-factory')
   // The flags belong to this session alone, as Claude Code's are in memory: a
@@ -138,8 +180,6 @@ export async function handle(input: HookInput, env: Env = process.env): Promise<
   }
   const factory = createFactory(host)
 
-  // A repo without .factory/ is not using the factory: nothing to do or guard.
-  if (!(await io.exists(FACTORY_DIR)) && !(event === 'UserPromptSubmit' && commandOf(str(input.prompt)))) return {}
   await factory.touchLock()
   // The PR gate runs the build and the tests and the Stop step checks the base
   // branch, each for up to ten minutes: keep the lock fresh meanwhile.
@@ -216,9 +256,10 @@ async function dispatch(event: string, input: HookInput, dir: string, dataDir: s
       const toolInput = asObj(input.tool_input)
       try {
         if (tool === 'Bash') {
-          // Input written to an interactive terminal later (write_stdin) passes
-          // no hook, so no terminal is opened while the gates are on.
-          if (toolInput.tty === true && (await factory.guardsLive())) return withNotices(deny('code-factory: no interactive terminals (tty) while the factory loop runs; run each command directly so the gates can check it.'))
+          // Input written to a running process later (write_stdin) passes no
+          // hook, so no interpreter that would run such input is started while
+          // the gates are on.
+          if (opensInterpreter(shellCommand(toolInput)) && (await factory.guardsLive())) return withNotices(deny('code-factory: no interactive shells or interpreters while the factory loop runs (input sent to them later is never checked); run each command directly.'))
           const reason = await factory.guardShell(shellCommand(toolInput), actor)
           return withNotices(reason ? deny(reason) : {})
         }
