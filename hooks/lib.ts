@@ -866,7 +866,7 @@ export function hasTestChanges(files: readonly string[]): boolean {
 
 const DOC_FILE = [
   /\.(md|mdx|rst|adoc)$/i,
-  /(^|\/)(license|licence|copying|notice)(\.[a-z]+)?$/i,
+  /(^|\/)(license|licence|copying|notice)(\.txt)?$/i,
   /^docs?\/.+\.(png|jpe?g|gif|webp|svg)$/i,
 ]
 

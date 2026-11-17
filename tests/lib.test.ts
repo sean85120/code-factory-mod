@@ -103,6 +103,10 @@ test('isDocsOnly accepts prose and docs images only, never an empty list or code
   expect(isDocsOnly(['assets/logo.svg'])).toBe(false)
   expect(isDocsOnly(['docs/conf.py'])).toBe(false)
   expect(isDocsOnly(['src/a.ts', 'src/a.md'])).toBe(false)
+  expect(isDocsOnly(['LICENSE.txt', 'COPYING', 'NOTICE.md'])).toBe(true)
+  expect(isDocsOnly(['src/license.ts'])).toBe(false)
+  expect(isDocsOnly(['lib/notice.py'])).toBe(false)
+  expect(isDocsOnly(['license.js'])).toBe(false)
 })
 
 test('hasTestChanges recognises common test file layouts', () => {
