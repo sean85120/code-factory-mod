@@ -112,101 +112,30 @@ export function responseOk(response: unknown): boolean {
   return typeof code === 'number' ? code === 0 : true
 }
 
-const INTERPRETER = /^(?:bash|sh|zsh|fish|dash|ksh|csh|tcsh|python[0-9.]*|node|bun|deno|ruby|irb|perl|php|lua|ghci|psql|mysql|sqlite3|redis-cli|mongosh?|ssh|nc|telnet)$/
-// Commands that run another command after their own options.
-const WRAPPERS: Record<string, RegExp> = {
-  env: /^(?:-[A-Za-z]*|--[a-z-]+(?:=.*)?|[A-Za-z_][A-Za-z0-9_]*=.*)$/,
-  timeout: /^(?:-[A-Za-z]*|--[a-z-]+(?:=.*)?|\d+(?:\.\d+)?[smhd]?)$/,
-  nice: /^(?:-[A-Za-z]*\d*|--[a-z-]+(?:=.*)?|\d+)$/,
-  stdbuf: /^-[A-Za-z]+\S*$/,
-  sudo: /^-[A-Za-z]*$/,
-  nohup: /^$/,
-  exec: /^-[A-Za-z]*$/,
-  command: /^-[A-Za-z]*$/,
-  builtin: /^$/,
-  time: /^-[A-Za-z]*$/,
-}
-// Options of those wrappers that take a separate value.
-const WRAPPER_VALUE: Record<string, RegExp> = {
-  env: /^(?:-u|-C|-S|--unset|--chdir|--split-string)$/,
-  timeout: /^(?:-s|-k|--signal|--kill-after)$/,
-  nice: /^(?:-n|--adjustment)$/,
-  stdbuf: /^(?:-i|-o|-e)$/,
-  sudo: /^(?:-u|-g|-C|-h|-p|-r|-t|-U|--user|--group)$/,
+// Codex keeps a shell call's terminal open after the call returns, and input
+// sent to it later (write_stdin) passes no hook. While the gates are on every
+// shell command is therefore run with its stdin closed (from /dev/null), in the
+// syntax of the shell that will run it, so nothing it starts can read such
+// input; a shell this cannot be written for is refused. Returns the rewritten
+// command, or null when the shell is not one of these.
+export function closeStdin(command: string, shell: string): string | null {
+  if (!command.trim()) return command
+  const name = shell.split(/[\\/]/).pop()?.replace(/\.exe$/i, '') ?? ''
+  if (/^(?:bash|zsh|sh|dash|ksh|mksh|ash)$/.test(name)) return `{\n${command}\n} </dev/null`
+  if (name === 'fish') return `begin\n${command}\nend </dev/null`
+  return null
 }
 
-type Stage = { name: string; args: string[]; stdinRedirected: boolean }
-
-function parseStage(text: string): Stage {
-  const raw = text.trim().replace(/^[({]+\s*/, '').replace(/\s*[)}]+$/, '').split(/\s+/).filter(Boolean)
-  const tokens: string[] = []
-  let stdinRedirected = false
-  for (let i = 0; i < raw.length; i++) {
-    const t = raw[i]!
-    const redirect = /^(?:\d*|&)(?:<<?<?-?|>>?|>&|<&)/.exec(t)
-    if (redirect) {
-      if (/^0?</.test(t)) stdinRedirected = true
-      // `> file`, `2> file`: the target is the next token.
-      if (t === redirect[0] && !/&\d*$/.test(t)) i++
-      continue
-    }
-    tokens.push(t)
-  }
-  for (;;) {
-    while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]!)) tokens.shift()
-    const head = (tokens[0] ?? '').split('/').pop() ?? ''
-    const opts = WRAPPERS[head]
-    // `command -v node` only looks a command up.
-    if (!opts || (head === 'command' && /^-[vV]$/.test(tokens[1] ?? ''))) break
-    tokens.shift()
-    while (tokens.length > 0 && (opts.test(tokens[0]!) || tokens[0] === '--')) {
-      const t = tokens.shift()!
-      if (WRAPPER_VALUE[head]?.test(t) && tokens.length > 0) tokens.shift()
-    }
-  }
-  let name = (tokens[0] ?? '').split('/').pop() ?? ''
-  if (/^\$\{?SHELL\}?$/.test(tokens[0] ?? '')) name = 'sh'
-  return { name, args: tokens.slice(1), stdinRedirected }
+// The command as the model wrote it, from one closeStdin rewrote (PostToolUse
+// may carry the rewritten one).
+export function unwrapStdin(command: string): string {
+  const m = /^\{\n([\s\S]*)\n\} <\/dev\/null$/.exec(command) ?? /^begin\n([\s\S]*)\nend <\/dev\/null$/.exec(command)
+  return m ? m[1]! : command
 }
 
-// Runs whatever arrives on its stdin: a shell or interpreter given no program
-// (or told to read one: -i, -s, -), `script` (a shell in a terminal) and `xargs`.
-// Options that make an interpreter do something other than read a program from
-// stdin: print its version or help, run its test runner, check syntax.
-const NOT_INTERACTIVE = new Set(['-v', '-V', '--version', '-h', '--help', '--test', '--check', '-n', '--run'])
-
-function runsStdin(st: Stage): boolean {
-  if (st.name === 'xargs') return true
-  if (st.name === 'script') return !st.args.some(a => /^-[A-Za-z]*c$/.test(a) || a === '--command')
-  // `docker exec -it app sh`, `kubectl exec -it pod -- bash`: a shell elsewhere on this terminal.
-  if (/^(?:docker|podman|kubectl)$/.test(st.name)) return st.args.some(a => a === 'exec' || a === 'run' || a === 'attach') && st.args.some(a => /^-[A-Za-z]*i[A-Za-z]*$/.test(a) || a === '--interactive' || a === '--stdin')
-  if (!INTERPRETER.test(st.name)) return false
-  if (st.args.some(t => t === '-i' || t === '--interactive' || t === '-s' || t === '-' || t === '/dev/stdin' || t === '/dev/tty')) return true
-  return !st.args.some(t => !t.startsWith('-') || /^-[A-Za-z]*[ce]$/.test(t) || t === '--eval' || t === '--command' || t === '-m' || NOT_INTERACTIVE.has(t))
-}
-
-// A pipeline stage that starts a shell or interpreter whose stdin stays open to
-// the terminal: written to later with write_stdin, it would run commands no
-// hook sees. A stage fed by a heredoc, a file or another command's output is
-// fine, except through a bare `cat`/`tee`, which pass the terminal on.
-export function opensInterpreter(command: string): boolean {
-  const text = command
-    // Heredoc bodies are data, not commands.
-    .replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1([^\n]*)\n[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g, '<<HEREDOC $3')
-    // Quoted text (commit messages, PR bodies) is an argument, not a command.
-    .replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, 'Q')
-    // fd redirections such as 2>&1 or &> are not command separators.
-    .replace(/\d*>&(?:\d+|-)|\d*<&(?:\d+|-)|&>>?/g, ' ')
-  return text.split(/&&|\|\||[;&\n]/).some(pipeline => {
-    let open = true
-    return pipeline.split('|').some((part, k) => {
-      const st = parseStage(part)
-      const stdinOpen = !st.stdinRedirected && (k === 0 || open)
-      open = stdinOpen && (st.name === 'cat' || st.name === 'tee') && st.args.every(a => a.startsWith('-'))
-      return stdinOpen && runsStdin(st)
-    })
-  })
-}
+// Reopening the terminal by hand (its device, or the stdout/stderr descriptors
+// that point at it) would undo closeStdin.
+export const REOPENS_TERMINAL = /\/dev\/(?:tty|pts\/|fd\/[0-2]\b|std(?:in|out|err)\b)|\/proc\/(?:self|\$\$|\d+)\/fd\/[0-2]\b|<&\s*[12]\b|<>\s*\/dev/
 
 const deny = (reason: string): HookOutput => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } })
 
@@ -268,6 +197,9 @@ export async function handle(input: HookInput, env: Env = process.env, sessionDi
   if (!root && !(event === 'UserPromptSubmit' && commandOf(str(input.prompt)))) return {}
   const top = root ?? repoTop(sessionDir)
   if (top === null) return { decision: 'block', reason: 'code-factory works in a git repository whose origin is on GitHub; run `git init` (and add the origin) first.' }
+  // A repository at the home folder is never a factory root (see factoryRoot),
+  // so commands must not start one there either.
+  if (top === real(homedir())) return { decision: 'block', reason: 'code-factory does not run in a git repository at your home folder; open the project\'s own repository (run `git init` in its folder).' }
   const dir = top
   const io = nodeIo(dir)
   const dataDir = env.PLUGIN_DATA || env.CLAUDE_PLUGIN_DATA || join(env.HOME || homedir(), '.codex', 'code-factory')
@@ -369,10 +301,6 @@ async function dispatch(event: string, input: HookInput, dir: string, dataDir: s
       const toolInput = asObj(input.tool_input)
       try {
         if (tool === 'Bash') {
-          // Input written to a running process later (write_stdin) passes no
-          // hook, so no interpreter that would run such input is started while
-          // the gates are on.
-          if (opensInterpreter(shellCommand(toolInput)) && (await factory.guardsLive())) return withNotices(deny('code-factory: no interactive shells or interpreters while the factory loop runs (input sent to them later is never checked); run each command directly.'))
           // The gates read the branch and HEAD of the factory's repository; a git
           // or gh command run from another worktree or clone would be checked
           // against the wrong branch.
@@ -380,8 +308,17 @@ async function dispatch(event: string, input: HookInput, dir: string, dataDir: s
           if (callTop !== null && callTop !== repoTop(dir) && /\b(?:git|gh)\b/.test(shellCommand(toolInput)) && (await factory.guardsLive())) {
             return withNotices(deny('code-factory: run git and gh commands from the factory\'s repository while the loop runs, not from another worktree or clone.'))
           }
-          const reason = await factory.guardShell(shellCommand(toolInput), actor)
-          return withNotices(reason ? deny(reason) : {})
+          const command = shellCommand(toolInput)
+          const reason = await factory.guardShell(command, actor)
+          if (reason) return withNotices(deny(reason))
+          if (!(await factory.guardsLive())) return withNotices({})
+          if (REOPENS_TERMINAL.test(command)) return withNotices(deny('code-factory: do not reopen the terminal (/dev/tty, the stdout or stderr descriptors) while the factory loop runs; input sent to it is never checked.'))
+          const shell = str(toolInput.shell) || process.env.SHELL || '/bin/sh'
+          const closed = closeStdin(command, shell)
+          if (closed === null) return withNotices(deny(`code-factory: the factory loop runs shell commands through bash, zsh, sh or fish only (this call uses ${shell.split(/[\\/]/).pop()}).`))
+          // An argv-style call (the older shell tool) has no terminal to write to later.
+          if (closed === command || typeof (toolInput.command ?? toolInput.cmd) !== 'string') return withNotices({})
+          return withNotices({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', updatedInput: { ...toolInput, command: closed } } })
         }
         if (tool === 'apply_patch' || tool === 'Edit' || tool === 'Write') {
           const paths = [...patchPaths(shellCommand(toolInput) || str(toolInput.patch) || str(toolInput.input)), str(toolInput.file_path), str(toolInput.path)].filter(Boolean)
@@ -414,7 +351,7 @@ async function dispatch(event: string, input: HookInput, dir: string, dataDir: s
     case 'PostToolUse': {
       const tool = input.tool_name ?? ''
       if (tool === 'Bash') {
-        const note = await factory.afterShell(shellCommand(input.tool_input), responseText(input.tool_response), responseOk(input.tool_response))
+        const note = await factory.afterShell(unwrapStdin(shellCommand(input.tool_input)), responseText(input.tool_response), responseOk(input.tool_response))
         return withNotices(note ? { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: note } } : {})
       }
       // The reviewer is bound only to the id its own spawn returned, never to

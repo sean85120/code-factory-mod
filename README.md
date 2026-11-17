@@ -419,9 +419,11 @@ The same gates run on OpenCode and Codex, with their own limits:
 - **Codex** treats hooks as a guardrail, not a sandbox. Hooks you have not
   trusted in `/hooks` do not run. A hook that cannot start (no Node.js 22.6 or
   later on `PATH`, for example) lets the call through. Hosted tools such as web
-  search do not pass through hooks. While the loop runs, a command that starts
-  an interactive shell or interpreter (`bash`, `python3`, `cat | sh`) is
-  refused, because input sent to it later would pass no hook. While the loop runs, a gate that fails with
+  search do not pass through hooks. While the loop runs, every shell command
+  is run with its input closed, because input sent to a running command later
+  would pass no hook; commands that reopen the terminal on purpose are
+  refused, and only bash, zsh, sh and fish run commands then. The factory needs
+  the project's own git repository, not one at your home folder. While the loop runs, a gate that fails with
   an error refuses the call. Run `$factory-doctor` before you leave the loop
   alone.
 - On both, while the loop runs, the factory refuses edits to the agents' own
