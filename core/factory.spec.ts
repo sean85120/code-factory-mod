@@ -221,6 +221,23 @@ test('start hands out the first item, a turn that leaves it unfinished gets a nu
   assert.ok(w.ran.includes('npm test'), 'the base branch is checked after a merge')
 })
 
+test('the context is shrunk after a merge unless contextReset is none', async () => {
+  for (const mode of ['compact', 'none'] as const) {
+    const w = world({ settings: { contextReset: mode }, todo: TODO.replace('- status: todo', '- status: done'), state: { autopilot: true, current: 'T-001' } })
+    w.replies.set('gh pr list --state merged', { stdout: JSON.stringify([{ number: 4, headRefName: 'factory/t-001-add-login' }]) })
+    let resets = 0
+    const next = await createFactory(
+      hostFor(w, {
+        resetContext: async () => {
+          resets++
+        },
+      }),
+    ).advance()
+    assert.match(next?.text ?? '', /work item T-002/)
+    assert.equal(resets, mode === 'none' ? 0 : 1, mode)
+  }
+})
+
 test('the loop pauses when everything is done', async () => {
   const done = TODO.replaceAll('- status: todo', '- status: done')
   const w = world({ todo: done, state: { autopilot: true, approvedDone: ['T-001', 'T-002'] } })

@@ -580,7 +580,7 @@ export function createFactory(host: Host) {
             return halt(`release v${version} was not created after 3 tries`)
           }
           if (!(await write({ ...withEvent(state, host.now(), { itemId: null, kind: 'release', detail: `v${version}` }), current: null, releaseAttempts: state.releaseAttempts + 1 }))) return null
-          if (hasMerged && (await live())) await host.resetContext?.()
+          if (hasMerged && settings.contextReset !== 'none' && (await live())) await host.resetContext?.()
           return give('work', `CODE FACTORY: release v${version}`, releasePrompt(version, settings))
         }
       }
@@ -591,7 +591,7 @@ export function createFactory(host: Host) {
     }
     state = { ...withEvent(state, host.now(), { itemId: next.id, kind: 'started', detail: next.title }), current: next.id, attempts: 0, pausedReason: null, review: null, reviewRounds: 0, reviewDeclined: [], reviewOpen: [] }
     if (!(await write(state))) return null
-    if (hasMerged && (await live())) await host.resetContext?.()
+    if (hasMerged && settings.contextReset !== 'none' && (await live())) await host.resetContext?.()
     return give('work', `CODE FACTORY: work item ${next.id} [${next.type}] ${next.title}`, workPrompt(next, settings, null))
   }
 
