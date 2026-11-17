@@ -614,7 +614,15 @@ export function createFactory(host: Host) {
   async function onTurnEnd(outcome: 'answer' | 'aborted' | 'error'): Promise<Prompt | null> {
     const r = await rt()
     if (!ownTurn(r)) return null
-    const state = await readState()
+    let state = await readState()
+    // A review spawn that was allowed but never reported an agent (it failed,
+    // and Codex runs no PostToolUse for a failed call) has not started: by the
+    // end of the turn a successful spawn has always reported.
+    if (state.reviewAgentId === PENDING_REVIEWER) {
+      await reviewLaunchFailed()
+      notify('factory: the review agent never started; the next step spawns it again')
+      state = await readState()
+    }
     if (outcome === 'answer' && state.autopilot && state.current && state.reviewAgentId !== null) {
       const { settings } = await load()
       // The reviewer is still working: the turn stays the factory's (and armed)

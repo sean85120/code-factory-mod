@@ -31,6 +31,10 @@ export function toolPaths(input: Input): string[] {
   return [...new Set(out)]
 }
 
+// Background work that wakes this session when it ends. Work a child session
+// owns wakes the child, not this session, so waiting for it would wait forever.
+export const ownBackground = (e: { sessionID: string; background: readonly { sessionID: string }[] }): boolean => e.background.some(b => b.sessionID === e.sessionID)
+
 const FILE_TOOLS = new Set(['write', 'edit', 'patch', 'multiedit', 'apply_patch'])
 
 // The text a finished tool call returned, for the timeline and CI checks.
@@ -135,12 +139,12 @@ const plugin: Plugin.Plugin = {
       const state = await factory.readState()
       if (state.reviewAgentId !== null && e.sessionID === state.reviewAgentId) {
         // The reviewer waiting for its own verifier agents has not finished.
-        if (e.background.length > 0) return
+        if (ownBackground(e)) return
         const messages = await ctx.session.context({ sessionID: e.sessionID })
         await factory.reviewFinished(e.sessionID, lastAssistantText(messages as readonly unknown[]))
         return
       }
-      if (loopSession === null || e.sessionID !== loopSession || e.background.length > 0) return
+      if (loopSession === null || e.sessionID !== loopSession || ownBackground(e)) return
       const next = await factory.onTurnEnd('answer')
       if (next) await submit(e.sessionID, next)
     })
@@ -212,6 +216,7 @@ const plugin: Plugin.Plugin = {
     })()
 
     const beat = setInterval(() => void factory.touchLock(), 30000)
+    beat.unref?.()
     return () => {
       clearInterval(beat)
       abort.abort()

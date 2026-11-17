@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { createFactory, patchPaths, PENDING_REVIEWER } from '../core/factory.ts'
-import type { Host, Prompt, Reply } from '../core/factory.ts'
+import type { Host, Prompt, Reply, Runtime } from '../core/factory.ts'
 import { fileRuntime, nodeIo } from '../core/io.ts'
 import { FACTORY_DIR, REVIEW_TAG } from '../hooks/lib.ts'
 
@@ -116,7 +116,20 @@ export async function handle(input: HookInput, env: Env = process.env): Promise<
   const dir = input.cwd || process.cwd()
   const io = nodeIo(dir)
   const dataDir = env.PLUGIN_DATA || env.CLAUDE_PLUGIN_DATA || join(env.HOME || homedir(), '.codex', 'code-factory')
-  const store = fileRuntime(dataDir, dir)
+  // The epoch is shared by every session in the repo (a stop anywhere ends a
+  // step everywhere); the turn and its nonce belong to this session alone, so
+  // another session starting or ending a turn never disarms this one.
+  const shared = fileRuntime(dataDir, dir)
+  const own = fileRuntime(dataDir, `${dir}\0${input.session_id ?? 'unknown'}`)
+  const store = {
+    load: async (): Promise<Runtime> => {
+      const [a, b] = await Promise.all([shared.load(), own.load()])
+      return { epoch: a.epoch, turn: b.turn, nonce: b.nonce }
+    },
+    save: async (r: Runtime): Promise<void> => {
+      await Promise.all([shared.save({ epoch: r.epoch, turn: null, nonce: '' }), own.save({ epoch: 0, turn: r.turn, nonce: r.nonce })])
+    },
+  }
   const notices: string[] = []
   const host: Host = {
     name: 'Codex',
@@ -176,7 +189,9 @@ const MESSAGE_TOOLS = new Set(['send_input', 'send_message', 'SendMessage', 'res
 // agent (a model, a type, a forked context): an option left at null, false or
 // empty is fine.
 function onlyPrompt(toolInput: Obj, field: string): boolean {
-  const key = field.split('.')[0]
+  const key = field.split('.')[0]!
+  // An input list must hold the review prompt and nothing else.
+  if (field.includes('.') && (toolInput[key] as unknown[]).length !== 1) return false
   return Object.entries(toolInput).every(([k, v]) => k === key || v === null || v === undefined || v === false || v === '')
 }
 
@@ -260,12 +275,17 @@ async function dispatch(event: string, input: HookInput, dir: string, dataDir: s
       if (!input.agent_id) return {}
       if ((await factory.readState()).reviewAgentId === PENDING_REVIEWER) {
         await writeEarly(dataDir, dir, [...(await readEarly(dataDir, dir)), { agent: input.agent_id, message: input.last_assistant_message ?? '', at: Date.now() }])
-        return {}
+        // The spawn may have bound this agent while the stop was being saved;
+        // a verdict recorded twice is ignored the second time.
+        if ((await factory.readState()).reviewAgentId !== input.agent_id) return {}
       }
       await factory.reviewFinished(input.agent_id, input.last_assistant_message ?? '')
       return withNotices({})
     }
     case 'UserPromptSubmit': {
+      // Codex runs this hook for a subagent's first prompt too (with its
+      // agent_id): that is the factory's reviewer or a helper, not the person.
+      if (input.agent_id) return {}
       const prompt = str(input.prompt)
       const rt = await factory.runtime()
       if (rt.nonce && prompt.includes(`code-factory turn ${rt.nonce}`)) {

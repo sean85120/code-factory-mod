@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { branchFor, decisionsHash, DEFAULT_STATE, parseSettings, parseTodo, reviewAgentPrompt } from '../hooks/lib.ts'
-import plugin, { childSessionId, toolPaths } from './index.ts'
+import plugin, { childSessionId, ownBackground, toolPaths } from './index.ts'
 
 const TODO = `# Todo
 
@@ -97,7 +97,7 @@ test('the start command submits the work item, the idle hook the next step, and 
   assert.equal(stateOf(dir).autopilot, true)
 
   // While a subagent still runs, the idle hook waits.
-  await p.hooks.get('session.experimental.idle')!({ sessionID: 'ses_main', background: [{ kind: 'subagent' }] })
+  await p.hooks.get('session.experimental.idle')!({ sessionID: 'ses_main', background: [{ kind: 'subagent', sessionID: 'ses_main', childSessionID: 'ses_child1' }] })
   assert.equal(p.prompts.length, 1)
   await p.hooks.get('session.experimental.idle')!({ sessionID: 'ses_main', background: [] })
   assert.match(p.prompts[1]?.text ?? '', /T-001 is not marked done/)
@@ -151,7 +151,7 @@ test('a reviewer waiting for its own verifier agents has not finished', async ()
   const dir = repo({ autopilot: true, current: 'T-001', reviewAgentId: 'ses_child1', reviewAgentAt: Date.now(), reviewWaitMs: 1800000 })
   const p = await load(dir)
   p.setTranscript([{ type: 'assistant', content: [{ type: 'text', text: 'Started two verifiers; waiting.' }] }])
-  await p.hooks.get('session.experimental.idle')!({ sessionID: 'ses_child1', background: [{ kind: 'subagent' }] })
+  await p.hooks.get('session.experimental.idle')!({ sessionID: 'ses_child1', background: [{ kind: 'subagent', sessionID: 'ses_child1', childSessionID: 'ses_verifier' }] })
   const s = stateOf(dir)
   assert.equal(s.reviewAgentId, 'ses_child1')
   assert.equal(s.reviewRounds, 0)
@@ -175,4 +175,15 @@ test('the reviewer id comes only from the call\'s own result', () => {
   assert.equal(childSessionId({ output: { sessionID: 'ses_child1' } }, 'ses_main'), 'ses_child1')
   assert.equal(childSessionId({ output: { sessionID: 'ses_main' } }, 'ses_main'), null)
   assert.equal(childSessionId({ output: { text: 'see ses_somewhere' } }, 'ses_main'), null)
+})
+
+test('background work a child owns does not hold up the loop session or the reviewer', async () => {
+  assert.equal(ownBackground({ sessionID: 'ses_main', background: [{ sessionID: 'ses_main' }] }), true)
+  assert.equal(ownBackground({ sessionID: 'ses_main', background: [{ sessionID: 'ses_child' }] }), false)
+  const dir = repo({ autopilot: false })
+  const p = await load(dir)
+  await p.commands.get('factory-start')!.execute({ sessionID: 'ses_main', prompt: { text: '' }, delivery: 'steer' })
+  await p.hooks.get('session.experimental.idle')!({ sessionID: 'ses_main', background: [{ kind: 'shell', sessionID: 'ses_helper', shellID: 'x', command: 'npm run dev' }] })
+  assert.match(p.prompts[1]?.text ?? '', /T-001 is not marked done/)
+  p.cleanup()
 })

@@ -299,6 +299,15 @@ test('while the review starts or runs, the main session starts no other agent an
   assert.equal(await f.guardAgentMessage(), null)
 })
 
+test('a review spawn that never reported an agent is cleared when the turn ends', async () => {
+  const w = world({ state: { autopilot: true, current: 'T-001', reviewAgentId: PENDING_REVIEWER, reviewAgentAt: 1_000_000 } })
+  w.runtime = { epoch: 0, turn: { kind: 'work', at: w.now, owner: 'me' }, nonce: 'x' }
+  const next = await createFactory(hostFor(w, { notes: { work: '', design: '', waitForReviewer: 'WAIT' } })).onTurnEnd('answer')
+  assert.match(next?.text ?? '', /T-001 is not marked done/)
+  assert.equal(state(w).reviewAgentId, null)
+  assert.ok(w.notices.some(n => /never started/.test(n)))
+})
+
 test('start while this session\'s factory turn runs hands out nothing new', async () => {
   const w = world({ state: { autopilot: true, current: 'T-001' } })
   w.runtime = { epoch: 0, turn: { kind: 'work', at: w.now, owner: 'me' }, nonce: 'x' }

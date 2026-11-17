@@ -64,7 +64,9 @@ One of:
   The test suite is run against 2.1.295 in CI and was also run on 2.1.322.
 - **OpenCode 2.x** (tested on 2.3.0).
 - **Codex CLI** with plugin and hook support (tested on 0.144), and **Node.js
-  22.6 or later** on `PATH`, which runs the hooks.
+  22.6 or later** on `PATH`, which runs the hooks. The reviewer uses Codex's
+  standard multi-agent tools (`spawn_agent`); with the experimental
+  `multi_agent_v2` tools the review spawn is refused, so no pull request opens.
 
 And for all of them:
 
