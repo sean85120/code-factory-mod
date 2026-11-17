@@ -31,7 +31,7 @@ turns the ones worth doing into new items, and goes again.
 
 ## Contents
 
-- [Requirements](#requirements) · [Install](#install) · [Five-minute start](#five-minute-start)
+- [Requirements](#requirements) · [Install](#install) · [OpenCode and Codex](#opencode-and-codex) · [Five-minute start](#five-minute-start)
 - [The interface](#the-interface) · [Triage, fix, repeat](#triage-fix-repeat) · [Commands](#commands)
 - [Settings](#settings) · [Files it writes](#files-it-writes)
 - [Safety and trust](#safety-and-trust) · [Cost](#cost)
@@ -74,6 +74,59 @@ claude plugin install code-factory --marketplace sean85120/code-factory
 
 To run a working copy instead, clone the repository and start Claude Code with
 `claude --plugin-dir /path/to/code-factory`.
+
+## OpenCode and Codex
+
+The same factory also runs in [OpenCode](https://opencode.ai) and in OpenAI's
+[Codex CLI](https://github.com/openai/codex). It reads and writes the same
+`.factory/` files, so a plan designed and approved in one tool can be built in
+another (one loop per repository at a time, as in Claude Code).
+
+What they get: the design interview, approval, the build loop, the independent
+review, and every gate on commits, pushes, pull requests and merges. What only
+Claude Code has: the band above the prompt, the dashboard, the dollar ledger
+and `budgetUsd` (a plan with a budget is refused instead of run without one),
+the issue watcher, and the triage and next-phase interviews (use
+`/factory-design` to plan the next phase).
+
+**OpenCode** (2.x, tested on 2.3.0). Clone this repository and add its
+`opencode` folder to `plugins` in `~/.config/opencode/opencode.json` (or a
+project's `opencode.json`):
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["/path/to/code-factory/opencode"]
+}
+```
+
+The commands are the same: `/factory-design`, `/factory-approve`,
+`/factory-start`, `/factory-status`, `/factory-log`, `/factory-pause`,
+`/factory-stop`, `/factory-skip`, `/factory-retry`, `/factory-doctor`. The
+reviewer runs as a `general` subagent in the background; the loop picks up when
+it reports. The factory's prompts appear in the session as ordinary messages,
+and command replies appear as notes for you.
+
+**Codex** (needs Node.js 22.6 or newer on `PATH` for the hooks):
+
+```
+codex plugin marketplace add sean85120/code-factory
+codex plugin add code-factory@code-factory
+```
+
+Then open `/hooks` in Codex and trust the code-factory hooks; until you do,
+none of them run. Codex has no custom slash commands, so the commands are typed
+as skills: `$factory-design`, `$factory-approve`, `$factory-start`,
+`$factory-status` and so on. The hook answers them before the model sees the
+prompt. After each turn the `Stop` hook hands Codex the next step, so the loop
+continues in the same session. The reviewer is a `spawn_agent` subagent, and the
+`SubagentStop` hook reads its verdict. Hook state lives in the plugin's data
+directory, not in the repository.
+
+Codex treats hooks as a guardrail, not a sandbox: a hook that fails to start,
+for example on an older Node.js, lets the tool call through. While the loop
+runs, `$factory-doctor` and `$factory-status` are the quick checks that the
+hooks are live.
 
 ## Five-minute start
 

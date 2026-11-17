@@ -1,0 +1,88 @@
+{
+  "description": "code-factory: the build loop, the person's $factory-* commands and the git/gh gates.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --no-warnings \"$PLUGIN_ROOT/codex/hook.ts\"",
+            "timeout": 300,
+            "additionalContextLimit": 0,
+            "statusMessage": "code-factory"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|apply_patch|Edit|Write|spawn_agent|Agent)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --no-warnings \"$PLUGIN_ROOT/codex/hook.ts\"",
+            "timeout": 2400,
+            "statusMessage": "code-factory: checking"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(Bash|spawn_agent|Agent)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --no-warnings \"$PLUGIN_ROOT/codex/hook.ts\"",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --no-warnings \"$PLUGIN_ROOT/codex/hook.ts\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --no-warnings \"$PLUGIN_ROOT/codex/hook.ts\"",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --no-warnings \"$PLUGIN_ROOT/codex/hook.ts\"",
+            "timeout": 2400,
+            "statusMessage": "code-factory: next step"
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --no-warnings \"$PLUGIN_ROOT/codex/hook.ts\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

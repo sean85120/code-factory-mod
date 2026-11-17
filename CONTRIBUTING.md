@@ -46,6 +46,12 @@ short:
 - `types/index.d.ts` is the `$.state` contract and the view types.
 - `tests/*.test.ts` test `lib.ts` directly or drive the hooks through mocked
   engine calls.
+- `core/`, `opencode/` and `codex/` run the same factory in OpenCode and Codex.
+  A change to the loop or a gate in `register.tsx` usually needs the same change
+  in `core/factory.ts`. Their tests run with
+  `node --experimental-strip-types --test core/*.spec.ts codex/*.spec.ts opencode/*.spec.ts`,
+  and `(cd opencode && npm install && npx tsc -p .)` type-checks them. Keep
+  `lib.ts` loadable by Node's type stripping: type-only imports, no enums.
 
 ## Making a change
 

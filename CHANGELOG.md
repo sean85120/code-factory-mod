@@ -16,6 +16,18 @@ minor version may change behavior).
 
 ### Added
 
+- OpenCode and Codex support. `core/factory.ts` ports the loop, the commands
+  (design, approve, start, stop, pause, status, log, skip, retry, doctor) and
+  every commit/push/PR/merge gate to a small host interface, on top of the same
+  `hooks/lib.ts` and `.factory/` files. `opencode/` is an OpenCode 2.x server
+  plugin (`/factory-*` commands, gates in `tool.execute.before`, the loop in
+  the session idle hook). `codex/` holds one hook script for Codex
+  (`$factory-*` commands through `UserPromptSubmit`, gates in `PreToolUse`,
+  the loop through `Stop` continuations), and the repository is a Codex
+  marketplace (`codex plugin marketplace add sean85120/code-factory`). The
+  band, dashboard, dollar ledger, issue watcher and the triage and next-phase
+  interviews stay Claude Code only. A plan with `budgetUsd` set is refused on
+  these hosts instead of being run without a budget.
 - `/factory-exit` leaves factory mode: it stops the loop if it is running, closes
   the dashboard, clears the status line, hides the band, and drops an open
   interview's instructions and guards. A factory turn that is still running keeps

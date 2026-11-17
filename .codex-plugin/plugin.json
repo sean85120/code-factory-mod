@@ -1,0 +1,21 @@
+{
+  "name": "code-factory",
+  "version": "0.2.0",
+  "description": "Design-first autonomous code factory: interviews you for decisions, then implements the todo list branch by branch and PR by PR until CI-green merges, with git/gh gates the model cannot skip.",
+  "author": { "name": "sean85120" },
+  "license": "MIT",
+  "homepage": "https://github.com/sean85120/code-factory",
+  "repository": "https://github.com/sean85120/code-factory",
+  "keywords": ["automation", "ci", "code-review", "github", "autonomous", "workflow"],
+  "skills": "./codex/skills/",
+  "hooks": "./codex/hooks.json",
+  "interface": {
+    "displayName": "Code Factory",
+    "shortDescription": "Design once, then build every todo item PR by PR until CI-green merges.",
+    "longDescription": "Type $factory-design to be interviewed for the design, $factory-approve to approve it and start the loop. The factory hands Codex one item at a time and its hooks refuse pushes to the base branch, PRs without tests or a clean independent review, and merges before CI is green.",
+    "developerName": "sean85120",
+    "category": "Coding",
+    "websiteURL": "https://github.com/sean85120/code-factory",
+    "defaultPrompt": ["$factory-design", "$factory-status"]
+  }
+}
