@@ -131,7 +131,8 @@ export const FACTORY_TURN_TTL_MS = 3 * 3600000
 export const PENDING_REVIEWER = 'pending'
 const STATE_READS = 3
 const STATE_UNREADABLE = `${STATE_PATH} cannot be read or is not valid JSON; the guards stay on and nothing writes it. Fix or delete it, then /factory-approve`
-const IGNORED = ['state.json', 'lock.json', 'blocked/', 'evidence/']
+// `*.tmp`: the temp files of atomic writes (core/io.ts writeAtomic).
+const IGNORED = ['state.json', 'lock.json', 'blocked/', 'evidence/', '*.tmp']
 const REVIEW_BUSY_DENY = 'code-factory: the review agent is still running; do not change the code until its verdict arrives (only the review agent may edit, commit or push now).'
 const FACTORY_FILE_DENY = 'code-factory: .factory/state.json and .factory/lock.json are controlled by the person through the factory commands.'
 const SKELETON_TODO = `# Todo

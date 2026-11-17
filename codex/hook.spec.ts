@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { decisionsHash, DEFAULT_STATE, parseSettings, parseTodo } from '../hooks/lib.ts'
-import { agentIdFrom, commandOf, handle, opensInterpreter, responseOk, shellCommand } from './hook.ts'
+import { agentIdFrom, commandOf, factoryRoot, handle, opensInterpreter, repoTop, responseOk, shellCommand } from './hook.ts'
 import type { Env, HookInput } from './hook.ts'
 
 // The session runs in the repo the input names, as Codex runs hooks in the session's directory.
@@ -196,6 +196,10 @@ test('no shell or interpreter that reads its program from stdin is started while
   assert.equal(opensInterpreter('cat | python3'), true)
   assert.equal(opensInterpreter('bash -lc "npm test"'), false)
   assert.equal(opensInterpreter('python3 -m pytest'), false)
+  assert.equal(opensInterpreter('timeout 600 bash 2>&1'), true)
+  assert.equal(opensInterpreter('$SHELL -l'), true)
+  assert.equal(opensInterpreter("python3 - <<'PY'\nprint(1)\nPY"), false)
+  assert.equal(opensInterpreter('echo ls | python3'), false)
   const { dir, data } = repo({ autopilot: true, current: 'T-001' })
   assert.match(JSON.stringify(await hook({ hook_event_name: 'PreToolUse', cwd: dir, session_id: 's', tool_name: 'Bash', tool_input: { command: 'bash' } }, { PLUGIN_DATA: data })), /no interactive shells/)
   const idle = repo({ autopilot: false })
@@ -214,11 +218,37 @@ test('a shell call run from a subfolder or outside the repo is still gated', asy
   assert.match(JSON.stringify(sub), /controlled by the person/)
 })
 
-test('a command\'s exit code is read from the output Codex returns', () => {
-  assert.equal(responseOk('nothing to commit\nProcess exited with code 1'), false)
-  assert.equal(responseOk('[main abc123] T-001: add\nProcess exited with code 0'), true)
+test('a command counts as succeeded unless an exit code says otherwise', () => {
   assert.equal(responseOk({ exit_code: 2 }), false)
-  assert.equal(responseOk('plain output'), true)
+  assert.equal(responseOk({ exit_code: 0 }), true)
+  assert.equal(responseOk('npm error code 1 in a dependency, but the command passed'), true)
+})
+
+test('the repository is the nearest .factory/ inside the git repo, never another tool\'s .factory above it', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'cf-home-'))
+  mkdirSync(join(home, '.factory'))
+  writeFileSync(join(home, '.factory/settings.json'), '{"droid": true}')
+  const proj = join(home, 'proj')
+  mkdirSync(proj)
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: proj })
+  mkdirSync(join(proj, 'src'))
+  assert.equal(factoryRoot(join(proj, 'src')), null)
+  assert.equal(repoTop(join(proj, 'src')), realpathSync(proj))
+  const data = mkdtempSync(join(tmpdir(), 'cf-codex-data-'))
+  assert.deepEqual(await handle({ hook_event_name: 'PreToolUse', cwd: proj, session_id: 's', tool_name: 'Bash', tool_input: { command: 'git push origin main' } }, { PLUGIN_DATA: data }, join(proj, 'src')), {})
+  await handle({ hook_event_name: 'UserPromptSubmit', cwd: proj, session_id: 's', prompt: '$factory-design' }, { PLUGIN_DATA: data }, join(proj, 'src'))
+  assert.ok(readFileSync(join(proj, '.factory/todo.md'), 'utf8').startsWith('# Todo'))
+  assert.equal(readFileSync(join(home, '.factory/settings.json'), 'utf8'), '{"droid": true}')
+})
+
+test('while the loop runs, git commands from another worktree are refused', async () => {
+  const { dir, data } = repo({ autopilot: true, current: 'T-001' })
+  const other = mkdtempSync(join(tmpdir(), 'cf-wt-'))
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: other })
+  const pre = (cwd: string, command: string) => handle({ hook_event_name: 'PreToolUse', cwd, session_id: 's', tool_name: 'Bash', tool_input: { command } }, { PLUGIN_DATA: data }, dir)
+  assert.match(JSON.stringify(await pre(other, 'git push origin HEAD')), /another worktree or clone/)
+  assert.deepEqual(await pre(other, 'ls'), {})
+  assert.deepEqual(await pre(dir, 'git status'), {})
 })
 
 test('a start refused in another session does not void this session\'s loop step', async () => {

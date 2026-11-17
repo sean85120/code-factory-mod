@@ -6,7 +6,7 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -102,32 +102,96 @@ function responseText(response: unknown): string {
   return [str(r.stdout), str(r.stderr), str(r.output), str(r.aggregated_output), str(r.formatted_output)].filter(Boolean).join('\n') || JSON.stringify(response ?? '')
 }
 
-// Codex hands PostToolUse the command's output text; its exit code is only
-// there when the output says so ("Process exited with code 1"). Without it the
-// command counts as succeeded, which affects only the timeline.
+// Codex hands PostToolUse only the command's output text, never its exit code.
+// A numeric exit_code field is used if a future Codex sends one; otherwise the
+// command counts as succeeded, which affects only the timeline (a failed
+// commit may be logged as a commit).
 export function responseOk(response: unknown): boolean {
   const r = asObj(response)
   const code = r.exit_code ?? r.exitCode
-  if (typeof code === 'number') return code === 0
-  const said = [...responseText(response).matchAll(/\bexit(?:ed)?(?: with)? code:?\s*(-?\d+)/gi)].pop()
-  return said ? Number(said[1]) === 0 : true
+  return typeof code === 'number' ? code === 0 : true
 }
 
 const INTERPRETER = /^(?:bash|sh|zsh|fish|dash|ksh|csh|tcsh|python[0-9.]*|node|bun|deno|ruby|irb|perl|php|lua|ghci|psql|mysql|sqlite3|redis-cli|mongosh?|ssh|nc|telnet)$/
+// Commands that run another command after their own options.
+const WRAPPERS: Record<string, RegExp> = {
+  env: /^(?:-[A-Za-z]*|--[a-z-]+(?:=.*)?|[A-Za-z_][A-Za-z0-9_]*=.*)$/,
+  timeout: /^(?:-[A-Za-z]*|--[a-z-]+(?:=.*)?|\d+(?:\.\d+)?[smhd]?)$/,
+  nice: /^(?:-[A-Za-z]*\d*|--[a-z-]+(?:=.*)?|\d+)$/,
+  stdbuf: /^-[A-Za-z]+\S*$/,
+  sudo: /^-[A-Za-z]*$/,
+  nohup: /^$/,
+  exec: /^-[A-Za-z]*$/,
+  command: /^-[A-Za-z]*$/,
+  builtin: /^$/,
+  time: /^-[A-Za-z]*$/,
+}
+// Options of those wrappers that take a separate value.
+const WRAPPER_VALUE: Record<string, RegExp> = {
+  env: /^(?:-u|-C|-S|--unset|--chdir|--split-string)$/,
+  timeout: /^(?:-s|-k|--signal|--kill-after)$/,
+  nice: /^(?:-n|--adjustment)$/,
+  stdbuf: /^(?:-i|-o|-e)$/,
+  sudo: /^(?:-u|-g|-C|-h|-p|-r|-t|-U|--user|--group)$/,
+}
 
-// A pipeline stage that starts a shell or interpreter reading its program from
-// stdin: no script, no -c/-e, or an explicit -i/-s/-. Written to later with
-// write_stdin, it would run commands no hook sees.
+type Stage = { name: string; args: string[]; stdinRedirected: boolean }
+
+function parseStage(text: string): Stage {
+  const raw = text.trim().replace(/^[({]+\s*/, '').replace(/\s*[)}]+$/, '').split(/\s+/).filter(Boolean)
+  const tokens: string[] = []
+  let stdinRedirected = false
+  for (let i = 0; i < raw.length; i++) {
+    const t = raw[i]!
+    const redirect = /^(?:\d*|&)(?:<<?<?-?|>>?|>&|<&)/.exec(t)
+    if (redirect) {
+      if (/^0?</.test(t)) stdinRedirected = true
+      // `> file`, `2> file`: the target is the next token.
+      if (t === redirect[0] && !/&\d*$/.test(t)) i++
+      continue
+    }
+    tokens.push(t)
+  }
+  for (;;) {
+    while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]!)) tokens.shift()
+    const head = (tokens[0] ?? '').split('/').pop() ?? ''
+    const opts = WRAPPERS[head]
+    if (!opts) break
+    tokens.shift()
+    while (tokens.length > 0 && (opts.test(tokens[0]!) || tokens[0] === '--')) {
+      const t = tokens.shift()!
+      if (WRAPPER_VALUE[head]?.test(t) && tokens.length > 0) tokens.shift()
+    }
+  }
+  let name = (tokens[0] ?? '').split('/').pop() ?? ''
+  if (/^\$\{?SHELL\}?$/.test(tokens[0] ?? '')) name = 'sh'
+  return { name, args: tokens.slice(1), stdinRedirected }
+}
+
+// Runs whatever arrives on its stdin: a shell or interpreter given no program
+// (or told to read one: -i, -s, -), `script` (a shell in a terminal) and `xargs`.
+function runsStdin(st: Stage): boolean {
+  if (st.name === 'xargs') return true
+  if (st.name === 'script') return !st.args.some(a => /^-[A-Za-z]*c$/.test(a) || a === '--command')
+  if (!INTERPRETER.test(st.name)) return false
+  if (st.args.some(t => t === '-i' || t === '--interactive' || t === '-s' || t === '-')) return true
+  return !st.args.some(t => !t.startsWith('-') || /^-[A-Za-z]*[ce]$/.test(t) || t === '--eval' || t === '--command' || t === '-m')
+}
+
+// A pipeline stage that starts a shell or interpreter whose stdin stays open to
+// the terminal: written to later with write_stdin, it would run commands no
+// hook sees. A stage fed by a heredoc, a file or another command's output is
+// fine, except through a bare `cat`/`tee`, which pass the terminal on.
 export function opensInterpreter(command: string): boolean {
-  return command.split(/[;&|\n]+/).some(stage => {
-    const tokens = stage.trim().split(/\s+/).filter(Boolean)
-    while (tokens.length > 0 && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]!) || ['env', 'exec', 'command', 'nohup', 'sudo', 'time'].includes(tokens[0]!))) tokens.shift()
-    const name = (tokens[0] ?? '').split('/').pop() ?? ''
-    if (!INTERPRETER.test(name)) return false
-    const rest = tokens.slice(1)
-    if (rest.some(t => t === '-i' || t === '--interactive' || t === '-s' || t === '-')) return true
-    const runsProgram = rest.some(t => !t.startsWith('-') || /^-[A-Za-z]*[ce]$/.test(t) || t === '--eval' || t === '--command' || t === '-m')
-    return !runsProgram
+  const text = command.replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1([^\n]*)\n[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g, '<<HEREDOC $3')
+  return text.split(/&&|\|\||[;&\n]/).some(pipeline => {
+    let open = true
+    return pipeline.split('|').some((part, k) => {
+      const st = parseStage(part)
+      const stdinOpen = !st.stdinRedirected && (k === 0 || open)
+      open = stdinOpen && (st.name === 'cat' || st.name === 'tee') && st.args.every(a => a.startsWith('-'))
+      return stdinOpen && runsStdin(st)
+    })
   })
 }
 
@@ -139,10 +203,35 @@ export type Env = { PLUGIN_DATA?: string; CLAUDE_PLUGIN_DATA?: string; HOME?: st
 // looked up from where the session runs. A hook's `cwd` is the tool call's own
 // working directory (a shell call's `workdir`), which the model chooses, so it
 // is only a fallback: a call run from src/ or /tmp must not leave the gates off.
+// The walk stops at the repository's top folder (the first one holding .git),
+// so a .factory folder above the project (another tool's, such as ~/.factory)
+// is never taken for it; a folder counts only when it holds the factory's own
+// settings.json or todo.md.
+// Paths are compared after symlinks are resolved (on macOS /var is /private/var).
+function real(p: string): string {
+  try {
+    return realpathSync(p)
+  } catch {
+    return resolve(p)
+  }
+}
+
 export function factoryRoot(start: string): string | null {
-  let d = resolve(start)
+  let d = real(start)
   for (;;) {
-    if (existsSync(join(d, FACTORY_DIR))) return d
+    if (existsSync(join(d, FACTORY_DIR, 'settings.json')) || existsSync(join(d, FACTORY_DIR, 'todo.md'))) return d
+    const up = dirname(d)
+    if (existsSync(join(d, '.git')) || up === d) return null
+    d = up
+  }
+}
+
+// The top folder of the git repository holding `start` (a .git folder or a
+// worktree's .git file), or null outside one.
+export function repoTop(start: string): string | null {
+  let d = real(start)
+  for (;;) {
+    if (existsSync(join(d, '.git'))) return d
     const up = dirname(d)
     if (up === d) return null
     d = up
@@ -155,7 +244,7 @@ export async function handle(input: HookInput, env: Env = process.env, sessionDi
   // A repo without .factory/ is not using the factory: nothing to do or guard,
   // except a $factory command (the design interview creates .factory/).
   if (!root && !(event === 'UserPromptSubmit' && commandOf(str(input.prompt)))) return {}
-  const dir = root ?? sessionDir
+  const dir = root ?? repoTop(sessionDir) ?? sessionDir
   const io = nodeIo(dir)
   const dataDir = env.PLUGIN_DATA || env.CLAUDE_PLUGIN_DATA || join(env.HOME || homedir(), '.codex', 'code-factory')
   // The flags belong to this session alone, as Claude Code's are in memory: a
@@ -260,6 +349,13 @@ async function dispatch(event: string, input: HookInput, dir: string, dataDir: s
           // hook, so no interpreter that would run such input is started while
           // the gates are on.
           if (opensInterpreter(shellCommand(toolInput)) && (await factory.guardsLive())) return withNotices(deny('code-factory: no interactive shells or interpreters while the factory loop runs (input sent to them later is never checked); run each command directly.'))
+          // The gates read the branch and HEAD of the factory's repository; a git
+          // or gh command run from another worktree or clone would be checked
+          // against the wrong branch.
+          const callTop = input.cwd ? repoTop(input.cwd) : null
+          if (callTop !== null && callTop !== repoTop(dir) && /\b(?:git|gh)\b/.test(shellCommand(toolInput)) && (await factory.guardsLive())) {
+            return withNotices(deny('code-factory: run git and gh commands from the factory\'s repository while the loop runs, not from another worktree or clone.'))
+          }
           const reason = await factory.guardShell(shellCommand(toolInput), actor)
           return withNotices(reason ? deny(reason) : {})
         }

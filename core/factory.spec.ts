@@ -206,7 +206,7 @@ test('start hands out the first item, a turn that leaves it unfinished gets a nu
   assert.equal(state(w).current, 'T-001')
   assert.equal(state(w).autopilot, true)
   assert.equal(w.runtime.turn?.kind, 'work')
-  assert.match(w.files.get('.factory/.gitignore') ?? '', /state\.json/)
+  assert.match(w.files.get('.factory/.gitignore') ?? '', /state\.json[\s\S]*\*\.tmp/)
 
   const nudge = await f.onTurnEnd('answer')
   assert.match(nudge?.text ?? '', /T-001 is not marked done/)
