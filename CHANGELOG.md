@@ -7,6 +7,13 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+### Fixed
+
+- Installed copies of the plugin never updated, because Claude Code only treats a
+  plugin as new when its `version` changes and `.claude-plugin/plugin.json` stayed
+  at `0.2.0`. The manifest no longer sets a version, so every commit on `main` is a
+  new version and `/plugin update code-factory` picks it up.
+
 ### Changed
 
 - A pull request whose diff holds only prose (Markdown, reStructuredText, AsciiDoc,
