@@ -142,8 +142,9 @@ do this. To update later, run `codex plugin marketplace upgrade`.
 
 ## Updating
 
-Every commit on `main` is a new version of the plugin (the manifest sets no
-fixed version number), so an installed copy can always be brought up to date.
+Updates arrive with each numbered release (see the [changelog](CHANGELOG.md)).
+An installed copy only changes when the version in the plugin manifest does, so
+a fix that is merged but not yet released does not reach you.
 
 ### Claude Code
 
@@ -160,11 +161,6 @@ then restart Claude Code, because an update takes effect in the next session.
 To have Claude Code do this at startup, open `/plugin`, go to the marketplaces
 list, select `code-factory` and turn on auto-update. The setting belongs to you,
 not to the plugin, so it cannot be switched on from this repository.
-
-A copy installed before this change was published still carries the old fixed
-version `0.2.0`; if the first update reports that it is already up to date,
-uninstall and install it once (`claude plugin uninstall code-factory@code-factory`,
-then the install command above).
 
 ### OpenCode and Codex
 

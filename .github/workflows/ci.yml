@@ -22,6 +22,8 @@ jobs:
         with:
           node-version: 22
       - run: npm install -g @anthropic-ai/claude-code@2.1.295
+      - name: Version is consistent
+        run: scripts/check-version.sh
       - name: Lint (manifest and hooks validation)
         run: claude plugin validate .
       - name: Unit tests
