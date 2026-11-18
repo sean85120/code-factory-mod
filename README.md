@@ -49,7 +49,7 @@ for how each one works.
 
 ## Contents
 
-- [Requirements](#requirements) · [Install](#install) · [Five-minute start](#five-minute-start)
+- [Requirements](#requirements) · [Install](#install) · [Updating](#updating) · [Five-minute start](#five-minute-start)
 - [Claude Code, OpenCode and Codex](#claude-code-opencode-and-codex)
 - [The interface](#the-interface) · [Triage, fix, repeat](#triage-fix-repeat) · [Commands](#commands)
 - [Settings](#settings) · [Files it writes](#files-it-writes)
@@ -139,6 +139,34 @@ Then start Codex, open **`/hooks`**, and trust the code-factory hooks. Codex
 does not run a plugin's hooks until you review them, and asks again after every
 update that changes them. Until then the `$factory-*` skills only tell you to
 do this. To update later, run `codex plugin marketplace upgrade`.
+
+## Updating
+
+Updates arrive with each numbered release (see the [changelog](CHANGELOG.md)).
+An installed copy only changes when the version in the plugin manifest does, so
+a fix that is merged but not yet released does not reach you.
+
+### Claude Code
+
+Marketplaces you add yourself do not update on their own by default. To update
+by hand, from a shell:
+
+```
+claude plugin marketplace update code-factory
+claude plugin update code-factory@code-factory
+```
+
+then restart Claude Code, because an update takes effect in the next session.
+
+To have Claude Code do this at startup, open `/plugin`, go to the marketplaces
+list, select `code-factory` and turn on auto-update. The setting belongs to you,
+not to the plugin, so it cannot be switched on from this repository.
+
+### OpenCode and Codex
+
+OpenCode: run `git pull` in your clone. Codex:
+`codex plugin marketplace upgrade`, then review the hooks again in `/hooks` if
+they changed.
 
 ## Five-minute start
 

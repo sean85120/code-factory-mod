@@ -7,6 +7,16 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-19
+
+### Fixed
+
+- Installed copies of the plugin never updated, because the manifest version stayed at
+  `0.2.0` through every merge and Claude Code only updates a plugin when its
+  version changes. The manifests now carry `0.3.0`, and CI fails when the
+  manifests and the changelog disagree about the version. Bump all three to
+  release.
+
 ### Changed
 
 - A pull request whose diff holds only prose (Markdown, reStructuredText, AsciiDoc,
@@ -174,5 +184,6 @@ minor version may change behavior).
   status (`/factory-status`), the dashboard and band, `/factory-doctor`, and the
   next-phase interview (`/factory-roadmap`).
 
-[Unreleased]: https://github.com/sean85120/code-factory/compare/79e9212...HEAD
+[Unreleased]: https://github.com/sean85120/code-factory/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/sean85120/code-factory/compare/79e9212...v0.3.0
 [0.2.0]: https://github.com/sean85120/code-factory/commit/79e9212
