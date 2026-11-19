@@ -7,6 +7,16 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+### Fixed
+
+- A long build or test gate no longer burns an item's attempts. When the model ends a
+  turn while its gate is still running, the loop used to re-prompt it every few
+  minutes and count each prompt as a failed attempt, so four attempts blocked the
+  item before anything could merge. After the first retry prompt, the next one now
+  waits one gate length (`testTimeoutMs` for each of the test, build and e2e
+  commands that are set, at least five minutes) unless the item shows progress
+  (commit, PR, CI result, review) in between.
+
 ## [0.3.0] - 2026-11-19
 
 ### Fixed

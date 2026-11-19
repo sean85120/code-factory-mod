@@ -147,6 +147,7 @@ import {
   reviewWindow,
   loopEventForBash,
   nudgePrompt,
+  nudgeDue,
   normalizePath,
   normalizeText,
   parseLock,
@@ -1088,6 +1089,7 @@ async function advance($: Dollar): Promise<void> {
               return
             }
           }
+          if (!nudgeDue(state.events, item.id, settings, now)) return
           const attempts = state.attempts + 1
           if (attempts > settings.maxAttempts) {
             state = { ...withEvent(state, now, { itemId: item.id, kind: 'blocked', detail: `after ${settings.maxAttempts} attempts: ${why}` }), current: null, attempts: 0 }
