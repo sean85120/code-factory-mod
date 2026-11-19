@@ -3,6 +3,8 @@ import { expect, test } from 'claude-code/testing'
 import {
   DEFAULT_SETTINGS,
   compareVersions,
+  nudgeDue,
+  nudgeGapMs,
   declinedLines,
   isBillingProblem,
   isReviewClean,
@@ -156,4 +158,17 @@ test('the work prompt embeds the reviewer prompt verbatim, updates the branch wi
 test('the reviewer prompt asks for the security count, verifier votes, tags and REVIEW.md', () => {
   const p = reviewAgentPrompt(DEFAULT_SETTINGS, 'factory/t-001-x')
   for (const needle of ['REVIEW.md', 'verifier', 'Pre-existing', '/security-review', 'FACTORY-REVIEW: danger=<n> medium=<n> security=<n> sha=']) expect(p).toContain(needle)
+})
+
+test('nudgeDue waits one gate length after the last nudge or sign of progress on the item', () => {
+  const s = { testTimeoutMs: 600000, buildCmd: ['b'], e2eCmd: [] as string[] }
+  const ev = (ts: number, kind: 'started' | 'commit' | 'nudge', itemId = 'T-001') => ({ ts, itemId, kind, detail: '' })
+  expect(nudgeGapMs(s)).toBe(1200000)
+  expect(nudgeGapMs({ testTimeoutMs: 1000, buildCmd: [], e2eCmd: [] })).toBe(300000)
+  expect(nudgeDue([], 'T-001', s, 0)).toBe(true)
+  expect(nudgeDue([ev(0, 'started')], 'T-001', s, 10)).toBe(true)
+  expect(nudgeDue([ev(0, 'nudge')], 'T-001', s, 1199999)).toBe(false)
+  expect(nudgeDue([ev(0, 'nudge')], 'T-001', s, 1200000)).toBe(true)
+  expect(nudgeDue([ev(0, 'started'), ev(1000000, 'commit')], 'T-001', s, 1500000)).toBe(false)
+  expect(nudgeDue([ev(0, 'nudge', 'T-002')], 'T-001', s, 10)).toBe(true)
 })

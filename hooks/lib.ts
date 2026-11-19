@@ -2142,6 +2142,21 @@ export function sanitizeEvents(raw: unknown): FactoryEvent[] {
 
 const eventKey = (e: FactoryEvent): string => `${e.ts}|${e.kind}|${e.itemId ?? ''}|${e.detail}`
 
+const ACTIVITY_KINDS: ReadonlySet<EventKind> = new Set<EventKind>(['commit', 'pr-opened', 'ci-passed', 'ci-failed', 'review-launched', 'review-verdict', 'nudge'])
+
+export function nudgeGapMs(s: Pick<Settings, 'testTimeoutMs' | 'buildCmd' | 'e2eCmd'>): number {
+  const gates = 1 + (s.buildCmd.length > 0 ? 1 : 0) + (s.e2eCmd.length > 0 ? 1 : 0)
+  return Math.max(5 * 60000, s.testTimeoutMs * gates)
+}
+
+export function nudgeDue(events: readonly FactoryEvent[], itemId: string, s: Pick<Settings, 'testTimeoutMs' | 'buildCmd' | 'e2eCmd'>, now: number): boolean {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]
+    if (e.itemId === itemId && ACTIVITY_KINDS.has(e.kind)) return now - e.ts >= nudgeGapMs(s)
+  }
+  return true
+}
+
 export function appendEvent(events: readonly FactoryEvent[], ev: FactoryEvent): FactoryEvent[] {
   const e: FactoryEvent = { ...ev, detail: cleanText(ev.detail).slice(0, 160), ...(ev.url !== undefined ? { url: stripControls(ev.url) } : {}) }
   const last = events[events.length - 1]
