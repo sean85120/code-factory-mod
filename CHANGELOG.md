@@ -7,6 +7,8 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-20
+
 ### Fixed
 
 - A long build or test gate no longer burns an item's attempts. When the model ends a
@@ -194,6 +196,7 @@ minor version may change behavior).
   status (`/factory-status`), the dashboard and band, `/factory-doctor`, and the
   next-phase interview (`/factory-roadmap`).
 
-[Unreleased]: https://github.com/sean85120/code-factory/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/sean85120/code-factory/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/sean85120/code-factory/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/sean85120/code-factory/compare/79e9212...v0.3.0
 [0.2.0]: https://github.com/sean85120/code-factory/commit/79e9212
