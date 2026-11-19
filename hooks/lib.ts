@@ -2152,7 +2152,7 @@ export function nudgeGapMs(s: Pick<Settings, 'testTimeoutMs' | 'buildCmd' | 'e2e
 export function nudgeDue(events: readonly FactoryEvent[], itemId: string, s: Pick<Settings, 'testTimeoutMs' | 'buildCmd' | 'e2eCmd'>, now: number): boolean {
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i]
-    if (e.itemId === itemId && ACTIVITY_KINDS.has(e.kind)) return now - e.ts >= nudgeGapMs(s)
+    if (e && e.itemId === itemId && ACTIVITY_KINDS.has(e.kind)) return now - e.ts >= nudgeGapMs(s)
   }
   return true
 }
