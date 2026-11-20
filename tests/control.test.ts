@@ -410,7 +410,10 @@ test('/factory-retry refuses a done item, a changed plan, and another session ho
   mock.clock(on, { now: 1_000_000 })
   const done = setup($, on, { todo: TODO.replace('status: todo', 'status: done'), state: { approvedDone: ['T-001'] } })
   done.files['.factory/blocked/T-001.md'] = 'x\n'
-  expect((await $.command.run({ command: 'factory-retry', args: 'T-001' } as never)).text).toContain('already done')
+  expect((await $.command.run({ command: 'factory-retry', args: 'T-001' } as never)).text).toContain('already done; removed its stale blocked note')
+  expect(done.files['.factory/blocked/T-001.md']).toBeUndefined()
+  expect((await $.command.run({ command: 'factory-retry', args: 'T-001' } as never)).text).toContain('Cannot retry: T-001 is already done')
+  done.files['.factory/blocked/T-001.md'] = 'x\n'
   done.files['.factory/todo.md'] = TODO.replace('Use the standard', 'Use a different')
   expect((await $.command.run({ command: 'factory-retry', args: 'T-001' } as never)).text).toContain('changed since approval')
   expect(done.files['.factory/blocked/T-001.md']).toBe('x\n')
