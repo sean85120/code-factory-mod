@@ -495,13 +495,15 @@ type Snapshot = {
 async function load($: Dollar): Promise<Snapshot> {
   const parsed = parseSettings(await readText($, SETTINGS_PATH))
   const todo = await readText($, TODO_PATH)
-  return {
+  const snap: Snapshot = {
     state: await readState($),
     settings: parsed.settings,
     settingsProblems: parsed.problems,
     items: todo === null ? [] : parseTodo(todo),
     blocked: await blockedIds($),
   }
+  const finished = new Set(effectiveItems(snap).filter(i => i.status === 'done' && i.id !== snap.state.current).map(i => i.id))
+  return { ...snap, blocked: new Set([...snap.blocked].filter(id => !finished.has(id))) }
 }
 
 // `done` in todo.md only counts when the person approved it as done or the
@@ -1457,7 +1459,12 @@ async function retryCmd($: Dollar, args: string): Promise<{ text: string }> {
   const item = effectiveItems(snap).find(i => i.id === id)
   if (!raw || !item) return { text: `Cannot retry: ${id} is not an item in ${TODO_PATH}.` }
   if (raw.status === 'proposed') return { text: `Cannot retry: ${id} is still proposed; /factory-approve promotes it first.` }
-  if (item.status === 'done') return { text: `Cannot retry: ${id} is already done.` }
+  if (item.status === 'done') {
+    if (!(await blockedIds($)).has(id)) return { text: `Cannot retry: ${id} is already done.` }
+    for (const name of [`${id}.md`, `${id.toLowerCase()}.md`]) await run($, ['rm', '-f', '--', `${BLOCKED_DIR}/${name}`], 15000)
+    await refreshStatus($)
+    return { text: `${id} is already done; removed its stale blocked note.` }
+  }
   const isCurrent = snap.state.current === id
   if (!snap.blocked.has(id) && !isCurrent) return { text: `${id} is not blocked; it is picked up in order.` }
   if (snap.blocked.has(id)) {

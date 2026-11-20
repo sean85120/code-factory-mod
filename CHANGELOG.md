@@ -7,6 +7,15 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-20
+
+### Fixed
+
+- An item that is already done no longer shows as blocked when a stale note is left in
+  `.factory/blocked/` (for example after a blocked item was merged by hand and
+  approved as done). The band, status and counts treat it as done, and
+  `/factory-retry <ID>` on it removes the stale note instead of only refusing.
+
 ## [0.3.1] - 2026-11-20
 
 ### Fixed
@@ -196,7 +205,8 @@ minor version may change behavior).
   status (`/factory-status`), the dashboard and band, `/factory-doctor`, and the
   next-phase interview (`/factory-roadmap`).
 
-[Unreleased]: https://github.com/sean85120/code-factory/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/sean85120/code-factory/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/sean85120/code-factory/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/sean85120/code-factory/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/sean85120/code-factory/compare/79e9212...v0.3.0
 [0.2.0]: https://github.com/sean85120/code-factory/commit/79e9212
