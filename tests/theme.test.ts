@@ -62,7 +62,8 @@ test('the hacker theme picks its palette by caps and drops every color under NO_
 })
 
 test('stored prefs fall back to classic on junk and the command arguments are checked', () => {
-  for (const junk of [undefined, null, 5, 'hacker', [], {}, { name: 'neon' }, { name: 7 }]) expect(parseThemePrefs(junk)).toEqual({ name: 'classic', glyphs: 'auto' })
+  for (const junk of [undefined, null, 5, 'hacker', [], {}, { name: 'neon' }, { name: 7 }]) expect(parseThemePrefs(junk)).toEqual({ name: 'hacker', glyphs: 'auto' })
+  expect(parseThemePrefs({ name: 'classic' })).toEqual({ name: 'classic', glyphs: 'auto' })
   expect(parseThemePrefs({ name: 'hacker' })).toEqual({ name: 'hacker', glyphs: 'auto' })
   expect(parseThemeArg('')).toEqual({})
   expect(parseThemeArg('  HACKER ')).toEqual({ prefs: { name: 'hacker' } })
