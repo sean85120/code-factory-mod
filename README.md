@@ -258,13 +258,16 @@ This section is Claude Code only. In OpenCode and Codex, `/factory-status` and
   `[✔ check setup]`.
 - **The status line**: a one-line summary that is always visible.
 
-The band, in the classic look and in the hacker look (`/factory-theme hacker`):
+The hacker look, with its mascot Vox, is the default. `/factory-theme classic`
+switches to the plain look and `/factory-theme hacker` brings it back; the choice
+is yours alone. The band in both looks:
 
-![The band above the prompt in the classic look](docs/img/band-classic.png)
 ![The band above the prompt in the hacker look](docs/img/band-hacker.png)
+![The band above the prompt in the classic look](docs/img/band-classic.png)
 
-The dashboard in the classic look:
+The dashboard in the hacker look and in the classic look:
 
+![The dashboard in the hacker look](docs/img/pane-hacker.png)
 ![The dashboard in the classic look](docs/img/pane-classic.png)
 
 Press an agent in the band or the dashboard to see what it is doing, task, words and tool calls with their results:
@@ -277,9 +280,11 @@ On the Claude desktop app the hacker look draws the pane as a dark console, with
 
 ### Vox
 
-The hacker look has a mascot. Vox shows the loop's state at a glance and, on
+The hacker look, the default since 0.4.0, has a mascot. Vox shows the loop's state at a glance and, on
 the terminal, animates it (a blink every few seconds, a two-hop celebration
 when the plan is done, a shake once when something blocks). `/factory-theme motion off` keeps it still.
+The face needs a dashboard pane at least 60 columns wide (the animated one, 70),
+a UTF-8 locale and color; with `NO_COLOR` set, or in the classic look, there is no mascot.
 
 ![Vox in its seven states: working, reviewing, done, paused, blocked, budget reached and idle](docs/img/vox-states.png)
 

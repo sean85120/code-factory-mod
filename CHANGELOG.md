@@ -7,6 +7,15 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-21
+
+### Changed
+
+- The hacker look, with the Vox mascot, is now the default. A person who never ran
+  `/factory-theme` gets it; `/factory-theme classic` switches back and is kept. A
+  saved `classic` choice is unchanged. The README shows the hacker look first and
+  explains when the mascot is drawn (pane width, UTF-8, color).
+
 ## [0.3.2] - 2026-11-20
 
 ### Fixed

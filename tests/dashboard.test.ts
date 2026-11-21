@@ -599,12 +599,11 @@ test('/factory-theme saves the choice in the store only, reports it, refuses unk
   const writes: { path: string; text: string }[] = []
   fixture($, on, { writes, store: {} })
   const run = async (args: string) => (await $.command.run({ command: 'factory-theme', args } as never)) as any
+  expect(JSON.stringify(await run(''))).toContain('Look: hacker (dark)')
+  expect(JSON.stringify(await run('neon'))).toContain('Usage: /factory-theme')
+  expect(JSON.stringify(await run('classic'))).toContain('Look: classic')
   expect(JSON.stringify(await run(''))).toContain('Look: classic')
   expect(JSON.stringify(await run('hacker'))).toContain('Look: hacker (dark)')
-  expect(JSON.stringify(await run(''))).toContain('Look: hacker')
-  expect(JSON.stringify(await run('neon'))).toContain('Usage: /factory-theme')
-  expect(JSON.stringify(await run(''))).toContain('Look: hacker')
-  expect(JSON.stringify(await run('classic'))).toContain('Look: classic')
   expect(writes.filter(w => w.path.includes('.factory/'))).toEqual([])
 })
 

@@ -1475,12 +1475,13 @@ const HACKER_GLYPHS = {
 
 const LABEL_SWAP: Record<string, string> = { '⏸': '‖', '▶': '▸' }
 
-export const DEFAULT_THEME_PREFS: ThemePrefs = { name: 'classic', glyphs: 'auto' }
+export const CLASSIC_PREFS: ThemePrefs = { name: 'classic', glyphs: 'auto' }
+export const DEFAULT_THEME_PREFS: ThemePrefs = { name: 'hacker', glyphs: 'auto' }
 export const DEFAULT_THEME_CAPS: ThemeCaps = { noColor: false, scheme: 'dark', ansi: false, utf8: true }
 
 export function parseThemePrefs(raw: unknown): ThemePrefs {
   const o = raw !== null && typeof raw === 'object' ? (raw as { name?: unknown; glyphs?: unknown; motion?: unknown }) : {}
-  return { name: o.name === 'hacker' ? 'hacker' : 'classic', glyphs: o.glyphs === 'ascii' ? 'ascii' : 'auto', ...(o.motion === 'off' ? { motion: 'off' as const } : {}) }
+  return { name: o.name === 'classic' ? 'classic' : 'hacker', glyphs: o.glyphs === 'ascii' ? 'ascii' : 'auto', ...(o.motion === 'off' ? { motion: 'off' as const } : {}) }
 }
 
 const THEME_USAGE = 'Usage: /factory-theme [hacker|classic] [ascii|auto] [motion on|off]. With no argument it shows the current look.'
@@ -1558,7 +1559,7 @@ export function hackerTheme(caps: ThemeCaps, ascii = !caps.utf8, motion = true):
   }
 }
 
-export function theme(prefs: ThemePrefs = DEFAULT_THEME_PREFS, caps: ThemeCaps = DEFAULT_THEME_CAPS): Theme {
+export function theme(prefs: ThemePrefs = CLASSIC_PREFS, caps: ThemeCaps = DEFAULT_THEME_CAPS): Theme {
   return prefs.name === 'hacker' ? hackerTheme(caps, prefs.glyphs === 'ascii' || !caps.utf8, prefs.motion !== 'off') : CLASSIC_THEME
 }
 
