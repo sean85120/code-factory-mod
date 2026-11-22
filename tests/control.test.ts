@@ -2997,3 +2997,79 @@ test('a todo.md change between the factory\'s two reads is never approved', asyn
   expect(text).toContain('plan changed')
   expect(fx.files['.factory/todo.md']).not.toContain('issue: #5')
 })
+
+test('a factory turn that goes quiet for five minutes shows the stuck warning on the status line, band and pane, and a new action clears it', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const statuses: string[] = []
+  const fx = setup($, on)
+  on('ui.status', (_: unknown, e: { text?: string }) => {
+    statuses.push(e.text ?? '')
+    return { value: undefined }
+  })
+  on('agent.list', () => ({ value: [] as never }))
+  on('session.messages', () => ({ value: [{ role: 'assistant', text: '', toolUses: [{ tool: 'Bash', input: { command: 'bun test' } }] }] as never }))
+  const stuck = /no progress for \d+ min: wait, or \/factory-pause/
+  const look = async (): Promise<{ status: string; band: string[]; pane: string[] }> => {
+    await $.command.run({ command: 'factory-status' } as never)
+    const texts = async (component: string, wide: number) => {
+      const ui = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component, requestId: component === 'Pane' ? 'factory' : undefined, props: { hasSurvey: false, bodyColumns: wide } } as never)
+      const out = (await ui.findAll({ type: 'Text' })).map((t: { text?: string }) => t.text ?? '')
+      await ui.unmount()
+      return out
+    }
+    return { status: statuses.at(-1) ?? '', band: [...(await texts('AbovePrompt', 140)), ...(await texts('AbovePrompt', 60))], pane: await texts('Pane', 100) }
+  }
+  fx.live.usd = 1
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1000)
+  expect(fx.live.submitted.some(s => s.startsWith('CODE FACTORY: work item T-001'))).toBe(true)
+  await $.turn.start({ turnId: 't1', text: 'CODE FACTORY: work item T-001' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/work/widget/a.ts' })
+  let seen = await look()
+  expect(seen.status).not.toMatch(stuck)
+  expect(seen.pane.some(t => /Last action: Bash: bun test \(\d+s ago\)/.test(t))).toBe(true)
+  expect(seen.pane.some(t => stuck.test(t))).toBe(false)
+  await clock.advance(4 * 60000 + 30000)
+  seen = await look()
+  expect(seen.status).not.toMatch(stuck)
+  expect(seen.pane.some(t => /Last action: Bash: bun test \(4m\d\ds ago\)/.test(t))).toBe(true)
+  await clock.advance(31000)
+  seen = await look()
+  expect(seen.status).toMatch(stuck)
+  expect(seen.band.filter(t => stuck.test(t)).length).toBe(2)
+  expect(seen.pane.some(t => stuck.test(t))).toBe(true)
+  await $.tool.call({ tool: 'Read', file_path: '/work/widget/b.ts' })
+  seen = await look()
+  expect(seen.status).not.toMatch(stuck)
+  expect(seen.band.some(t => stuck.test(t))).toBe(false)
+  expect(seen.pane.some(t => stuck.test(t))).toBe(false)
+  await clock.advance(5 * 60000 + 1000)
+  expect((await look()).status).toMatch(stuck)
+  await $.turn.start({ turnId: 't2', text: 'next' } as never)
+  expect((await look()).status).not.toMatch(stuck)
+  await clock.advance(5 * 60000 + 1000)
+  await mainTurn($)
+  const after = await look()
+  expect(after.status).not.toMatch(stuck)
+  expect(after.pane.some(t => /Last action/.test(t))).toBe(false)
+})
+
+test('outside a factory turn nothing about activity or a stuck loop is shown', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const statuses: string[] = []
+  setup($, on, { state: { autopilot: true, current: 'T-001' } })
+  on('ui.status', (_: unknown, e: { text?: string }) => {
+    statuses.push(e.text ?? '')
+    return { value: undefined }
+  })
+  on('agent.list', () => ({ value: [] as never }))
+  on('session.messages', () => ({ value: [] as never }))
+  await $.tool.call({ tool: 'Read', file_path: '/work/widget/a.ts' })
+  await clock.advance(10 * 60000)
+  await $.command.run({ command: 'factory-status' } as never)
+  expect(statuses.at(-1) ?? '').not.toMatch(/no progress/)
+  const ui = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'Pane', requestId: 'factory', props: {} } as never)
+  const texts = (await ui.findAll({ type: 'Text' })).map((t: { text?: string }) => t.text ?? '')
+  expect(texts.some(t => /Last action|no progress/.test(t))).toBe(false)
+  await ui.unmount()
+})

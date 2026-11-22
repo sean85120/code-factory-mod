@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { DEFAULT_THEME_CAPS, buildView, DEFAULT_STATE, hackerTheme, holdLine, liveLine, nowLine, parseTodo, statusLine } from '../hooks/lib'
+import { DEFAULT_THEME_CAPS, STUCK_MS, activityLine, buildView, DEFAULT_STATE, hackerTheme, holdLine, liveLine, nowLine, parseTodo, statusLine, stuckLine } from '../hooks/lib'
 import type { FactoryView, Mark } from '../hooks/lib'
 
 const view = (o: Partial<FactoryView> = {}): FactoryView => ({
@@ -154,4 +154,50 @@ test('buildView feeds the same sentences: a real blocked and proposed plan reads
   expect(holdLine(v)).toEqual({ why: '1 item blocked: T-002', next: '/factory-retry T-002' })
   const p = buildView(items, { ...DEFAULT_STATE, approved: true, autopilot: false, pausedReason: 'nothing left to do', approvedDone: ['T-001', 'T-002'] }, new Set(), null, null)
   expect(holdLine(p)).toEqual({ why: '1 item proposed', next: '/factory-approve' })
+})
+
+const main = (recent: string[]) => ({ id: 'main', label: 'T-009 (main loop)', kind: 'main', status: 'running', summary: recent.at(-1) ?? '', recent, parent: null })
+
+test('stuckLine stays silent until five minutes without progress, then names the minutes and the pause command', () => {
+  expect(STUCK_MS).toBe(300000)
+  for (const silentMs of [null, undefined, 0, 4 * 60000 + 59000, Number.NaN, Number.POSITIVE_INFINITY * -1]) expect(stuckLine(run({ silentMs }))).toBe('')
+  expect(stuckLine(run({ silentMs: 5 * 60000 }))).toBe('⚠ no progress for 5 min: wait, or /factory-pause')
+  expect(stuckLine(run({ silentMs: 5 * 60000 + 59000 }))).toContain('for 5 min')
+  expect(stuckLine(run({ silentMs: 12 * 60000 }))).toContain('for 12 min')
+  expect(stuckLine(run({ silentMs: 9 * 60000, running: false }))).toBe('')
+  expect(stuckLine(run({ silentMs: 5 * 60000 }), hackerTheme(DEFAULT_THEME_CAPS, true))).toBe('! no progress for 5 min: wait, or /factory-pause')
+  expect(stuckLine(run({ silentMs: 5 * 60000 }), hackerTheme(DEFAULT_THEME_CAPS))).toBe('▲ no progress for 5 min: wait, or /factory-pause')
+})
+
+test('activityLine shows the main loop last action and how long ago, and nothing outside a running factory turn', () => {
+  const agents = [main(['Read: a.ts', 'Bash: bun test'])]
+  expect(activityLine(run({ silentMs: 0, agents }))).toBe('Last action: Bash: bun test (0s ago)')
+  expect(activityLine(run({ silentMs: 4 * 60000 + 59000, agents }))).toBe('Last action: Bash: bun test (4m59s ago)')
+  expect(activityLine(run({ silentMs: 5 * 60000, agents }))).toBe('Last action: Bash: bun test (5m00s ago)')
+  expect(activityLine(run({ silentMs: null, agents }))).toBe('')
+  expect(activityLine(run({ agents }))).toBe('')
+  expect(activityLine(run({ silentMs: 3000, agents: [] }))).toBe('')
+  expect(activityLine(run({ silentMs: 3000, agents: [main([])] }))).toBe('')
+  expect(activityLine(run({ silentMs: 3000, agents: [{ ...main(['x']), id: 'rev1' }] }))).toBe('')
+  expect(activityLine(run({ silentMs: 3000, running: false, agents }))).toBe('')
+  expect(activityLine(run({ silentMs: 3000, agents: [main([`Bash: ${'x'.repeat(300)}\u001b[2J`])] })).length).toBeLessThan(120)
+  expect(activityLine(run({ silentMs: 3000, agents: [main(['Bash: a\u001b[2Jb'])] }))).not.toContain('\u001b')
+})
+
+test('statusLine appends the stuck warning only once the five minutes are up, in every look', () => {
+  for (const t of [undefined, hackerTheme(DEFAULT_THEME_CAPS), hackerTheme(DEFAULT_THEME_CAPS, true)]) {
+    expect(statusLine(run({ silentMs: 4 * 60000 + 59000 }), t)).not.toContain('no progress')
+    expect(statusLine(run({ silentMs: null }), t)).not.toContain('no progress')
+    expect(statusLine(run({ silentMs: 5 * 60000 }), t)).toContain('no progress for 5 min: wait, or /factory-pause')
+  }
+  expect(statusLine(run({ silentMs: 5 * 60000, running: false }))).not.toContain('no progress')
+})
+
+test('buildView carries silentMs from the caller and null when it is not given', () => {
+  const items = parseTodo(`## T-001 [chore] First\n- status: todo\n- how: a\n- accept: b\n- tests: c\n`)
+  const state = { ...DEFAULT_STATE, approved: true, autopilot: true, current: 'T-001' }
+  const at = (silentMs?: number | null) => buildView(items, state, new Set(), null, null, undefined, { maxAttempts: 3, maxReviewRounds: 3, agents: [], now: 0, ...(silentMs === undefined ? {} : { silentMs }) }).silentMs
+  expect(at(42_000)).toBe(42_000)
+  expect(at(null)).toBeNull()
+  expect(at()).toBeNull()
 })

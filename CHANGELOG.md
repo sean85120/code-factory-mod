@@ -22,6 +22,16 @@ minor version may change behavior).
   order blocked, budget, awaiting approval, paused by you, all done: `2 items blocked:
   T-009, T-011` with `/factory-retry T-009`, `4 items proposed` with `/factory-approve`,
   `paused by you` with `/factory-start`.
+- A live activity line and a stuck warning. While a factory turn runs the dashboard pane
+  shows the main loop's last action and how long ago it happened (`Last action: Bash:
+  bun test (12s ago)`). After five minutes (`STUCK_MS`, a constant, not a setting, so the
+  approval hash is unchanged) without any tool call or turn event, the band (appended to
+  the now line when compact), the pane and the status line show `no progress for 5 min:
+  wait, or /factory-pause`; the next action clears it. `FactoryView.silentMs` carries the
+  quiet time, and is `null` outside a factory turn, where nothing is shown. The warning
+  glyph comes from the theme (`⚠` classic, `▲` hacker, `!` ASCII); the action text is the
+  already cleaned `recent` entry, so no repo or model text is printed raw. T-004 ships in
+  the same 0.4.4 section because 0.4.4 was not tagged or released yet.
 
 ### Changed
 

@@ -23,7 +23,7 @@
 - depends: T-002
 
 ## T-004 [feature] Live activity line and stuck warning
-- status: todo
+- status: done
 - version: 0.4.4
 - how: Add a `silentMs?: number | null` field to FactoryView (types/index.d.ts, self-contained) and to buildView. In hooks/register.tsx keep a module-level lastActivityAt that is stamped inside the existing tool.call and turn.start handlers (fold into them; do not register the same event twice without a matcher) and by turn.complete; refreshOnce passes now minus lastActivityAt only while a factory turn is running (isFactoryTurn), else null. In lib.ts add STUCK_MS = 300000 (a constant, not a setting, so decisionsHash is unchanged), activityLine(view) built from the last entry of the current agent's `recent` actions (already cleaned) plus how long ago, and stuckLine(view) returning "no progress for N min: wait, or /factory-pause" once silentMs reaches STUCK_MS. The pane shows the activity line under the now line; the band and status line show only the stuck warning (compact band appends it to the now line). All through the Theme. Bump to 0.4.4 with a CHANGELOG section.
 - accept: While a factory turn runs the pane shows its last action and age. After five minutes without any tool call or turn event the band, pane and status line show the stuck warning with the pause command; a new action clears it. Outside a factory turn silentMs is null and nothing is shown. No repo or model text is printed raw. tsc and all suites pass.

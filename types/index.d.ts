@@ -33,6 +33,7 @@ export type FactoryView = {
   maxReviewRounds?: number
   prNumber?: number | null
   elapsedMs?: number | null
+  silentMs?: number | null
   steps?: Step[]
   agents?: AgentRow[]
   blocked?: BlockedRow[]

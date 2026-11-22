@@ -152,7 +152,7 @@ test('statusLine shortens a long pause reason to one line and drops the stage of
 const ok = (stdout: string) => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 const SETTINGS = JSON.stringify({ testCmd: ['unit'], baseBranch: 'main', requireReview: false, requireTestChanges: false, allowTestRemoval: true })
 
-function fixture($: any, on: any, o: { done?: boolean; runs?: string[][]; autopilot?: boolean; blocked?: string[]; writes?: { path: string; text: string }[]; agents?: any[]; store?: Record<string, unknown>; env?: Record<string, string>; claudeTheme?: string; messages?: Record<string, any[]>; statuses?: (string | undefined)[]; rosterFails?: boolean; reads?: { n: number }; approved?: boolean; state?: Record<string, unknown>; todo?: string } = {}) {
+function fixture($: any, on: any, o: { done?: boolean; runs?: string[][]; autopilot?: boolean; blocked?: string[]; writes?: { path: string; text: string }[]; agents?: any[]; store?: Record<string, unknown>; env?: Record<string, string>; claudeTheme?: string; messages?: Record<string, any[]>; statuses?: (string | undefined)[]; rosterFails?: boolean; reads?: { n: number }; approved?: boolean; state?: Record<string, unknown>; todo?: string; persist?: boolean } = {}) {
   const clock = mock.clock(on, { now: 1_000_000 })
   if (o.store) mock.store(on, o.store)
   if (o.env) mock.env(on, o.env)
@@ -170,6 +170,7 @@ function fixture($: any, on: any, o: { done?: boolean; runs?: string[][]; autopi
   on('fs.list', () => ({ value: (o.blocked ?? []).map(id => ({ name: `${id}.md` })) as never }))
   on('fs.write', (_: unknown, e: { path: string; text: string }) => {
     o.writes?.push({ path: e.path, text: e.text })
+    if (o.persist) files[key(e.path) ?? e.path.replace(/^.*\/\.factory\//, '.factory/')] = e.text
     return { value: undefined }
   })
   on('process.run', (_: unknown, e: { argv: string[] }) => {
@@ -954,6 +955,34 @@ for (const [look, store] of LOOKS) {
     }
     expect(statuses.filter(s => s !== undefined).every(s => !s!.includes('nothing left to do'))).toBe(true)
     expect(statuses.some(s => s?.includes('1 item blocked: T-002 · next /factory-retry T-002'))).toBe(true)
+  })
+}
+
+for (const [look, store] of LOOKS.slice(0, 2)) {
+  test(`the pane shows the last action and its age while a factory turn runs, then the stuck warning after five quiet minutes (${look})`, async ($, on) => {
+    const clock = fixture($, on, { store, autopilot: false, persist: true, messages: { main: [{ role: 'assistant', text: '', toolUses: [{ tool: 'Bash', input: { command: 'bun test' } }] }] } })
+    on('prompt.submit', (_: unknown, e: { text: string }) => ({ text: e.text }))
+    on('prompt.compose', () => ({ sections: [] }))
+    on('turn.start', (_: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
+    on('tool.call', () => ({ result: 'ran', text: 'ran' }))
+    await $.command.run({ command: 'factory-theme' } as never)
+    await $.command.run({ command: 'factory-start' } as never)
+    await clock.advance(1000)
+    await $.turn.start({ turnId: 't1', text: 'CODE FACTORY: work item' } as never)
+    await $.tool.call({ tool: 'Read', file_path: '/work/a.ts' })
+    await $.command.run({ command: 'factory-status' } as never)
+    const pane = await mountPane($.ui, 100)
+    expect(await pane.find({ text: /Last action: Bash: bun test \(\d+s ago\)/ })).toBeDefined()
+    expect(await pane.find({ text: /no progress for/ })).toBeUndefined()
+    await pane.unmount()
+    await clock.advance(5 * 60000 + 2000)
+    await $.command.run({ command: 'factory-status' } as never)
+    const quiet = await mountPane($.ui, 100)
+    expect(await quiet.find({ text: /Last action: Bash: bun test \(5m0\ds ago\)/ })).toBeDefined()
+    const warn = await quiet.find({ text: /no progress for 5 min: wait, or \/factory-pause/ })
+    expect(warn).toBeDefined()
+    expect(((await quiet.findAll({ type: 'Text' })) as { text?: string }[]).some(t => (t.text ?? '').startsWith(look === 'classic' ? '⚠' : '▲'))).toBe(true)
+    await quiet.unmount()
   })
 }
 
