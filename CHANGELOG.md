@@ -7,6 +7,20 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-11-23
+
+### Changed
+
+- The README screenshots in `docs/img/` are regenerated from the current code: the now line,
+  the last-action line, the hold line with its next command, the stuck warning and the
+  30 by 12 Vox face. New pictures: `band-hold`, `band-stuck`, `pane-hold` and `pane-stuck`.
+- The README describes the now line, the why-idle line and that Vox follows the mouse pointer
+  over the pane (terminal, 70 columns or more, hacker look; the prompt cursor is not available
+  to plugins).
+- `scripts/demo-capture.ts` has a scene per state (running, held, stuck) and asserts that the now
+  line, the hold line and the stuck line appear in each found element tree.
+  `scripts/demo-shots.sh` reads the test output from a file, because a pipe interleaved long lines.
+
 ## [0.4.7] - 2026-11-22
 
 ### Changed
