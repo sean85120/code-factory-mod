@@ -1,6 +1,6 @@
 {
   "name": "opencode-code-factory",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "description": "Design-first autonomous code factory for OpenCode: interviews you for decisions, then builds the todo list branch by branch and PR by PR until CI-green merges.",
   "type": "module",
   "license": "MIT",

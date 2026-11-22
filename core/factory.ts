@@ -56,6 +56,7 @@ import {
   parseTodo,
   pickNext,
   promoteProposed,
+  publishDesignWith,
   releasePending,
   releasePrompt,
   REVIEW_TAG,
@@ -111,7 +112,7 @@ export interface Host {
   // and, for a host that does not wake the session when a subagent finishes,
   // the prompt that tells the model to wait for the reviewer.
   readonly notes: { work: string; design: string; waitForReviewer?: string }
-  run(argv: string[], timeoutMs?: number): Promise<Run>
+  run(argv: string[], timeoutMs?: number, init?: { env?: Record<string, string>; stdin?: string }): Promise<Run>
   read(path: string): Promise<string | null>
   exists(path: string): Promise<boolean>
   write(path: string, text: string): Promise<void>
@@ -776,10 +777,12 @@ export function createFactory(host: Host) {
     return evaluateProtection(parse(prot), parse(rules), cleanText(base).slice(0, 60))
   }
 
-  async function missingOnBase(base: string): Promise<string[]> {
+  type Drift = { error: string | null; missing: string[]; changed: string[] }
+
+  async function designDrift(base: string): Promise<Drift> {
     const shown = cleanText(base).slice(0, 60)
     const fetched = await host.run(['git', 'fetch', '--', 'origin', base], 30000)
-    if (fetched.exitCode !== 0) return [`could not fetch origin/${shown} (${cleanText(fetched.stderr).slice(0, 100)}); it is needed to check that the design files are pushed.`]
+    if (fetched.exitCode !== 0) return { error: `could not fetch origin/${shown} (${cleanText(fetched.stderr).slice(0, 100)}); it is needed to check that the design files are pushed.`, missing: [], changed: [] }
     const missing: string[] = []
     const changed: string[] = []
     for (const path of [SETTINGS_PATH, TODO_PATH, DESIGN_PATH]) {
@@ -790,11 +793,21 @@ export function createFactory(host: Host) {
       }
       if (!designFileSame(there.stdout, (await host.read(path)) ?? '', path === TODO_PATH)) changed.push(path)
     }
+    return { error: null, missing, changed }
+  }
+
+  async function driftProblems(base: string, drift: Drift): Promise<string[]> {
+    if (drift.error !== null) return [drift.error]
+    const shown = cleanText(base).slice(0, 60)
     const out: string[] = []
-    if (missing.length > 0) out.push(`${missing.join(', ')} not on origin/${shown}: the design files must be on ${shown} (the loop returns to it between items and they would vanish).`)
-    if (changed.length > 0) out.push(`${changed.join(', ')} differ from origin/${shown}.`)
+    if (drift.missing.length > 0) out.push(`${drift.missing.join(', ')} not on origin/${shown}: the design files must be on ${shown} (the loop returns to it between items and they would vanish).`)
+    if (drift.changed.length > 0) out.push(`${drift.changed.join(', ')} differ from origin/${shown}.`)
     if (out.length > 0) out.push(designPushSteps(base, await branchNow()))
     return out
+  }
+
+  async function missingOnBase(base: string): Promise<string[]> {
+    return driftProblems(base, await designDrift(base))
   }
 
   async function preflight(): Promise<string[]> {
@@ -812,7 +825,7 @@ export function createFactory(host: Host) {
     const baseOk = isSafeBranchName(snap.settings.baseBranch)
     const protection = baseOk ? await branchProtectionWarnings(snap.settings.baseBranch) : []
     const hostIssue = hostProblem(snap.settings)
-    const problems = [
+    const others = [
       ...snap.settingsProblems,
       ...(hostIssue ? [`${hostIssue}.`] : []),
       ...(snap.settings.requireBranchProtection ? protection : []),
@@ -820,15 +833,38 @@ export function createFactory(host: Host) {
       ...validateItems(snap.items, snap.settings.stopAfterVersion),
       ...(designText === null || !/^##\s+Decisions/im.test(designText) ? [`${DESIGN_PATH} needs a "## Decisions" section.`] : []),
       ...(await preflight()),
-      ...(baseOk ? await missingOnBase(snap.settings.baseBranch) : [designPushSteps(snap.settings.baseBranch)]),
       ...(snap.state.unreadable ? [STATE_UNREADABLE] : []),
     ]
+    const promoted = raw === null ? null : promoteProposed(raw)
+    let designProblems: string[] = [designPushSteps(snap.settings.baseBranch)]
+    let publishedNote = ''
+    if (baseOk) {
+      const base = snap.settings.baseBranch
+      const drift = await designDrift(base)
+      designProblems = await driftProblems(base, drift)
+      if (designProblems.length > 0 && drift.error === null && others.length === 0 && raw !== null && designText !== null) {
+        const ignoreText = await host.read(`${FACTORY_DIR}/.gitignore`)
+        const files = [
+          { path: SETTINGS_PATH, text: (await host.read(SETTINGS_PATH)) ?? '' },
+          { path: TODO_PATH, text: promoted!.text },
+          { path: DESIGN_PATH, text: designText },
+          ...(ignoreText === null ? [] : [{ path: `${FACTORY_DIR}/.gitignore`, text: ignoreText }]),
+        ]
+        const pub = await publishDesignWith((argv, init) => host.run(argv, init?.timeoutMs ?? 30000, init), base, files, drift.changed)
+        if ('sha' in pub) {
+          designProblems = []
+          publishedNote = `Published the design files to origin/${cleanText(base).slice(0, 60)} (${pub.sha.slice(0, 7)}).\n`
+        } else {
+          designProblems = [`could not publish the design files for you: ${pub.error}.`, ...designProblems]
+        }
+      }
+    }
+    const problems = [...others, ...designProblems]
     if (problems.length > 0) return { text: say(`Not approved. Fix these first (/factory-design continues the interview):\n- ${problems.join('\n- ')}`) }
     let promotedCount = 0
-    if (raw !== null) {
-      const { text, ids } = promoteProposed(raw)
-      promotedCount = ids.length
-      if (ids.length > 0) await host.write(TODO_PATH, text)
+    if (promoted !== null) {
+      promotedCount = promoted.ids.length
+      if (promoted.ids.length > 0) await host.write(TODO_PATH, promoted.text)
     }
     await bumpEpoch()
     const after = await load()
@@ -836,7 +872,7 @@ export function createFactory(host: Host) {
     await setRt(r => (ownTurn(r) && r.turn!.kind === 'design' ? { ...r, turn: null } : r))
     const lines = after.items.filter(i => i.status === 'todo').map(i => `- ${i.id} [${i.type}] ${i.title}`)
     const warn = !snap.settings.requireBranchProtection && protection.length > 0 ? `\nWarnings (set requireBranchProtection to make them blocking):\n- ${protection.join('\n- ')}\n` : ''
-    const head = `Approved. ${warn}${promotedCount > 0 ? `${promotedCount} proposed item(s) promoted to todo.\n` : ''}Queue (in order):\n${lines.join('\n') || '(empty)'}\n`
+    const head = `Approved. ${publishedNote}${warn}${promotedCount > 0 ? `${promotedCount} proposed item(s) promoted to todo.\n` : ''}Queue (in order):\n${lines.join('\n') || '(empty)'}\n`
     if (after.state.autopilot || lines.length === 0) return { text: say(`${head}${after.state.autopilot ? 'The loop is already running.' : 'Run /factory-start when items are ready.'}`) }
     const started = await startCmd()
     return started.prompt ? { text: say(`${head}${started.text}`), prompt: started.prompt } : { text: say(`${head}${started.text}`) }

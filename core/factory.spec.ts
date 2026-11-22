@@ -31,6 +31,7 @@ type World = {
   runtime: Runtime
   notices: string[]
   now: number
+  hook?: (cmd: string, init: { env?: Record<string, string>; stdin?: string }) => Partial<Run> | undefined
 }
 
 function world(over: { settings?: Record<string, unknown>; todo?: string; state?: Partial<FactoryState> } = {}): World {
@@ -51,9 +52,11 @@ function hostFor(w: World, over: Partial<Host> = {}): Host {
     owner: 'me',
     commandPrefix: '/',
     notes: { work: 'WORK-NOTE', design: 'DESIGN-NOTE' },
-    async run(argv: string[]): Promise<Run> {
+    async run(argv: string[], _timeoutMs?: number, init: { env?: Record<string, string>; stdin?: string } = {}): Promise<Run> {
       const cmd = argv.join(' ')
       w.ran.push(cmd)
+      const hooked = w.hook?.(cmd, init)
+      if (hooked) return { exitCode: 0, stdout: '', stderr: '', ...hooked }
       if (cmd === 'git branch --show-current') return { exitCode: 0, stdout: `${w.branch}\n`, stderr: '' }
       if (cmd === 'git rev-parse HEAD') return { exitCode: 0, stdout: `${w.head}\n`, stderr: '' }
       for (const [prefix, r] of w.replies) if (cmd.startsWith(prefix)) return { exitCode: 0, stdout: '', stderr: '', ...r }
@@ -394,6 +397,120 @@ test('approve refuses design files that are not on the base branch, and gives th
   assert.match(r.text, /^Not approved/)
   assert.match(r.text, /not on origin\/main/)
   assert.match(r.text, /git checkout 'main'/)
+})
+
+const PUB_PARENT = 'a'.repeat(40)
+const PUB_BLOB = 'b'.repeat(40)
+const PUB_TREE = 'd'.repeat(40)
+const PUB_SHA = 'c'.repeat(40)
+type PubKnobs = { refuse?: boolean; baseBlob?: Record<string, string>; headBlob?: Record<string, string>; ahead?: boolean; prefix?: string }
+
+function publishWorld(k: PubKnobs = {}, over: Parameters<typeof world>[0] = {}) {
+  const w = world(over)
+  const stdins: string[] = []
+  w.replies.set('git show origin/main:./', { exitCode: 128, stderr: 'fatal: path not in origin/main' })
+  w.replies.set('gh api repos/{owner}/{repo}/branches', { exitCode: 1, stderr: 'Branch not protected (HTTP 404)' })
+  w.replies.set('gh api repos/{owner}/{repo}/rules', { exitCode: 1, stderr: 'Not Found (HTTP 404)' })
+  w.hook = (cmd, init) => {
+    const index = init.env?.GIT_INDEX_FILE ?? ''
+    const mine = /^\/repo\/\.git\/factory-design-.*\.index$/.test(index)
+    if (cmd === 'git rev-parse --show-prefix') return { stdout: k.prefix ?? '' }
+    if (cmd === 'git rev-parse --absolute-git-dir') return { stdout: '/repo/.git\n' }
+    if (cmd === 'git rev-parse --verify origin/main^{commit}') return { stdout: `${PUB_PARENT}\n` }
+    const baseAt = /^git rev-parse --verify -q origin\/main:(.+)$/.exec(cmd)
+    if (baseAt) return k.baseBlob?.[baseAt[1]!] ? { stdout: `${k.baseBlob[baseAt[1]!]}\n` } : { exitCode: 1 }
+    const headAt = /^git rev-parse --verify -q HEAD:(.+)$/.exec(cmd)
+    if (headAt) return k.headBlob?.[headAt[1]!] ? { stdout: `${k.headBlob[headAt[1]!]}\n` } : { exitCode: 1 }
+    if (cmd === 'git hash-object -w --stdin') {
+      stdins.push(init.stdin ?? '')
+      return { stdout: `${PUB_BLOB}\n` }
+    }
+    if (cmd === 'git write-tree') return mine ? { stdout: `${PUB_TREE}\n` } : { exitCode: 1, stderr: 'no private index' }
+    if (cmd.startsWith(`git rev-parse ${PUB_TREE}:`)) return { stdout: `${PUB_BLOB}\n` }
+    if (cmd === 'git merge-base --is-ancestor origin/main HEAD') return { exitCode: k.ahead ? 0 : 1 }
+    if (cmd.startsWith('git commit-tree')) return { stdout: `${PUB_SHA}\n` }
+    if (cmd.startsWith('git push origin')) return k.refuse ? { exitCode: 1, stderr: 'remote: protected branch' } : {}
+    if (/^git (read-tree|update-index)/.test(cmd)) return mine ? {} : { exitCode: 1, stderr: 'no private index' }
+    return undefined
+  }
+  const pushed = (): boolean => w.ran.some(c => c.startsWith('git push origin'))
+  return { w, stdins, pushed }
+}
+
+test('approve publishes missing design files with a fast-forward push and no checkout, then approves', async () => {
+  const { w, stdins, pushed } = publishWorld()
+  w.files.set('.factory/todo.md', TODO.replace(/status: todo/g, 'status: proposed'))
+  const r = await createFactory(hostFor(w)).command('factory-approve', '')
+  assert.match(r.text, /^Approved\. Published the design files to origin\/main \(ccccccc\)\./)
+  assert.equal(state(w).approved, true)
+  assert.ok(w.ran.includes(`git push origin ${PUB_SHA}:refs/heads/main`))
+  assert.equal(w.ran.some(c => /checkout|--force|\+refs/.test(c)), false)
+  assert.equal(stdins[1], w.files.get('.factory/todo.md'))
+  assert.match(stdins[1]!, /status: todo/)
+  assert.doesNotMatch(stdins[1]!, /status: proposed/)
+  assert.ok(pushed())
+  assert.ok(w.ran.some(c => /^rm -f \S+\.index \S+\.index\.lock$/.test(c)))
+})
+
+test('approve publishes design files that differ from the base when the checkout is ahead of it', async () => {
+  const OLD = 'e'.repeat(40)
+  const NEW = 'f'.repeat(40)
+  const { w } = publishWorld({ ahead: true, baseBlob: { '.factory/todo.md': OLD }, headBlob: { '.factory/todo.md': NEW } })
+  w.replies.delete('git show origin/main:./')
+  w.replies.set('git show origin/main:./.factory/settings.json', { stdout: w.files.get('.factory/settings.json')! })
+  w.replies.set('git show origin/main:./.factory/design.md', { stdout: w.files.get('.factory/design.md')! })
+  w.replies.set('git show origin/main:./.factory/todo.md', { stdout: '# an older todo\n' })
+  const r = await createFactory(hostFor(w)).command('factory-approve', '')
+  assert.match(r.text, /Published the design files/)
+  assert.equal(state(w).approved, true)
+  assert.ok(w.ran.some(c => c.startsWith('git push origin')))
+  assert.equal(w.ran.some(c => /git pull/.test(c)), false)
+})
+
+test('approve falls back to the reason and the printed steps when the push is refused', async () => {
+  const { w, pushed } = publishWorld({ refuse: true })
+  const r = await createFactory(hostFor(w)).command('factory-approve', '')
+  assert.match(r.text, /^Not approved/)
+  assert.match(r.text, /could not publish the design files for you: the push to main failed or was refused \(remote: protected branch\)/)
+  assert.match(r.text, /git push origin 'main'/)
+  assert.notEqual(state(w).approved, true)
+  assert.ok(pushed())
+  assert.ok(w.ran.some(c => c.startsWith('rm -f')))
+})
+
+test('approve refuses to overwrite newer base design files from a stale checkout', async () => {
+  const OLD = 'e'.repeat(40)
+  const NEW = 'f'.repeat(40)
+  const { w, pushed } = publishWorld({ baseBlob: { '.factory/todo.md': OLD }, headBlob: { '.factory/todo.md': NEW } })
+  w.replies.delete('git show origin/main:./')
+  w.replies.set('git show origin/main:./.factory/settings.json', { stdout: w.files.get('.factory/settings.json')! })
+  w.replies.set('git show origin/main:./.factory/design.md', { stdout: w.files.get('.factory/design.md')! })
+  w.replies.set('git show origin/main:./.factory/todo.md', { stdout: '# newer todo\n' })
+  const r = await createFactory(hostFor(w)).command('factory-approve', '')
+  assert.match(r.text, /^Not approved/)
+  assert.match(r.text, /update your checkout \(git pull\) first/)
+  assert.equal(pushed(), false)
+  assert.equal(w.ran.some(c => c.startsWith('git commit-tree')), false)
+  assert.notEqual(state(w).approved, true)
+})
+
+test('approve publishes nothing from a subdirectory of the repository', async () => {
+  const { w, pushed } = publishWorld({ prefix: 'sub/\n' })
+  const r = await createFactory(hostFor(w)).command('factory-approve', '')
+  assert.match(r.text, /^Not approved/)
+  assert.match(r.text, /from the repository root/)
+  assert.equal(pushed(), false)
+  assert.notEqual(state(w).approved, true)
+})
+
+test('approve publishes nothing while another problem blocks approval', async () => {
+  const { w, pushed } = publishWorld()
+  w.files.set('.factory/design.md', '# Design\n')
+  const r = await createFactory(hostFor(w)).command('factory-approve', '')
+  assert.match(r.text, /^Not approved/)
+  assert.match(r.text, /needs a "## Decisions" section/)
+  assert.match(r.text, /not on origin\/main/)
+  assert.equal(pushed() || w.ran.some(c => c.startsWith('git commit-tree')), false)
 })
 
 test('approve with everything in place approves and starts the loop', async () => {

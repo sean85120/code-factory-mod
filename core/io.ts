@@ -15,7 +15,7 @@ export type Io = Pick<Host, 'run' | 'read' | 'exists' | 'write' | 'list' | 'remo
 export function nodeIo(dir: string): Io {
   const abs = (p: string): string => (isAbsolute(p) ? p : join(dir, p))
   return {
-    run(argv: string[], timeoutMs = 60000): Promise<Run> {
+    run(argv: string[], timeoutMs = 60000, init: { env?: Record<string, string>; stdin?: string } = {}): Promise<Run> {
       return new Promise(resolve => {
         if (argv.length === 0) {
           resolve({ exitCode: 127, stdout: '', stderr: 'empty command' })
@@ -32,7 +32,7 @@ export function nodeIo(dir: string): Io {
         }
         let child: ReturnType<typeof spawn>
         try {
-          child = spawn(argv[0]!, argv.slice(1), { cwd: dir, env: { ...process.env, CI: '1', GH_PROMPT_DISABLED: '1' }, stdio: ['ignore', 'pipe', 'pipe'] })
+          child = spawn(argv[0]!, argv.slice(1), { cwd: dir, env: { ...process.env, CI: '1', GH_PROMPT_DISABLED: '1', ...init.env }, stdio: [init.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] })
         } catch (err) {
           resolve({ exitCode: 127, stdout: '', stderr: `could not run ${argv.slice(0, 3).join(' ')}: ${String(err)}` })
           return
@@ -41,6 +41,10 @@ export function nodeIo(dir: string): Io {
           child.kill('SIGKILL')
           done({ exitCode: 124, stdout, stderr: `${stderr}\n${argv.slice(0, 3).join(' ')} ran past ${Math.round(timeoutMs / 1000)}s` })
         }, timeoutMs)
+        if (init.stdin !== undefined && child.stdin) {
+          child.stdin.on('error', () => {})
+          child.stdin.end(init.stdin)
+        }
         child.stdout?.on('data', (b: Buffer) => {
           if (stdout.length < OUTPUT_CAP) stdout += b.toString()
         })
