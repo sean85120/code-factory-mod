@@ -203,9 +203,9 @@ let lastLockToast = 0
 
 type Run = { exitCode: number; stdout: string; stderr: string }
 
-async function run($: Dollar, argv: string[], timeoutMs = 60000): Promise<Run> {
+async function run($: Dollar, argv: string[], timeoutMs = 60000, more: { env?: Record<string, string>; stdin?: string } = {}): Promise<Run> {
   try {
-    const r = await $.process.run(argv, { timeoutMs, env: { CI: '1' }, stdin: '' })
+    const r = await $.process.run(argv, { timeoutMs, env: { CI: '1', ...more.env }, stdin: more.stdin ?? '' })
     return { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr }
   } catch (err) {
     return { exitCode: 127, stdout: '', stderr: `could not run ${argv.slice(0, 3).join(' ')} (not installed, or it ran past ${Math.round(timeoutMs / 1000)}s): ${String(err)}` }
@@ -1242,10 +1242,12 @@ async function branchProtectionWarnings($: Dollar, base: string): Promise<string
   return evaluateProtection(parse(prot), parse(rules), cleanText(base).slice(0, 60))
 }
 
-async function missingOnBase($: Dollar, base: string): Promise<string[]> {
+type Drift = { error: string | null; missing: string[]; changed: string[] }
+
+async function designDrift($: Dollar, base: string): Promise<Drift> {
   const shown = cleanText(base).slice(0, 60)
   const fetched = await run($, ['git', 'fetch', '--', 'origin', base], 30000)
-  if (fetched.exitCode !== 0) return [`could not fetch origin/${shown} (${cleanText(fetched.stderr).slice(0, 100)}); it is needed to check that the design files are pushed.`]
+  if (fetched.exitCode !== 0) return { error: `could not fetch origin/${shown} (${cleanText(fetched.stderr).slice(0, 100)}); it is needed to check that the design files are pushed.`, missing: [], changed: [] }
   const missing: string[] = []
   const changed: string[] = []
   for (const path of [SETTINGS_PATH, TODO_PATH, DESIGN_PATH]) {
@@ -1257,11 +1259,77 @@ async function missingOnBase($: Dollar, base: string): Promise<string[]> {
     const local = (await readText($, path)) ?? ''
     if (!designFileSame(there.stdout, local, path === TODO_PATH)) changed.push(path)
   }
+  return { error: null, missing, changed }
+}
+
+async function driftProblems($: Dollar, base: string, drift: Drift): Promise<string[]> {
+  if (drift.error !== null) return [drift.error]
+  const shown = cleanText(base).slice(0, 60)
   const out: string[] = []
-  if (missing.length > 0) out.push(`${missing.join(', ')} not on origin/${shown}: the design files must be on ${shown} (the loop returns to it between items and they would vanish).`)
-  if (changed.length > 0) out.push(`${changed.join(', ')} differ from origin/${shown}.`)
+  if (drift.missing.length > 0) out.push(`${drift.missing.join(', ')} not on origin/${shown}: the design files must be on ${shown} (the loop returns to it between items and they would vanish).`)
+  if (drift.changed.length > 0) out.push(`${drift.changed.join(', ')} differ from origin/${shown}.`)
   if (out.length > 0) out.push(designPushSteps(base, await branchNow($)))
   return out
+}
+
+let publishSeq = 0
+
+async function publishDesign($: Dollar, base: string, allFiles: ReadonlyArray<{ path: string; text: string }>, changed: readonly string[]): Promise<{ sha: string } | { error: string }> {
+  const fail = (what: string, r: Run) => ({ error: `${what} (${cleanText(r.stderr || r.stdout).slice(0, 160)})` })
+  const prefix = await run($, ['git', 'rev-parse', '--show-prefix'], 15000)
+  if (prefix.exitCode !== 0 || prefix.stdout.trim() !== '') return { error: 'run /factory-approve from the repository root so the design files can be published' }
+  const gitDir = await run($, ['git', 'rev-parse', '--absolute-git-dir'], 15000)
+  if (gitDir.exitCode !== 0) return fail('could not find the git directory', gitDir)
+  const shown = cleanText(base).slice(0, 60)
+  const index = `${gitDir.stdout.trim()}/factory-design-${Date.now()}-${++publishSeq}-${Math.random().toString(36).slice(2, 8)}.index`
+  const env = { GIT_INDEX_FILE: index }
+  try {
+    const parent = await run($, ['git', 'rev-parse', '--verify', `origin/${base}^{commit}`], 15000)
+    if (parent.exitCode !== 0) return fail(`origin/${shown} is not readable`, parent)
+    const files: Array<{ path: string; text: string }> = []
+    const ahead = (await run($, ['git', 'merge-base', '--is-ancestor', `origin/${base}`, 'HEAD'], 15000)).exitCode === 0
+    for (const f of allFiles) {
+      const onBase = await run($, ['git', 'rev-parse', '--verify', '-q', `origin/${base}:${f.path}`], 15000)
+      if (onBase.exitCode === 0 && f.path === `${FACTORY_DIR}/.gitignore`) continue
+      if (onBase.exitCode === 0 && !ahead && changed.includes(f.path)) {
+        const mine = await run($, ['git', 'rev-parse', '--verify', '-q', `HEAD:${f.path}`], 15000)
+        if (mine.exitCode !== 0 || mine.stdout.trim() !== onBase.stdout.trim()) return { error: `origin/${shown} has a version of ${f.path} that your checkout does not have, so publishing would overwrite it; update your checkout (git pull) first` }
+      }
+      files.push(f)
+    }
+    const read = await run($, ['git', 'read-tree', `origin/${base}`], 30000, { env })
+    if (read.exitCode !== 0) return fail('could not read the base tree', read)
+    const stored = new Map<string, string>()
+    for (const f of files) {
+      const blob = await run($, ['git', 'hash-object', '-w', '--stdin'], 30000, { stdin: f.text })
+      const sha = blob.stdout.trim()
+      if (blob.exitCode !== 0 || !/^[0-9a-f]{40,64}$/.test(sha)) return fail(`could not store ${f.path}`, blob)
+      const upd = await run($, ['git', 'update-index', '--add', '--cacheinfo', `100644,${sha},${f.path}`], 30000, { env })
+      if (upd.exitCode !== 0) return fail(`could not stage ${f.path}`, upd)
+      stored.set(f.path, sha)
+    }
+    const tree = await run($, ['git', 'write-tree'], 30000, { env })
+    if (tree.exitCode !== 0) return fail('could not write the tree', tree)
+    for (const [path, sha] of stored) {
+      const held = await run($, ['git', 'rev-parse', `${tree.stdout.trim()}:${path}`], 15000)
+      if (held.exitCode !== 0 || held.stdout.trim() !== sha) return { error: `the tree did not hold ${path} as expected, so nothing was pushed` }
+    }
+    const commit = await run($, ['git', 'commit-tree', tree.stdout.trim(), '-p', parent.stdout.trim(), '-m', 'Code factory design'], 30000)
+    const sha = commit.stdout.trim()
+    if (commit.exitCode !== 0 || !/^[0-9a-f]{40,64}$/.test(sha)) return fail('could not create the commit (is git user.name and user.email set?)', commit)
+    const pushed = await run($, ['git', 'push', 'origin', `${sha}:refs/heads/${base}`], 120000)
+    if (pushed.exitCode !== 0) return fail(`the push to ${shown} failed or was refused`, pushed)
+    if ((await branchNow($)) === base) {
+      const here = await run($, ['git', 'rev-parse', 'HEAD'], 15000)
+      if (here.exitCode === 0 && here.stdout.trim() === parent.stdout.trim()) {
+        const moved = await run($, ['git', 'update-ref', `refs/heads/${base}`, sha, parent.stdout.trim()], 15000)
+        if (moved.exitCode === 0) await run($, ['git', 'reset', '-q', '--', ...files.map(f => f.path)], 15000)
+      }
+    }
+    return { sha }
+  } finally {
+    await run($, ['rm', '-f', index, `${index}.lock`], 15000)
+  }
 }
 
 async function preflight($: Dollar): Promise<string[]> {
@@ -1592,7 +1660,7 @@ async function doctorChecks($: Dollar): Promise<DoctorCheck[]> {
   add('origin remote', remote.exitCode === 0 ? 'ok' : 'fail', remote.exitCode === 0 ? '' : 'git has no origin to push PRs to')
   if (!isSafeBranchName(snap.settings.baseBranch)) add('base branch', 'fail', unsafeBaseNote())
   else if (remote.exitCode === 0) {
-    const gone = await missingOnBase($, snap.settings.baseBranch)
+    const gone = await driftProblems($, snap.settings.baseBranch, await designDrift($, snap.settings.baseBranch))
     if (gone.length > 0) add('design on base', 'fail', gone[0]!)
     else add('design on base', 'ok', `pushed to ${cleanText(snap.settings.baseBranch)}`)
   }
@@ -1632,22 +1700,46 @@ async function approveCmd($: Dollar): Promise<{ text: string }> {
   const designText = await readText($, DESIGN_PATH)
   const baseOk = isSafeBranchName(snap.settings.baseBranch)
   const protection = baseOk ? await branchProtectionWarnings($, snap.settings.baseBranch) : []
-  const problems = [
+  const others = [
     ...snap.settingsProblems,
     ...(snap.settings.requireBranchProtection ? protection : []),
     ...(raw === null ? [] : todoHeadingProblems(raw)),
     ...validateItems(snap.items, snap.settings.stopAfterVersion),
     ...(designText === null || !/^##\s+Decisions/im.test(designText) ? [`${DESIGN_PATH} needs a "## Decisions" section.`] : []),
     ...(await preflight($)),
-    ...(baseOk ? await missingOnBase($, snap.settings.baseBranch) : [designPushSteps(snap.settings.baseBranch)]),
     ...(snap.state.unreadable ? [STATE_UNREADABLE] : []),
   ]
+  const promoted = raw === null ? null : promoteProposed(raw)
+  let designProblems: string[] = [designPushSteps(snap.settings.baseBranch)]
+  let publishedNote = ''
+  if (baseOk) {
+    const base = snap.settings.baseBranch
+    const drift = await designDrift($, base)
+    designProblems = await driftProblems($, base, drift)
+    if (designProblems.length > 0 && drift.error === null && others.length === 0 && raw !== null && designText !== null) {
+      const settingsText = (await readText($, SETTINGS_PATH)) ?? ''
+      const ignoreText = await readText($, `${FACTORY_DIR}/.gitignore`)
+      const files = [
+        { path: SETTINGS_PATH, text: settingsText },
+        { path: TODO_PATH, text: promoted!.text },
+        { path: DESIGN_PATH, text: designText },
+        ...(ignoreText === null ? [] : [{ path: `${FACTORY_DIR}/.gitignore`, text: ignoreText }]),
+      ]
+      const pub = await publishDesign($, base, files, drift.changed)
+      if ('sha' in pub) {
+        designProblems = []
+        publishedNote = `Published the design files to origin/${cleanText(base).slice(0, 60)} (${pub.sha.slice(0, 7)}).\n`
+      } else {
+        designProblems = [`could not publish the design files for you: ${pub.error}.`, ...designProblems]
+      }
+    }
+  }
+  const problems = [...others, ...designProblems]
   if (problems.length > 0) return { text: safeLines(`Not approved. Fix these first (/factory-design continues the interview):\n- ${problems.join('\n- ')}`) }
   let promotedCount = 0
-  if (raw !== null) {
-    const { text, ids } = promoteProposed(raw)
-    promotedCount = ids.length
-    if (ids.length > 0) await $.fs.write(TODO_PATH, text)
+  if (promoted !== null) {
+    promotedCount = promoted.ids.length
+    if (promoted.ids.length > 0) await $.fs.write(TODO_PATH, promoted.text)
   }
   loopEpoch++
   const after = await load($)
@@ -1666,7 +1758,7 @@ async function approveCmd($: Dollar): Promise<{ text: string }> {
   const warn = !snap.settings.requireBranchProtection && protection.length > 0
     ? `\nWarnings (set requireBranchProtection to make them blocking):\n- ${protection.join('\n- ')}\n`
     : ''
-  const head = `Approved. ${warn}${promotedCount > 0 ? `${promotedCount} proposed item(s) promoted to todo.\n` : ''}Queue (in order):\n${lines.join('\n') || '(empty)'}\n`
+  const head = `Approved. ${publishedNote}${warn}${promotedCount > 0 ? `${promotedCount} proposed item(s) promoted to todo.\n` : ''}Queue (in order):\n${lines.join('\n') || '(empty)'}\n`
   if (after.state.autopilot || lines.length === 0) return { text: safeLines(`${head}${after.state.autopilot ? 'The loop is already running.' : 'Run /factory-start when items are ready.'}`) }
   const started = await startCmd($)
   return { text: safeLines(`${head}${started.text}`) }
@@ -2583,7 +2675,7 @@ export const register: Register = (on, _options) => {
           <Text bold>factory ✎ design drafted</Text>
           {!compact && (
             <Text dimColor wrap="truncate-end">
-              next: push the design files, then /factory-approve
+              next: /factory-approve publishes the design files and starts
             </Text>
           )}
           <Button plain dimColor key="details" onPress={() => void $.ui.open({ id: PANE, title: 'Code factory', focus: true })}>

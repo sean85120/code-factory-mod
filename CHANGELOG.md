@@ -7,6 +7,20 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-22
+
+### Changed
+
+- In Claude Code, `/factory-approve` now publishes the design files itself. When
+  `.factory/todo.md`, `design.md` or `settings.json` is missing from or differs on
+  `origin/<base>` (new proposed items from a triage or next-phase interview, for
+  example) and nothing else blocks approval, it commits them onto `origin/<base>`
+  with git plumbing and a fast-forward push: no branch switch, no change to your
+  working tree or staged files. The model still never commits or pushes. If the
+  push is refused (protected base, no git identity), approve says why and prints
+  the same manual steps as before. The interview prompts no longer hand the person
+  git commands; they point to `/factory-approve`.
+
 ## [0.4.0] - 2026-11-21
 
 ### Changed
