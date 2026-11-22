@@ -7,6 +7,17 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-22
+
+### Changed
+
+- The design interview no longer tells the model to check out the base branch, commit
+  and push the design files (or open a PR when the base is protected). It reads the
+  design back and sends the person to `/factory-approve`, which has published the
+  design files to the base branch itself since 0.4.1, and then `/factory-start`. The
+  printed git steps stay as the fallback `/factory-approve` shows when publishing
+  fails.
+
 ## [0.4.2] - 2026-11-22
 
 ### Fixed

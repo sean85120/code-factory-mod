@@ -8,7 +8,7 @@
 - tests: none (docs item).
 
 ## T-002 [chore] Design prompt hands off to /factory-approve
-- status: todo
+- status: done
 - version: 0.4.2
 - how: In hooks/lib.ts DESIGN_PROMPT step 5, replace the instruction to check out the base branch, commit and push the design files (and the protected-branch PR recipe) with an instruction to read the design back and tell the person to run /factory-approve, which publishes the design files to the base branch itself since 0.4.1, then /factory-start. Keep "do not run those yourself and do not edit the factory's state files" and keep step 4. Do not touch designPushSteps (it stays the fallback printed by approve). Bump to 0.4.2 and add the CHANGELOG section (Changed).
 - accept: DESIGN_PROMPT no longer contains git checkout, git commit or git push instructions, still ends by pointing to /factory-approve and /factory-start, and still forbids editing state files. All suites and scripts/check-version.sh pass at 0.4.2.
