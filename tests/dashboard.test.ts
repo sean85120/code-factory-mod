@@ -1062,19 +1062,34 @@ test('the Client carries only the state word and a palette color, never repo or 
   await pane.unmount()
 })
 
-const inkMeanX = (tree: unknown): number => {
+const lumOf = (hex: string): number => {
+  const n = parseInt(hex.slice(1), 16)
+  return (((n >> 16) & 255) + ((n >> 8) & 255) + (n & 255)) / 3
+}
+
+const pupilMeanX = (tree: unknown): number => {
   const rows = (tree as { children: { children: { props?: { color?: string; backgroundColor?: string }; children: string[] }[] }[] }).children
-  const xs: number[] = []
-  rows.slice(2, 7).forEach(row => {
+  const ink = lumOf('#e2feed')
+  let sum = 0
+  let mass = 0
+  rows.slice(6, 9).forEach(row => {
     let x = 0
     for (const sp of row.children) {
-      for (const _ of sp.children[0]!) {
-        if (sp.props?.color === '#e2feed' || sp.props?.backgroundColor === '#e2feed') xs.push(x)
+      for (const c of sp.children[0]!) {
+        const halves = c === '▀' ? [sp.props?.color, sp.props?.backgroundColor] : c === '▄' ? [undefined, sp.props?.color] : []
+        for (const col of halves) {
+          const inEye = (x >= 6 && x <= 12) || (x >= 17 && x <= 23)
+          if (col !== undefined && inEye) {
+            const w = Math.max(0, 1 - lumOf(col) / ink)
+            sum += w * x
+            mass += w
+          }
+        }
         x += 1
       }
     }
   })
-  return xs.reduce((a, b) => a + b, 0) / xs.length
+  return sum / mass
 }
 
 test('the face follows the pointer over the Client, goes back to its drift on leave and after six seconds', async ($, on) => {
@@ -1088,23 +1103,44 @@ test('the face follows the pointer over the Client, goes back to its drift on le
   const idleTree = await drawn()
   expect(JSON.stringify(idleTree)).toMatch(/▀/)
   expect(JSON.stringify(idleTree)).not.toMatch(/[^ ▀▄"{}\[\]:,\w#.\-]/)
-  const idle = inkMeanX(idleTree)
-  await pane.pointer({ type: 'move', x: 21, y: 4, in: 'vox-gaze' })
+  const idle = pupilMeanX(idleTree)
+  await pane.pointer({ type: 'move', x: 29, y: 6, in: 'vox-gaze' })
   await pane.advance(100)
-  const right = inkMeanX(await drawn())
-  await pane.pointer({ type: 'move', x: 0, y: 4, in: 'vox-gaze' })
+  const right = pupilMeanX(await drawn())
+  await pane.pointer({ type: 'move', x: 0, y: 6, in: 'vox-gaze' })
   await pane.advance(100)
-  const left = inkMeanX(await drawn())
+  const left = pupilMeanX(await drawn())
   expect(right).toBeGreaterThan(idle)
   expect(left).toBeLessThan(idle)
-  await pane.pointer({ type: 'move', x: 21, y: 4, in: 'vox-gaze' })
-  await pane.pointer({ type: 'leave', x: 21, y: 4, in: 'vox-gaze' })
+  await pane.pointer({ type: 'move', x: 29, y: 6, in: 'vox-gaze' })
+  await pane.pointer({ type: 'leave', x: 29, y: 6, in: 'vox-gaze' })
   await pane.advance(100)
-  expect(inkMeanX(await drawn())).toBeLessThan(right)
-  await pane.pointer({ type: 'move', x: 21, y: 4, in: 'vox-gaze' })
+  expect(pupilMeanX(await drawn())).toBeLessThan(right)
+  await pane.pointer({ type: 'move', x: 29, y: 6, in: 'vox-gaze' })
   await pane.advance(100)
-  expect(inkMeanX(await drawn())).toBeGreaterThan(idle)
+  expect(pupilMeanX(await drawn())).toBeGreaterThan(idle)
   await pane.advance(6200)
-  expect(inkMeanX(await drawn())).toBeLessThan(right)
+  expect(pupilMeanX(await drawn())).toBeLessThan(right)
   await pane.unmount()
+})
+
+test('the 30 by 12 face lays out beside the speech on a 70-column and a 120-column terminal pane, and drops to the ascii art below 70', async ($, on) => {
+  fixture($, on, { store: { 'ui/theme': { name: 'hacker' } } })
+  await $.command.run({ command: 'factory-status' } as never)
+  await $.command.run({ command: 'factory-theme' } as never)
+  for (const columns of [70, 120]) {
+    const pane = await mountPane($.ui, columns)
+    const raster = await pane.find({ type: 'Raster' })
+    expect([columns, raster?.props.columns, raster?.props.rows]).toEqual([columns, 30, 12])
+    const [client] = await clientsIn(pane)
+    expect([client?.props.width, client?.props.height]).toEqual([30, 12])
+    const speech = ((await pane.findAll({ type: 'Text' })) as { text?: string }[]).map(t => t.text ?? '').filter(t => /^» (working on|stage:|next:)/.test(t))
+    expect(speech.length).toBeGreaterThan(1)
+    for (const line of speech) expect([line, line.length + 2 + 30 + 2 <= columns]).toEqual([line, true])
+    await pane.unmount()
+  }
+  const narrow = await mountPane($.ui, 69)
+  expect(await narrow.find({ type: 'Raster' })).toBeUndefined()
+  expect(await narrow.find({ text: /\.-""/ })).toBeDefined()
+  await narrow.unmount()
 })

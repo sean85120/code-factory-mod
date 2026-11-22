@@ -7,6 +7,23 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-11-22
+
+### Changed
+
+- Vox's terminal face is bigger and more detailed: 30 by 12 cells (60 by 24 half-block
+  pixels) instead of 22 by 8, still only space, upper-half and lower-half block glyphs and
+  colors derived from the palette tone. The head is a shaded rounded shape with a rim, the
+  antenna has a glow, the eyes have a sclera with a pupil and a highlight dot, eyelids
+  close from the top (idle is half-lidded, a blink or hold closes them), brows are two
+  pixels thick (raised, angry, none), the mouth has four shapes (smile, flat, frown, grin)
+  and the cheeks blush. The pupil takes the gaze in half-pixel steps by blending its edge
+  into the sclera; the idle drift is now half a pixel so a pointer gaze stays distinct. The
+  glint scan, sparkles, `z`, coin, shake and lift are redrawn for the bigger grid. The
+  pane still lays out at 70 columns (the speech beside the face has 36 columns of room).
+  `poseAt` timing and the single blit per frame are unchanged; `VoxPose` gains a `lid`
+  field. The ASCII art and the desktop SVG are unchanged.
+
 ## [0.4.5] - 2026-11-22
 
 ### Added
