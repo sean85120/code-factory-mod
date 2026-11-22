@@ -2016,6 +2016,63 @@ export function checksReport(checks: readonly DoctorCheck[]): string {
   return [`Factory checks: ${head}`, ...checks.map(checksLine)].join('\n')
 }
 
+const ITEM_ID_PATTERN = /^[A-Za-z]{1,10}-\d{1,6}$/
+
+const safeId = (id: string | null | undefined): string => (id != null && ITEM_ID_PATTERN.test(id) ? id : 'the item')
+
+const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
+
+export type HoldLine = { why: string; next: string }
+
+export function nowLine(v: Pick<FactoryView, 'running' | 'current' | 'stage' | 'attempt' | 'maxAttempts' | 'reviewRound' | 'maxReviewRounds' | 'prNumber' | 'steps'>): string {
+  if (!v.running) return ''
+  if (v.current === null) return 'Picking the next item'
+  const id = safeId(v.current)
+  const pr = typeof v.prNumber === 'number' && Number.isFinite(v.prNumber) ? `PR #${Math.trunc(v.prNumber)}` : null
+  switch (v.stage) {
+    case 'review':
+      return `Reviewing ${id}, round ${Math.max(1, v.reviewRound ?? 1)}/${v.maxReviewRounds ?? '?'}`
+    case 'PR':
+      return pr ? `${pr} open: waiting for CI` : `Opening the PR for ${id}`
+    case 'CI': {
+      const failed = v.steps?.find(s => s.label === 'CI')?.detail === 'failed'
+      if (pr) return failed ? `${pr} open: CI failed, fixing` : `${pr} open: waiting for CI`
+      return failed ? `CI failed for ${id}, fixing` : `Waiting for CI on ${id}`
+    }
+    case 'merge':
+      return pr ? `Merging ${pr}` : `Merging ${id}`
+    default:
+      return `Building ${id}, attempt ${Math.max(1, v.attempt ?? 1)}/${v.maxAttempts ?? '?'}`
+  }
+}
+
+const PERSON_PAUSE = /^(stopped by you|paused by you|you sent a prompt|you interrupted it)/i
+
+export function holdLine(v: FactoryView): HoldLine {
+  const blocked = Object.entries(v.marks).filter(([, m]) => m === 'blocked').map(([id]) => id).filter(id => ITEM_ID_PATTERN.test(id))
+  const blockedN = Math.max(v.blockedCount ?? 0, blocked.length)
+  if (blockedN > 0) {
+    const shown = blocked.slice(0, 3)
+    const rest = blockedN - shown.length
+    return { why: `${plural(blockedN, 'item', 'items')} blocked${shown.length > 0 ? `: ${shown.join(', ')}${rest > 0 ? ` +${rest} more` : ''}` : ''}`, next: shown.length > 0 ? `/factory-retry ${shown[0]}` : '/factory-retry <ID>' }
+  }
+  const reason = v.pausedReason === null ? '' : cleanText(v.pausedReason)
+  if (/budget/i.test(reason)) return { why: oneLine(reason, 70), next: '/factory-start' }
+  const proposed = countMarks(v, 'proposed')
+  if (!v.approved) return { why: 'design not approved', next: '/factory-approve' }
+  if (proposed > 0) return { why: `${plural(proposed, 'item', 'items')} proposed`, next: '/factory-approve' }
+  if (PERSON_PAUSE.test(reason)) return { why: oneLine(reason.split(';')[0]!.trim(), 70), next: '/factory-start' }
+  if (isAllDone(v)) return { why: 'all items merged', next: '/factory-roadmap' }
+  const todo = countMarks(v, 'todo') + countMarks(v, 'doing')
+  const nothing = /^nothing left to do$/i.test(reason)
+  if (todo > 0 && nothing) return { why: `${plural(todo, 'item', 'items')} to do, none can start`, next: '/factory-status' }
+  return { why: reason === '' || nothing ? 'stopped' : oneLine(reason, 70), next: '/factory-start' }
+}
+
+export function liveLine(v: FactoryView): string {
+  return v.running ? nowLine(v) : `Next: ${holdLine(v).next}`
+}
+
 export function statusLine(v: FactoryView, t: Theme = CLASSIC_THEME): string {
   const face = v.approved ? t.face(voxState(v)) : ''
   if (!v.approved) return 'factory: design not approved'
@@ -2026,12 +2083,17 @@ export function statusLine(v: FactoryView, t: Theme = CLASSIC_THEME): string {
     if (v.current !== null && at >= 0) parts.push(`${v.stage} ${t.bar(at + 1, STAGES.length, 5)} ${at + 1}/${STAGES.length}`)
     if (v.current !== null && (v.attempt ?? 0) > 1) parts.push(`attempt ${v.attempt}/${v.maxAttempts ?? '?'}`)
     if (v.current !== null && (v.reviewRound ?? 0) > 0) parts.push(`review ${v.reviewRound}/${v.maxReviewRounds ?? '?'}`)
+    parts.push(nowLine(v))
   } else if (isAllDone(v)) parts.push(`${t.head('DONE')} all merged · continue? /factory-roadmap or stop`)
-  else parts.push(`${t.head(loopBadge(v))} ${oneLine(v.pausedReason ?? 'stopped', 70)}`)
+  else {
+    const hold = holdLine(v)
+    parts.push(`${t.head(loopBadge(v))} ${hold.why} · next ${hold.next}`)
+  }
   const total = v.total ?? v.doneCount + v.rows.length + v.more
   const todo = Math.max(0, total - v.doneCount - (v.blockedCount ?? 0))
   parts.push(`${v.doneCount}/${total} done ${t.bar(v.doneCount, total, 6)}`)
-  parts.push(todo > 0 ? `${todo} to do` : 'nothing left')
+  if (todo > 0) parts.push(`${todo} to do`)
+  else if ((v.blockedCount ?? 0) === 0) parts.push('nothing left')
   if ((v.blockedCount ?? 0) > 0) parts.push(`${v.blockedCount} blocked`)
   if (v.runUsd != null) {
     parts.push(v.budgetUsd > 0 ? `${formatUsd(v.runUsd)}/${formatUsd(v.budgetUsd)} ${t.bar(v.runUsd, v.budgetUsd, 6)}` : `${formatUsd(v.runUsd)} spent`)
@@ -2860,7 +2922,7 @@ export function nextHint(v: FactoryView | null): string {
   if (phase === 'build') {
     const runnable = countMarks(v, 'todo') + countMarks(v, 'doing') > 0
     if (!runnable && blocked > 0) return `Only blocked items are left (${blocked}): read the note, then /factory-retry <ID>, or /factory-design to change the plan.${pending}`
-    return `Paused${v.pausedReason ? ` (${oneLine(v.pausedReason, 80)})` : ''}. /factory-start carries on${blocked > 0 ? `; ${blocked} blocked item${blocked === 1 ? '' : 's'} can be retried with /factory-retry <ID>` : ''}.${pending}`
+    return `Paused${v.pausedReason ? ` (${oneLine(/^nothing left to do$/i.test(v.pausedReason) ? holdLine(v).why : v.pausedReason, 80)})` : ''}. /factory-start carries on${blocked > 0 ? `; ${blocked} blocked item${blocked === 1 ? '' : 's'} can be retried with /factory-retry <ID>` : ''}.${pending}`
   }
   if (proposed > 0) return `${proposed} proposed item${proposed === 1 ? '' : 's'} wait: /factory-approve publishes the design files and starts on them.`
   return DONE_HINT

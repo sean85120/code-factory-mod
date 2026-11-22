@@ -98,7 +98,9 @@ import {
   guideControls,
   DONE_QUESTION,
   doneControls,
+  holdLine,
   isAllDone,
+  liveLine,
   journey,
   nextHint,
   sanitizeEvents,
@@ -2739,7 +2741,7 @@ export const register: Register = (on, _options) => {
         <Box gap={1}>
           {t.face(vs) !== '' && <Text color={t.vox[vs]}>{t.face(vs)}</Text>}
           <Text bold color={v.running ? t.running : undefined} dimColor={!v.running} wrap="truncate-end">
-            {v.running ? `${t.head('RUN')} ${v.current ?? 'picking next'}` : `${t.head(loopBadge(v))} ${oneLine(v.pausedReason ?? 'stopped', compact ? 24 : 60)}`}
+            {v.running ? `${t.head('RUN')} ${v.current ?? 'picking next'}` : `${t.head(loopBadge(v))} ${holdLine(v).why}`}
           </Text>
           <Text dimColor>{`${v.doneCount}/${total} done ${t.bar(v.doneCount, total, compact ? 4 : 8)}${(v.blockedCount ?? 0) > 0 ? ` · ${v.blockedCount} blocked` : ''}`}</Text>
           {!compact && v.runUsd != null && (
@@ -2757,6 +2759,9 @@ export const register: Register = (on, _options) => {
             </Button>
           ))}
         </Box>
+        <Text bold={v.running} dimColor={!v.running} color={v.running ? t.running : undefined} wrap="truncate-end">
+          {liveLine(v)}
+        </Text>
         {!compact && v.running && steps.length > 0 && (
           <Box gap={1}>
             {steps.map(st => (
@@ -2895,6 +2900,9 @@ export const register: Register = (on, _options) => {
         )}
         <Text bold color={v.running ? t.running : undefined}>
           {statusLine(v, t)}
+        </Text>
+        <Text color={v.running ? t.running : undefined} wrap="wrap">
+          {liveLine(v)}
         </Text>
         {isAllDone(v) && (
           <Box flexDirection="column">

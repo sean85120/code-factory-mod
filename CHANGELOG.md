@@ -7,6 +7,30 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-11-22
+
+### Added
+
+- A plain "now" line on every surface of the Claude Code plugin. While the loop runs the
+  band (under its header, and as the only extra line of the compact band), the dashboard
+  pane (at the top, above the controls) and the status line say what it is doing:
+  `Building T-009, attempt 2/4`, `Reviewing T-009, round 1/3`,
+  `PR #12 open: waiting for CI`, `Merging PR #12`. The sentences come from `nowLine` in
+  `hooks/lib.ts` and hold only fixed words, item ids and numbers, never a title, reason
+  or model text.
+- When the loop is not running, `holdLine` names why and the exact next command, in the
+  order blocked, budget, awaiting approval, paused by you, all done: `2 items blocked:
+  T-009, T-011` with `/factory-retry T-009`, `4 items proposed` with `/factory-approve`,
+  `paused by you` with `/factory-start`.
+
+### Changed
+
+- The raw pause reason `nothing left to do` no longer shows in the band header, the pane,
+  the pane's next-step hint or the status line; the cause and command from `holdLine`
+  replace it. The budget reason and your own pause keep their wording. Classic keeps every
+  other string it had. Tests that pinned the old header were left as they were (none
+  pinned it); new tests pin the new sentences in the classic, hacker and ASCII looks.
+
 ## [0.4.3] - 2026-11-22
 
 ### Changed
