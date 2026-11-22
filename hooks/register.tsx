@@ -99,6 +99,8 @@ import {
   DONE_QUESTION,
   doneControls,
   holdLine,
+  activityLine,
+  stuckLine,
   isAllDone,
   liveLine,
   journey,
@@ -179,6 +181,7 @@ type Dollar = EngineInterface
 // the loop gets paused halfway, until the turn ends or the person takes over.
 let isFactoryTurn = false
 let factoryTurnAt = -1
+let lastActivityAt = -1
 let reviewInFlight = false
 const FACTORY_TURN_TTL_MS = 3 * 3600000
 let isArmed = false
@@ -635,6 +638,7 @@ function submit($: Dollar, full: string, label?: string, isDesign = false, guard
   slashTurnId = null
   isFactoryTurn = true
   factoryTurnAt = -1
+  lastActivityAt = -1
   isArmed = !isDesign || guarded
   expectReport = false
   instructions = { text: full, isDesign, roadmapAt, lastAt: roadmapAt ?? 0, turns: 0 }
@@ -888,7 +892,8 @@ async function refreshOnce($: Dollar): Promise<void> {
     const now = await stamp($)
     if (issueTurn !== null && !isFactoryTurn && now - issueTurn.at > ISSUE_TURN_MS) issueTurn = null
     const agents = snap.state.approved ? await collectAgents($, running && isFactoryTurn, snap.state.current, now, await read($, openAgent)) : []
-    const extra = { maxAttempts: snap.settings.maxAttempts, maxReviewRounds: snap.settings.maxReviewRounds, agents, now, notes: await blockedNotes($, snap.blocked) }
+    const silentMs = isFactoryTurn && lastActivityAt >= 0 ? Math.max(0, now - lastActivityAt) : null
+    const extra = { maxAttempts: snap.settings.maxAttempts, maxReviewRounds: snap.settings.maxReviewRounds, agents, now, notes: await blockedNotes($, snap.blocked), silentMs }
     const build = (prev: FactoryView | null): FactoryView => buildView(items, snap.state, snap.blocked, snap.settings.stopAfterVersion, prev, spend, extra)
     const before = await read($, view)
     let shown = build(before)
@@ -2289,6 +2294,7 @@ export const register: Register = (on, _options) => {
   // ---- the loop --------------------------------------------------------
 
   on('turn.complete', async ($, e, next) => {
+    lastActivityAt = await stamp($)
     if (!e.agentId) mainTurnOpen = false
     if (e.agentId && e.agentId === launchedHere) expectReport = true
     const out = await next(e)
@@ -2401,6 +2407,7 @@ export const register: Register = (on, _options) => {
   })
 
   on('turn.start', async ($, e, next) => {
+    lastActivityAt = await stamp($)
     mainTurnOpen = true
     if (personSlash && slashTurnId === null) slashTurnId = e.turnId
     if (issueTurn !== null && issueTurn.turnId === null && e.text.startsWith(issueTurn.label)) issueTurn.turnId = e.turnId
@@ -2421,6 +2428,7 @@ export const register: Register = (on, _options) => {
 
   on('tool.call', { tool: 'Read' }, async ($, e, next) => ((await readOnlyPath($, e.file_path)) ? deny(READ_ONLY_DENY) : next(e)))
   on('tool.call', async ($, e, next) => {
+    lastActivityAt = await stamp($)
     if (!readOnlyTurn() || e.tool === 'Read') return next(e)
     return deny(READ_ONLY_DENY)
   })
@@ -2760,8 +2768,13 @@ export const register: Register = (on, _options) => {
           ))}
         </Box>
         <Text bold={v.running} dimColor={!v.running} color={v.running ? t.running : undefined} wrap="truncate-end">
-          {liveLine(v)}
+          {compact && stuckLine(v, t) !== '' ? `${liveLine(v)} · ${stuckLine(v, t)}` : liveLine(v)}
         </Text>
+        {!compact && stuckLine(v, t) !== '' && (
+          <Text bold color={t.warn} wrap="truncate-end">
+            {stuckLine(v, t)}
+          </Text>
+        )}
         {!compact && v.running && steps.length > 0 && (
           <Box gap={1}>
             {steps.map(st => (
@@ -2904,6 +2917,16 @@ export const register: Register = (on, _options) => {
         <Text color={v.running ? t.running : undefined} wrap="wrap">
           {liveLine(v)}
         </Text>
+        {activityLine(v) !== '' && (
+          <Text dimColor wrap="truncate-end">
+            {activityLine(v)}
+          </Text>
+        )}
+        {stuckLine(v, t) !== '' && (
+          <Text bold color={t.warn} wrap="wrap">
+            {stuckLine(v, t)}
+          </Text>
+        )}
         {isAllDone(v) && (
           <Box flexDirection="column">
             <Text bold color={t.vox[vs]}>

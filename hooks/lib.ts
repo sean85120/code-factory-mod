@@ -1358,7 +1358,7 @@ export const VIEW_CHANGES = 3
 export const VIEW_EVENTS = 3
 
 export type ViewSpend = { runUsd: number | null; itemUsd: number | null; budgetUsd: number }
-export type ViewExtra = { maxAttempts: number; maxReviewRounds: number; agents: AgentRow[]; now: number; notes?: ReadonlyMap<string, string> }
+export type ViewExtra = { maxAttempts: number; maxReviewRounds: number; agents: AgentRow[]; now: number; notes?: ReadonlyMap<string, string>; silentMs?: number | null }
 
 export const MAX_VIEW_AGENTS = 6
 
@@ -1383,6 +1383,7 @@ export type Theme = {
   rule: (label: string, columns?: number) => string
   eventMark: string
   changeMark: string
+  warnMark: string
   arrow: string
   fold: { open: string; closed: string }
   face: (state: VoxState) => string
@@ -1417,6 +1418,7 @@ export const CLASSIC_THEME: Theme = {
   rule: label => label,
   eventMark: '⋯',
   changeMark: 'Δ',
+  warnMark: '⚠',
   arrow: '➜',
   fold: { open: '▾', closed: '▸' },
   face: () => '',
@@ -1452,6 +1454,7 @@ const HACKER_GLYPHS = {
     ruleFill: '─',
     eventMark: '»',
     changeMark: 'Δ',
+    warnMark: '▲',
     arrow: '»',
     fold: { open: '▾', closed: '▸' },
     barFull: '▰',
@@ -1466,6 +1469,7 @@ const HACKER_GLYPHS = {
     ruleFill: '-',
     eventMark: '>>',
     changeMark: '~',
+    warnMark: '!',
     arrow: '>',
     fold: { open: 'v', closed: '>' },
     barFull: '#',
@@ -1544,6 +1548,7 @@ export function hackerTheme(caps: ThemeCaps, ascii = !caps.utf8, motion = true):
     },
     eventMark: g.eventMark,
     changeMark: g.changeMark,
+    warnMark: g.warnMark,
     arrow: g.arrow,
     fold: g.fold,
     face: voxFace,
@@ -2046,6 +2051,24 @@ export function nowLine(v: Pick<FactoryView, 'running' | 'current' | 'stage' | '
   }
 }
 
+export const STUCK_MS = 300000
+
+const MAIN_AGENT = 'main'
+
+export function activityLine(v: Pick<FactoryView, 'running' | 'silentMs' | 'agents'>): string {
+  if (!v.running || v.silentMs == null || !Number.isFinite(v.silentMs)) return ''
+  const last = (v.agents ?? []).find(a => a.id === MAIN_AGENT)?.recent.at(-1)
+  if (last === undefined) return ''
+  const action = oneLine(cleanText(last), 80)
+  if (action === '') return ''
+  return `Last action: ${action} (${formatDuration(Math.max(0, v.silentMs))} ago)`
+}
+
+export function stuckLine(v: Pick<FactoryView, 'running' | 'silentMs'>, t: Pick<Theme, 'warnMark'> = CLASSIC_THEME): string {
+  if (!v.running || v.silentMs == null || !Number.isFinite(v.silentMs) || v.silentMs < STUCK_MS) return ''
+  return `${t.warnMark} no progress for ${Math.floor(v.silentMs / 60000)} min: wait, or /factory-pause`
+}
+
 const PERSON_PAUSE = /^(stopped by you|paused by you|you sent a prompt|you interrupted it)/i
 
 export function holdLine(v: FactoryView): HoldLine {
@@ -2084,6 +2107,8 @@ export function statusLine(v: FactoryView, t: Theme = CLASSIC_THEME): string {
     if (v.current !== null && (v.attempt ?? 0) > 1) parts.push(`attempt ${v.attempt}/${v.maxAttempts ?? '?'}`)
     if (v.current !== null && (v.reviewRound ?? 0) > 0) parts.push(`review ${v.reviewRound}/${v.maxReviewRounds ?? '?'}`)
     parts.push(nowLine(v))
+    const stuck = stuckLine(v, t)
+    if (stuck !== '') parts.push(stuck)
   } else if (isAllDone(v)) parts.push(`${t.head('DONE')} all merged · continue? /factory-roadmap or stop`)
   else {
     const hold = holdLine(v)
@@ -2155,6 +2180,7 @@ export function buildView(
     maxReviewRounds: extra.maxReviewRounds,
     prNumber: prEv?.pr ?? null,
     elapsedMs: startedEv && extra.now > 0 ? Math.max(0, extra.now - startedEv.ts) : null,
+    silentMs: extra.silentMs ?? null,
     steps: itemSteps(stage, events, state.current, { attempt: state.attempts, maxAttempts: extra.maxAttempts, reviewRound: state.reviewRounds, maxReviewRounds: extra.maxReviewRounds }),
     agents: extra.agents.slice(0, MAX_VIEW_AGENTS),
   }
