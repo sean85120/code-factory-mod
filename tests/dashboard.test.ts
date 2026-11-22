@@ -999,3 +999,112 @@ test('held with proposed items only, the band and pane point at /factory-approve
     await ui.unmount()
   }
 })
+
+const clientsIn = async (ui: any) => (await ui.findAll({ type: 'Client' })) as { props: Record<string, unknown> }[]
+
+test('the pane holds one Client for the face only under the hacker look on the terminal at 70 columns or more with motion on', async ($, on) => {
+  fixture($, on, { store: { 'ui/theme': { name: 'hacker' } } })
+  await $.command.run({ command: 'factory-status' } as never)
+  await $.command.run({ command: 'factory-theme' } as never)
+  for (const columns of [70, 80, 140]) {
+    const pane = await mountPane($.ui, columns)
+    const found = await clientsIn(pane)
+    expect(found).toHaveLength(1)
+    expect([String(found[0]!.props.module).endsWith('vox-client.tsx'), found[0]!.props.key, found[0]!.props.width, found[0]!.props.height]).toEqual([true, 'vox-gaze', VOX_CELL_COLUMNS, VOX_CELL_ROWS])
+    expect(await pane.find({ type: 'Raster' })).toBeDefined()
+    await pane.unmount()
+  }
+  const unset = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'Pane', requestId: 'factory', props: {} } as never)
+  expect(await clientsIn(unset)).toHaveLength(1)
+  await unset.unmount()
+  const narrow = await mountPane($.ui, 69)
+  expect(await clientsIn(narrow)).toHaveLength(0)
+  await narrow.unmount()
+  const small = await mountPane($.ui, 60)
+  expect(await clientsIn(small)).toHaveLength(0)
+  await small.unmount()
+  const desktop = await mountDesk($.ui, 'Pane', 120)
+  expect(await clientsIn(desktop)).toHaveLength(0)
+  await desktop.unmount()
+  const band = await mountBand($.ui, 140)
+  expect(await clientsIn(band)).toHaveLength(0)
+  await band.unmount()
+})
+
+test('motion off, the ascii tier and the classic look draw no Client', async ($, on) => {
+  fixture($, on, { store: { 'ui/theme': { name: 'hacker', motion: 'off' } } })
+  await $.command.run({ command: 'factory-status' } as never)
+  await $.command.run({ command: 'factory-theme' } as never)
+  const still = await mountPane($.ui, 100)
+  expect(await clientsIn(still)).toHaveLength(0)
+  await still.unmount()
+  await $.command.run({ command: 'factory-theme', args: 'motion on ascii' } as never)
+  const ascii = await mountPane($.ui, 100)
+  expect(await clientsIn(ascii)).toHaveLength(0)
+  await ascii.unmount()
+  await $.command.run({ command: 'factory-theme', args: 'classic' } as never)
+  const classic = await mountPane($.ui, 100)
+  expect(await clientsIn(classic)).toHaveLength(0)
+  await classic.unmount()
+})
+
+test('the Client carries only the state word and a palette color, never repo or model text', async ($, on) => {
+  fixture($, on, { store: { 'ui/theme': { name: 'hacker' } } })
+  await $.command.run({ command: 'factory-status' } as never)
+  await $.command.run({ command: 'factory-theme' } as never)
+  const pane = await mountPane($.ui, 100)
+  const [client] = await clientsIn(pane)
+  const props = client!.props.props as { state: string; hex: string }
+  expect(Object.keys(props).sort()).toEqual(['hex', 'state'])
+  expect(['run', 'review', 'done', 'hold', 'blocked', 'budget', 'idle']).toContain(props.state)
+  expect(props.hex).toMatch(/^#[0-9A-Fa-f]{6}$/)
+  expect(JSON.stringify(client!.props)).not.toMatch(/Second|First|Third|T-00\d/)
+  await pane.unmount()
+})
+
+const inkMeanX = (tree: unknown): number => {
+  const rows = (tree as { children: { children: { props?: { color?: string; backgroundColor?: string }; children: string[] }[] }[] }).children
+  const xs: number[] = []
+  rows.slice(2, 7).forEach(row => {
+    let x = 0
+    for (const sp of row.children) {
+      for (const _ of sp.children[0]!) {
+        if (sp.props?.color === '#e2feed' || sp.props?.backgroundColor === '#e2feed') xs.push(x)
+        x += 1
+      }
+    }
+  })
+  return xs.reduce((a, b) => a + b, 0) / xs.length
+}
+
+test('the face follows the pointer over the Client, goes back to its drift on leave and after six seconds', async ($, on) => {
+  fixture($, on, { store: { 'ui/theme': { name: 'hacker' } } })
+  await $.command.run({ command: 'factory-status' } as never)
+  await $.command.run({ command: 'factory-theme' } as never)
+  const pane = await mountPane($.ui, 100)
+  await pane.resize({ columns: VOX_CELL_COLUMNS, rows: VOX_CELL_ROWS, in: 'vox-gaze' })
+  const drawn = async () => pane.drawn({ in: 'vox-gaze' })
+  await pane.advance(160)
+  const idleTree = await drawn()
+  expect(JSON.stringify(idleTree)).toMatch(/▀/)
+  expect(JSON.stringify(idleTree)).not.toMatch(/[^ ▀▄"{}\[\]:,\w#.\-]/)
+  const idle = inkMeanX(idleTree)
+  await pane.pointer({ type: 'move', x: 21, y: 4, in: 'vox-gaze' })
+  await pane.advance(100)
+  const right = inkMeanX(await drawn())
+  await pane.pointer({ type: 'move', x: 0, y: 4, in: 'vox-gaze' })
+  await pane.advance(100)
+  const left = inkMeanX(await drawn())
+  expect(right).toBeGreaterThan(idle)
+  expect(left).toBeLessThan(idle)
+  await pane.pointer({ type: 'move', x: 21, y: 4, in: 'vox-gaze' })
+  await pane.pointer({ type: 'leave', x: 21, y: 4, in: 'vox-gaze' })
+  await pane.advance(100)
+  expect(inkMeanX(await drawn())).toBeLessThan(right)
+  await pane.pointer({ type: 'move', x: 21, y: 4, in: 'vox-gaze' })
+  await pane.advance(100)
+  expect(inkMeanX(await drawn())).toBeGreaterThan(idle)
+  await pane.advance(6200)
+  expect(inkMeanX(await drawn())).toBeLessThan(right)
+  await pane.unmount()
+})

@@ -2830,6 +2830,7 @@ export const register: Register = (on, _options) => {
     const rule = (label: string): string => t.rule(label, e.props.bodyColumns === undefined ? undefined : e.props.bodyColumns - 2)
     const Input = 'Input' in els ? els.Input : null
     const Raster = e.surface === 'terminal' && 'Raster' in els ? els.Raster : null
+    const Client = e.surface === 'terminal' && 'Client' in els ? els.Client : null
     const v = await read($, view)
     const open = await read($, openAgent)
     const skipping = await read($, skipTarget)
@@ -2892,7 +2893,16 @@ export const register: Register = (on, _options) => {
             {Svg !== null && svgVox !== null ? (
               <Svg key="vox-svg" source={svgVox.source} alt={svgVox.alt} isInteractive />
             ) : Raster !== null && raster !== null ? (
-              <Raster key="vox" columns={VOX_CELL_COLUMNS} rows={VOX_CELL_ROWS} cells={voxCellsNow(vs, raster)} />
+              Client !== null ? (
+                <Box key="vox-stack" width={VOX_CELL_COLUMNS} height={VOX_CELL_ROWS}>
+                  <Raster key="vox" columns={VOX_CELL_COLUMNS} rows={VOX_CELL_ROWS} cells={voxCellsNow(vs, raster)} />
+                  <Box position="absolute" top={0} left={0}>
+                    <Client key="vox-gaze" module="./vox-client.tsx" props={{ state: vs, hex: raster }} width={VOX_CELL_COLUMNS} height={VOX_CELL_ROWS} />
+                  </Box>
+                </Box>
+              ) : (
+                <Raster key="vox" columns={VOX_CELL_COLUMNS} rows={VOX_CELL_ROWS} cells={voxCellsNow(vs, raster)} />
+              )
             ) : (
               <Box flexDirection="column">
                 {voxArt(vs).map((row, i) => (
