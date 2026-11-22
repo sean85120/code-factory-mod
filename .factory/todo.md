@@ -1,7 +1,7 @@
 # Todo
 
 ## T-001 [docs] Write REVIEW.md for the independent reviewer
-- status: todo
+- status: done
 - version: 0.4.2
 - how: Create REVIEW.md at the repo root, one page, from the decisions in .factory/design.md. Sections: "What failure means here" (a guard lets a forbidden action through: commit/push/merge on the base branch, force push, merge without a clean review or green CI, writes to the state or lock files; the loop overrides the person: a pause, stop, approve or start ignored or overwritten by a stale advance(), a lock taken over; spend or state silently wrong: budget not enforced, dollars charged to the wrong item, events or state lost; repo or model text reaching the terminal raw: escape sequences, bidi controls, unquoted branch names), "Skip" (docs/img/*.png, opencode/package-lock.json), "Sensitive paths" (the guards in hooks/register.tsx, core/factory.ts, codex/hook.ts, .github/workflows/), "Nits" (at most 3 per review), and "How to run the checks" (claude plugin test ., the node --test line for core/codex/opencode specs, tsc -p . and tsc -p opencode, scripts/check-version.sh). Docs only: no version bump and no CHANGELOG entry.
 - accept: REVIEW.md exists at the repo root with those five sections, names all four failure classes, and the check commands match .github/workflows/ci.yml. scripts/check-version.sh still passes.
