@@ -1272,37 +1272,52 @@ async function driftProblems($: Dollar, base: string, drift: Drift): Promise<str
   return out
 }
 
-// Commits the design files onto origin/<base> with git plumbing (a private index
-// file, commit-tree, a fast-forward push), so the person's branch, working tree
-// and index are never touched. Runs only from /factory-approve, which the person
-// typed; the model has no path to it. Returns the new commit or why it failed.
-async function publishDesign($: Dollar, base: string, files: ReadonlyArray<{ path: string; text: string }>): Promise<{ sha: string } | { error: string }> {
+let publishSeq = 0
+
+async function publishDesign($: Dollar, base: string, allFiles: ReadonlyArray<{ path: string; text: string }>, changed: readonly string[]): Promise<{ sha: string } | { error: string }> {
   const fail = (what: string, r: Run) => ({ error: `${what} (${cleanText(r.stderr || r.stdout).slice(0, 160)})` })
   const prefix = await run($, ['git', 'rev-parse', '--show-prefix'], 15000)
   if (prefix.exitCode !== 0 || prefix.stdout.trim() !== '') return { error: 'run /factory-approve from the repository root so the design files can be published' }
   const gitDir = await run($, ['git', 'rev-parse', '--absolute-git-dir'], 15000)
   if (gitDir.exitCode !== 0) return fail('could not find the git directory', gitDir)
-  const index = `${gitDir.stdout.trim()}/factory-design.index`
+  const shown = cleanText(base).slice(0, 60)
+  const index = `${gitDir.stdout.trim()}/factory-design-${Date.now()}-${++publishSeq}-${Math.random().toString(36).slice(2, 8)}.index`
   const env = { GIT_INDEX_FILE: index }
   try {
     const parent = await run($, ['git', 'rev-parse', '--verify', `origin/${base}^{commit}`], 15000)
-    if (parent.exitCode !== 0) return fail(`origin/${cleanText(base).slice(0, 60)} is not readable`, parent)
+    if (parent.exitCode !== 0) return fail(`origin/${shown} is not readable`, parent)
+    const files: Array<{ path: string; text: string }> = []
+    for (const f of allFiles) {
+      const onBase = await run($, ['git', 'rev-parse', '--verify', '-q', `origin/${base}:${f.path}`], 15000)
+      if (onBase.exitCode === 0 && f.path === `${FACTORY_DIR}/.gitignore`) continue
+      if (onBase.exitCode === 0 && changed.includes(f.path)) {
+        const mine = await run($, ['git', 'rev-parse', '--verify', '-q', `HEAD:${f.path}`], 15000)
+        if (mine.exitCode !== 0 || mine.stdout.trim() !== onBase.stdout.trim()) return { error: `origin/${shown} has a version of ${f.path} that your checkout does not have, so publishing would overwrite it; update your checkout (git pull) first` }
+      }
+      files.push(f)
+    }
     const read = await run($, ['git', 'read-tree', `origin/${base}`], 30000, { env })
     if (read.exitCode !== 0) return fail('could not read the base tree', read)
+    const stored = new Map<string, string>()
     for (const f of files) {
       const blob = await run($, ['git', 'hash-object', '-w', '--stdin'], 30000, { stdin: f.text })
       const sha = blob.stdout.trim()
       if (blob.exitCode !== 0 || !/^[0-9a-f]{40,64}$/.test(sha)) return fail(`could not store ${f.path}`, blob)
       const upd = await run($, ['git', 'update-index', '--add', '--cacheinfo', `100644,${sha},${f.path}`], 30000, { env })
       if (upd.exitCode !== 0) return fail(`could not stage ${f.path}`, upd)
+      stored.set(f.path, sha)
     }
     const tree = await run($, ['git', 'write-tree'], 30000, { env })
     if (tree.exitCode !== 0) return fail('could not write the tree', tree)
+    for (const [path, sha] of stored) {
+      const held = await run($, ['git', 'rev-parse', `${tree.stdout.trim()}:${path}`], 15000)
+      if (held.exitCode !== 0 || held.stdout.trim() !== sha) return { error: `the tree did not hold ${path} as expected, so nothing was pushed` }
+    }
     const commit = await run($, ['git', 'commit-tree', tree.stdout.trim(), '-p', parent.stdout.trim(), '-m', 'Code factory design'], 30000)
     const sha = commit.stdout.trim()
     if (commit.exitCode !== 0 || !/^[0-9a-f]{40,64}$/.test(sha)) return fail('could not create the commit (is git user.name and user.email set?)', commit)
     const pushed = await run($, ['git', 'push', 'origin', `${sha}:refs/heads/${base}`], 120000)
-    if (pushed.exitCode !== 0) return fail(`the push to ${cleanText(base).slice(0, 60)} was refused`, pushed)
+    if (pushed.exitCode !== 0) return fail(`the push to ${shown} failed or was refused`, pushed)
     if ((await branchNow($)) === base) {
       const here = await run($, ['git', 'rev-parse', 'HEAD'], 15000)
       if (here.exitCode === 0 && here.stdout.trim() === parent.stdout.trim()) {
@@ -1312,7 +1327,7 @@ async function publishDesign($: Dollar, base: string, files: ReadonlyArray<{ pat
     }
     return { sha }
   } finally {
-    await run($, ['rm', '-f', index], 15000)
+    await run($, ['rm', '-f', index, `${index}.lock`], 15000)
   }
 }
 
@@ -1709,7 +1724,7 @@ async function approveCmd($: Dollar): Promise<{ text: string }> {
         { path: DESIGN_PATH, text: designText },
         ...(ignoreText === null ? [] : [{ path: `${FACTORY_DIR}/.gitignore`, text: ignoreText }]),
       ]
-      const pub = await publishDesign($, base, files)
+      const pub = await publishDesign($, base, files, drift.changed)
       if ('sha' in pub) {
         designProblems = []
         publishedNote = `Published the design files to origin/${cleanText(base).slice(0, 60)} (${pub.sha.slice(0, 7)}).\n`
@@ -2659,7 +2674,7 @@ export const register: Register = (on, _options) => {
           <Text bold>factory ✎ design drafted</Text>
           {!compact && (
             <Text dimColor wrap="truncate-end">
-              next: push the design files, then /factory-approve
+              next: /factory-approve publishes the design files and starts
             </Text>
           )}
           <Button plain dimColor key="details" onPress={() => void $.ui.open({ id: PANE, title: 'Code factory', focus: true })}>

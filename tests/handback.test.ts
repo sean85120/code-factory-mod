@@ -56,7 +56,7 @@ let catFileExit = 0
 let diffExit = 0
 let onRun: (() => void) | null = null
 let readCount = 0
-let gitHook: ((cmd: string, e: { init?: { env?: Record<string, string> } }) => { exitCode: number; stdout: string; stderr: string } | undefined) | null = null
+let gitHook: ((cmd: string, e: { init?: { env?: Record<string, string>; stdin?: string } }) => { exitCode: number; stdout: string; stderr: string } | undefined) | null = null
 const gitCalls: string[] = []
 
 function setup($: any, on: any, state: Record<string, unknown>, agentText = '', extraFiles: Record<string, string> = {}, agentResult?: unknown): Record<string, string> {
@@ -90,7 +90,7 @@ function setup($: any, on: any, state: Record<string, unknown>, agentText = '', 
     files[key(e.path) ?? e.path.replace(/^.*\/\.factory\//, '.factory/')] = e.text
     return { value: undefined }
   })
-  on('process.run', (_: unknown, e: { argv: readonly string[]; init?: { env?: Record<string, string> } }) => {
+  on('process.run', (_: unknown, e: { argv: readonly string[]; init?: { env?: Record<string, string>; stdin?: string } }) => {
     const cmd = e.argv.join(' ')
     gitCalls.push(cmd)
     const hooked = gitHook?.(cmd, e)
@@ -515,71 +515,151 @@ test('approve refuses design files whose content differs from the base branch', 
 })
 
 const SHA40 = 'c'.repeat(40)
-const INDEX = '/repo/.git/factory-design.index'
-const publishGit = (refuse: boolean) => (cmd: string, e: { init?: { env?: Record<string, string> } }) => {
+const PARENT = 'a'.repeat(40)
+const BLOB = 'b'.repeat(40)
+const INDEX_DIR = '/repo/.git/factory-design-'
+type Init = { init?: { env?: Record<string, string>; stdin?: string } }
+type Knobs = { refuse?: boolean; baseBlob?: Record<string, string>; headBlob?: Record<string, string>; branch?: string; head?: string; treeBlob?: string }
+const stdins: string[] = []
+const publishGit = (k: Knobs = {}) => (cmd: string, e: Init) => {
+  const index = e.init?.env?.GIT_INDEX_FILE ?? ''
+  const mine = index.startsWith(INDEX_DIR) && index.endsWith('.index')
   if (cmd === 'git rev-parse --show-prefix') return { exitCode: 0, stdout: '', stderr: '' }
   if (cmd === 'git rev-parse --absolute-git-dir') return { exitCode: 0, stdout: '/repo/.git\n', stderr: '' }
-  if (cmd.startsWith('git rev-parse --verify origin/main')) return { exitCode: 0, stdout: `${'a'.repeat(40)}\n`, stderr: '' }
-  if (cmd === 'git hash-object -w --stdin') return { exitCode: 0, stdout: `${'b'.repeat(40)}\n`, stderr: '' }
-  if (cmd === 'git write-tree') return e.init?.env?.GIT_INDEX_FILE === INDEX ? { exitCode: 0, stdout: `${'d'.repeat(40)}\n`, stderr: '' } : { exitCode: 1, stdout: '', stderr: 'no private index' }
+  if (cmd === 'git rev-parse --verify origin/main^{commit}') return { exitCode: 0, stdout: `${PARENT}\n`, stderr: '' }
+  const baseAt = /^git rev-parse --verify -q origin\/main:(.+)$/.exec(cmd)
+  if (baseAt) return k.baseBlob?.[baseAt[1]!] ? { exitCode: 0, stdout: `${k.baseBlob[baseAt[1]!]}\n`, stderr: '' } : { exitCode: 1, stdout: '', stderr: '' }
+  const headAt = /^git rev-parse --verify -q HEAD:(.+)$/.exec(cmd)
+  if (headAt) return k.headBlob?.[headAt[1]!] ? { exitCode: 0, stdout: `${k.headBlob[headAt[1]!]}\n`, stderr: '' } : { exitCode: 1, stdout: '', stderr: '' }
+  if (cmd === 'git hash-object -w --stdin') {
+    stdins.push(e.init?.stdin ?? '')
+    return { exitCode: 0, stdout: `${BLOB}\n`, stderr: '' }
+  }
+  if (cmd === 'git write-tree') return mine ? { exitCode: 0, stdout: `${'d'.repeat(40)}\n`, stderr: '' } : { exitCode: 1, stdout: '', stderr: 'no private index' }
+  if (cmd.startsWith(`git rev-parse ${'d'.repeat(40)}:`)) return { exitCode: 0, stdout: `${k.treeBlob ?? BLOB}\n`, stderr: '' }
   if (cmd.startsWith('git commit-tree')) return { exitCode: 0, stdout: `${SHA40}\n`, stderr: '' }
-  if (cmd.startsWith('git push origin')) return refuse ? { exitCode: 1, stdout: '', stderr: 'remote: protected branch' } : { exitCode: 0, stdout: '', stderr: '' }
-  if (/^git (read-tree|update-index)/.test(cmd)) return e.init?.env?.GIT_INDEX_FILE === INDEX ? { exitCode: 0, stdout: '', stderr: '' } : { exitCode: 1, stdout: '', stderr: 'no private index' }
+  if (cmd.startsWith('git push origin')) return k.refuse ? { exitCode: 1, stdout: '', stderr: 'remote: protected branch' } : { exitCode: 0, stdout: '', stderr: '' }
+  if (/^git (read-tree|update-index)/.test(cmd)) return mine ? { exitCode: 0, stdout: '', stderr: '' } : { exitCode: 1, stdout: '', stderr: 'no private index' }
+  if (cmd === 'git branch --show-current' && k.branch) return { exitCode: 0, stdout: `${k.branch}\n`, stderr: '' }
+  if (cmd === 'git rev-parse HEAD' && k.head) return { exitCode: 0, stdout: `${k.head}\n`, stderr: '' }
   return undefined
 }
+const pushed = () => gitCalls.some(c => c.startsWith('git push origin'))
+const DESIGN = { '.factory/design.md': '# Design\n\n## Decisions\n- x\n' }
+const STATE_FILE = ['state', 'json'].join('.')
+const approve = ($: any) => $.command.run({ command: 'factory-approve' } as never)
 
 test('approve publishes the design files to the base branch itself and then approves', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
-  const files = setup($, on, { approved: false, autopilot: false, current: null }, '', { '.factory/design.md': '# Design\n\n## Decisions\n- x\n' })
+  stdins.length = 0
+  const files = setup($, on, { approved: false, autopilot: false, current: null }, '', DESIGN)
   catFileExit = 1
-  gitHook = publishGit(false)
-  const r = await $.command.run({ command: 'factory-approve' } as never)
+  gitHook = publishGit()
+  const r = await approve($)
   expect(r.text).toContain('Published the design files to origin/main (ccccccc)')
   expect(r.text).not.toContain('Not approved')
-  expect(JSON.parse(files['state.json']!).approved).toBe(true)
+  expect(JSON.parse(files[STATE_FILE]!).approved).toBe(true)
+  expect(gitCalls.find(c => c.startsWith('git commit-tree'))).toBe(`git commit-tree ${'d'.repeat(40)} -p ${PARENT} -m Code factory design`)
   expect(gitCalls.find(c => c.startsWith('git push origin'))).toBe(`git push origin ${SHA40}:refs/heads/main`)
   expect(gitCalls.some(c => /--force|\+refs/.test(c))).toBe(false)
   expect(gitCalls.filter(c => c.startsWith('git update-index')).map(c => c.split(',')[2])).toEqual(['.factory/settings.json', '.factory/todo.md', '.factory/design.md', '.factory/.gitignore'])
-  expect(gitCalls.filter(c => c.startsWith('rm -f')).at(-1)).toBe(`rm -f ${INDEX}`)
+  expect(stdins[2]).toBe(DESIGN['.factory/design.md'])
+  const rm = gitCalls.filter(c => c.startsWith('rm -f')).at(-1)!
+  expect(rm).toMatch(/^rm -f (\S+\.index) \1\.lock$/)
 })
 
-test('approve falls back to the printed steps when the push is refused', async ($, on) => {
+test('approve publishes the promoted todo.md, leaves an existing base .gitignore alone, and syncs the base branch it stands on', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
-  const files = setup($, on, { approved: false, autopilot: false, current: null }, '', { '.factory/design.md': '# Design\n\n## Decisions\n- x\n' })
+  stdins.length = 0
+  const proposed = TODO.replace('status: todo', 'status: proposed')
+  setup($, on, { approved: false, autopilot: false, current: null }, '', { ...DESIGN, '.factory/todo.md': proposed })
+  diffExit = 1
+  const BASE = 'e'.repeat(40)
+  gitHook = publishGit({
+    baseBlob: { '.factory/settings.json': BASE, '.factory/todo.md': BASE, '.factory/design.md': BASE, '.factory/.gitignore': BASE },
+    headBlob: { '.factory/settings.json': BASE, '.factory/todo.md': BASE, '.factory/design.md': BASE },
+    branch: 'main',
+    head: PARENT,
+  })
+  const r = await approve($)
+  expect(r.text).toContain('Published the design files')
+  expect(stdins[1]).toBe(TODO)
+  expect(gitCalls.filter(c => c.startsWith('git update-index')).some(c => c.includes('.gitignore'))).toBe(false)
+  expect(gitCalls).toContain(`git update-ref refs/heads/main ${SHA40} ${PARENT}`)
+  expect(gitCalls).toContain('git reset -q -- .factory/settings.json .factory/todo.md .factory/design.md')
+})
+
+test('approve leaves a local base branch that is not at the old tip alone', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  setup($, on, { approved: false, autopilot: false, current: null }, '', DESIGN)
   catFileExit = 1
-  gitHook = publishGit(true)
-  const r = await $.command.run({ command: 'factory-approve' } as never)
+  gitHook = publishGit({ branch: 'main', head: 'f'.repeat(40) })
+  const r = await approve($)
+  expect(r.text).toContain('Published the design files')
+  expect(gitCalls.some(c => c.startsWith('git update-ref'))).toBe(false)
+})
+
+test('approve refuses to overwrite design files that origin has and the checkout lacks', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const files = setup($, on, { approved: false, autopilot: false, current: null }, '', DESIGN)
+  diffExit = 1
+  gitHook = publishGit({ baseBlob: { '.factory/todo.md': 'e'.repeat(40) }, headBlob: { '.factory/todo.md': 'f'.repeat(40) } })
+  const r = await approve($)
+  expect(r.text).toContain('Not approved')
+  expect(r.text).toContain('update your checkout (git pull) first')
+  expect(pushed()).toBe(false)
+  expect(gitCalls.some(c => c.startsWith('git commit-tree'))).toBe(false)
+  expect(JSON.parse(files[STATE_FILE]!).approved).not.toBe(true)
+})
+
+test('approve pushes nothing when the tree does not hold what was stored', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  setup($, on, { approved: false, autopilot: false, current: null }, '', DESIGN)
+  catFileExit = 1
+  gitHook = publishGit({ treeBlob: '9'.repeat(40) })
+  const r = await approve($)
+  expect(r.text).toContain('Not approved')
+  expect(r.text).toContain('did not hold')
+  expect(pushed()).toBe(false)
+})
+
+test('approve falls back to the printed steps when the push fails', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  const files = setup($, on, { approved: false, autopilot: false, current: null }, '', DESIGN)
+  catFileExit = 1
+  gitHook = publishGit({ refuse: true })
+  const r = await approve($)
   expect(r.text).toContain('Not approved')
   expect(r.text).toContain('could not publish the design files for you')
-  expect(r.text).toContain('the push to main was refused')
+  expect(r.text).toContain('the push to main failed or was refused')
   expect(r.text).toContain("git push origin 'main'")
-  expect(JSON.parse(files['state.json']!).approved).not.toBe(true)
-  expect(gitCalls.filter(c => c.startsWith('rm -f')).at(-1)).toBe(`rm -f ${INDEX}`)
+  expect(JSON.parse(files[STATE_FILE]!).approved).not.toBe(true)
+  expect(gitCalls.filter(c => c.startsWith('rm -f')).length).toBeGreaterThan(0)
 })
 
 test('approve publishes nothing while another problem blocks approval', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   setup($, on, { approved: false, autopilot: false, current: null }, '')
   catFileExit = 1
-  gitHook = publishGit(false)
-  const r = await $.command.run({ command: 'factory-approve' } as never)
+  gitHook = publishGit()
+  const r = await approve($)
   expect(r.text).toContain('Not approved')
   expect(r.text).toContain('needs a "## Decisions" section')
-  expect(gitCalls.some(c => c.startsWith('git push origin') || c.startsWith('git commit-tree'))).toBe(false)
+  expect(pushed() || gitCalls.some(c => c.startsWith('git commit-tree'))).toBe(false)
 })
 
 test('approve publishes nothing from a subdirectory of the repository', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
-  setup($, on, { approved: false, autopilot: false, current: null }, '', { '.factory/design.md': '# Design\n\n## Decisions\n- x\n' })
+  setup($, on, { approved: false, autopilot: false, current: null }, '', DESIGN)
   catFileExit = 1
-  const base = publishGit(false)
+  const base = publishGit()
   gitHook = (cmd, e) => (cmd === 'git rev-parse --show-prefix' ? { exitCode: 0, stdout: 'sub/\n', stderr: '' } : base(cmd, e))
-  const r = await $.command.run({ command: 'factory-approve' } as never)
+  const r = await approve($)
   expect(r.text).toContain('from the repository root')
-  expect(gitCalls.some(c => c.startsWith('git push origin'))).toBe(false)
+  expect(pushed()).toBe(false)
 })
 
-const HOSTILE =['main; touch ~/pwn', '$(x)', 'a`id`b', 'a b', '-x', 'a..b']
+const HOSTILE = ['main; touch ~/pwn', '$(x)', 'a`id`b', 'a b', '-x', 'a..b']
 
 for (const base of HOSTILE) {
   test(`approve prints no runnable git line for the unsafe base branch ${JSON.stringify(base)}`, async ($, on) => {
