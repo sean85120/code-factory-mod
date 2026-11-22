@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { CLASSIC_THEME, DEFAULT_THEME_CAPS, VOX_CELL_COLUMNS, VOX_CELL_ROWS, faceCells, isHexColor, poseAt, unpackCells, VOX_STATES, VOX_WIDTH, hackerTheme, loopBadge, voxArt, voxFace, voxSpeech, voxState, HACKER_BACKGROUND, HACKER_PALETTE, budgetColor, checkColor, contrastRatio, decisionsHash, parseSettings, parseThemeArg, parseThemePrefs, parseTodo, progressBar, theme, themeCaps, themeReport } from '../hooks/lib'
+import { CLASSIC_THEME, DEFAULT_COLOR, DEFAULT_THEME_CAPS, VOX_CELL_COLUMNS, VOX_RASTER_COLUMNS, VOX_CELL_ROWS, faceCells, faceWords, isHexColor, poseAt, unpackCells, VOX_STATES, VOX_WIDTH, hackerTheme, loopBadge, voxArt, voxFace, voxSpeech, voxState, HACKER_BACKGROUND, HACKER_PALETTE, budgetColor, checkColor, contrastRatio, decisionsHash, parseSettings, parseThemeArg, parseThemePrefs, parseTodo, progressBar, theme, themeCaps, themeReport } from '../hooks/lib'
 import { GAZE_TIMEOUT_MS, gazeFrom } from '../hooks/lib'
 import { HACKER_HOVER, STAGES, desktopLook, pipelineStates, pipelineSvg, voxSvg } from '../hooks/lib'
 
@@ -397,22 +397,27 @@ function pixels(state: Parameters<typeof poseAt>[0], tick: number, since: number
   return out
 }
 
-function shift(a: Map<string, number>, b: Map<string, number>, eyePixels: number): { dx: number; dy: number } {
-  const ink = Math.max(...a.values())
-  const sum = (m: Map<string, number>, at: 0 | 1) => [...m].filter(([, c]) => c === ink).reduce((n, [k]) => n + Number(k.split(',')[at]), 0)
-  return { dx: (sum(b, 0) - sum(a, 0)) / eyePixels, dy: (sum(b, 1) - sum(a, 1)) / eyePixels }
+const INK_GREEN = 245 + (255 - 245) * 0.85
+const DARK_GREEN = 245 * 0.1
+const EYE_X = 6
+const EYE_Y = 12
+
+function darkness(m: Map<string, number>, col: number, row: number): number {
+  const c = m.get(`${EYE_X + col},${EYE_Y + row}`)
+  if (c === undefined) return Number.NaN
+  const k = (INK_GREEN - ((c >> 8) & 255)) / (INK_GREEN - DARK_GREEN)
+  return Math.round(k * 4) / 4 + 0
 }
 
-test('the pupils in the face cells move toward the gaze for run, review and idle, in half-pixel steps, and stay put for the other four states', () => {
+test('the pupils in the face cells move toward the gaze for run, review and idle in half-pixel steps, and stay put for the other four states', () => {
   for (const s of ['run', 'review', 'idle'] as const) {
-    const n = s === 'review' ? 16 : 12
-    const base = pixels(s, 500, Number.POSITIVE_INFINITY, { x: 0, y: 0 })
-    expect(shift(base, pixels(s, 500, Number.POSITIVE_INFINITY, { x: 2, y: 0 }), n)).toEqual({ dx: 2, dy: 0 })
-    expect(shift(base, pixels(s, 500, Number.POSITIVE_INFINITY, { x: -1, y: 0 }), n)).toEqual({ dx: -1, dy: 0 })
-    expect(shift(base, pixels(s, 500, Number.POSITIVE_INFINITY, { x: 0, y: 1 }), n)).toEqual({ dx: 0, dy: 1 })
-    if (s !== 'review') expect(shift(base, pixels(s, 500, Number.POSITIVE_INFINITY, { x: 0, y: -1 }), n)).toEqual({ dx: 0, dy: -1 })
+    const at = (x: number, y: number) => pixels(s, 500, Number.POSITIVE_INFINITY, { x, y })
+    expect([-2, -1, 0, 1, 2].map(x => darkness(at(x, 0), 1, 3))).toEqual([1, 0.5, 0, 0, 0])
+    expect([-2, -1, 0, 1, 2].map(x => darkness(at(x, 0), 2, 3))).toEqual([1, 1, 1, 0.5, 0])
+    expect([-1, 0, 1].map(y => darkness(at(0, y), 3, 5))).toEqual([0, 0, 0.5])
+    expect([-1, 0, 1].map(y => darkness(at(0, y), 3, 4))).toEqual([0.5, 1, 1])
     const cells = (g?: { x: number; y: number }) => faceCells(poseAt(s, 500, Number.POSITIVE_INFINITY, g), '#3DF58A').cells
-    expect(new Set([cells({ x: 0, y: 0 }), cells({ x: 2, y: 0 }), cells({ x: -2, y: 0 }), cells({ x: 0, y: 1 }), cells({ x: 0, y: -1 })]).size).toBe(5)
+    expect(new Set([cells({ x: 0, y: 0 }), cells({ x: 1, y: 0 }), cells({ x: 2, y: 0 }), cells({ x: -2, y: 0 }), cells({ x: 0, y: 1 }), cells({ x: 0, y: -1 })]).size).toBe(6)
   }
   for (const s of ['done', 'hold', 'blocked', 'budget'] as const) {
     for (const g of [{ x: 2, y: 0 }, { x: -2, y: 1 }, { x: 0, y: -1 }]) {
@@ -427,4 +432,115 @@ test('a gaze replaces the drift while it is held and the face goes back to the d
   const held = faceCells(poseAt('run', 1300, Number.POSITIVE_INFINITY, { x: 0, y: 0 }), '#3DF58A').cells
   expect(held).not.toBe(faceCells(drift, '#3DF58A').cells)
   expect(faceCells(poseAt('run', 1300, Number.POSITIVE_INFINITY, null), '#3DF58A').cells).toBe(faceCells(drift, '#3DF58A').cells)
+})
+
+const TONES = ['#3DF58A', '#0B7A3B', '#4CC9F0', '#C77DFF', '#FFB000', '#FF4D6D', '#6B8F7B']
+
+test('the face is 30 by 12 cells for every state, pose, tick and tone, with only space, upper-half and lower-half glyphs and numeric colors', () => {
+  expect([VOX_CELL_COLUMNS, VOX_CELL_ROWS]).toEqual([30, 12])
+  const poses = [
+    ...VOX_STATES.flatMap(s => [0, 333, 1111, 2777, 4999].flatMap(t => [0, 250, 5000, Number.POSITIVE_INFINITY].map(since => poseAt(s, t, since)))),
+    ...VOX_STATES.flatMap(s => [-2, 0, 2].flatMap(x => [-1, 0, 1].map(y => poseAt(s, 700, 40, { x, y })))),
+    ...(['open', 'closed', 'wide', 'happy', 'x', 'coin'] as const).flatMap(eyes => (['none', 'raised', 'angry'] as const).flatMap(brow => (['smile', 'flat', 'frown', 'grin'] as const).map(mouth => ({ ...poseAt('run', 0, 0), eyes, brow, mouth, lid: 0.5, lift: 2 as const, shake: -1 as const, z: 5, sparkle: 4, glint: 9 })))),
+  ]
+  let bad = 0
+  for (const tone of TONES) for (const pose of poses) {
+    const f = faceCells(pose, tone)
+    if (f.columns !== VOX_CELL_COLUMNS || f.rows !== VOX_CELL_ROWS) bad++
+    const words = unpackCells(f.cells)
+    if (words.length !== VOX_CELL_COLUMNS * VOX_CELL_ROWS * 3) bad++
+    for (let i = 0; i < words.length; i += 3) {
+      if (words[i] !== 0x20 && words[i] !== 0x2580 && words[i] !== 0x2584) bad++
+      for (const c of [words[i + 1]!, words[i + 2]!]) if (!(c === DEFAULT_COLOR || (Number.isInteger(c) && c >= 0 && c <= 0xffffff))) bad++
+      if (words[i] === 0x20 && (words[i + 1] !== DEFAULT_COLOR || words[i + 2] !== DEFAULT_COLOR)) bad++
+    }
+  }
+  expect(bad).toBe(0)
+})
+
+test('the face is a pure function of the pose and the tone', () => {
+  for (const s of VOX_STATES) for (const t of [0, 400, 2600]) {
+    const a = faceCells(poseAt(s, t, 600, { x: 1, y: 1 }), '#3DF58A')
+    expect(faceCells(poseAt(s, t, 600, { x: 1, y: 1 }), '#3DF58A')).toEqual(a)
+    expect(faceWords(poseAt(s, t, 600), '#0B7A3B')).toEqual(faceWords(poseAt(s, t, 600), '#0B7A3B'))
+  }
+})
+
+test('the seven states never draw identical cells at the same tick, whatever the tick and the time since the change', () => {
+  for (const t of [0, 90, 500, 1111, 1500, 2777, 4001, 5100, 9999]) for (const since of [0, 100, 450, 2000, Number.POSITIVE_INFINITY]) {
+    const cells = VOX_STATES.map(s => faceCells(poseAt(s, t, since), '#3DF58A').cells)
+    expect([t, since, new Set(cells).size]).toEqual([t, since, VOX_STATES.length])
+  }
+})
+
+test('the head has a rim, a shaded body and an antenna with a glow, and the eyelids close from the top', () => {
+  const run = poseAt('run', 2000, Number.POSITIVE_INFINITY)
+  const m = pixelsOf(run)
+  expect(new Set(m.values()).size).toBeGreaterThan(8)
+  const ys = [...m.keys()].map(k => Number(k.split(',')[1]))
+  expect(Math.min(...ys)).toBeLessThan(5)
+  expect(m.has('14,4') && m.has('15,4')).toBe(true)
+  const open = pixelsOf({ ...run, eyes: 'open', lid: 0 })
+  const lidded = pixelsOf({ ...run, eyes: 'open', lid: 0.5 })
+  expect([darkness(open, 3, 0), darkness(lidded, 3, 0)].map(d => d > 0.5)).toEqual([false, true])
+  expect(lidded.get(`${EYE_X + 3},${EYE_Y + 5}`)).toBe(open.get(`${EYE_X + 3},${EYE_Y + 5}`))
+  expect(darkness(pixelsOf({ ...run, eyes: 'closed' }), 3, 0)).toBeGreaterThan(0.5)
+})
+
+function pixelsOf(pose: ReturnType<typeof poseAt>): Map<string, number> {
+  const words = unpackCells(faceCells(pose, '#3DF58A').cells)
+  const out = new Map<string, number>()
+  for (let r = 0; r < VOX_CELL_ROWS; r++) for (let x = 0; x < VOX_CELL_COLUMNS; x++) {
+    const i = (r * VOX_CELL_COLUMNS + x) * 3
+    const [g, fg, bg] = [words[i]!, words[i + 1]!, words[i + 2]!]
+    if (g === 0x2580) {
+      out.set(`${x},${2 * r}`, fg)
+      if (bg !== DEFAULT_COLOR) out.set(`${x},${2 * r + 1}`, bg)
+    } else if (g === 0x2584) out.set(`${x},${2 * r + 1}`, fg)
+  }
+  return out
+}
+
+test('brows are two pixels thick, mouths and cheeks change the cells, and the per-state extras draw', () => {
+  const still = { ...poseAt('run', 2000, Number.POSITIVE_INFINITY), cheeks: false }
+  const count = (p: typeof still) => pixelsOf(p).size
+  const none = pixelsOf({ ...still, brow: 'none' })
+  for (const brow of ['raised', 'angry'] as const) {
+    const m = pixelsOf({ ...still, brow })
+    const added = [...m].filter(([k, c]) => none.get(k) !== c).map(([k]) => k.split(',').map(Number) as [number, number])
+    expect(added.length).toBeGreaterThanOrEqual(12)
+    const columns = new Map<number, number[]>()
+    for (const [x, y] of added) columns.set(x, [...(columns.get(x) ?? []), y])
+    for (const ys of columns.values()) expect(ys.length).toBeGreaterThanOrEqual(2)
+  }
+  const mouths = (['smile', 'flat', 'frown', 'grin'] as const).map(mouth => faceCells({ ...still, mouth }, '#3DF58A').cells)
+  expect(new Set(mouths).size).toBe(4)
+  expect(faceCells({ ...still, cheeks: true }, '#3DF58A').cells).not.toBe(faceCells(still, '#3DF58A').cells)
+  expect(count({ ...still, glint: 20 })).toBe(count(still))
+  expect(faceCells({ ...still, glint: 20 }, '#3DF58A').cells).not.toBe(faceCells(still, '#3DF58A').cells)
+  expect(faceCells({ ...still, sparkle: 3 }, '#3DF58A').cells).not.toBe(faceCells(still, '#3DF58A').cells)
+  expect(faceCells({ ...still, z: 2 }, '#3DF58A').cells).not.toBe(faceCells(still, '#3DF58A').cells)
+  expect(faceCells({ ...still, eyes: 'coin', coin: 1 }, '#3DF58A').cells).not.toBe(faceCells({ ...still, eyes: 'coin', coin: 2 }, '#3DF58A').cells)
+  expect(faceCells({ ...still, shake: 1 }, '#3DF58A').cells).not.toBe(faceCells({ ...still, shake: -1 }, '#3DF58A').cells)
+  expect(faceCells({ ...still, lift: 2 }, '#3DF58A').cells).not.toBe(faceCells(still, '#3DF58A').cells)
+  expect(faceCells({ ...still, spark: true }, '#3DF58A').cells).not.toBe(faceCells({ ...still, spark: false }, '#3DF58A').cells)
+})
+
+test('the mascot speech fits beside the 30-column face on a 70-column pane, arrow and gap included', () => {
+  const id = 'ABCDEFGHIJ-123456'
+  const rows = [vrow(id, 'todo'), vrow(id, 'blocked')]
+  const base = { running: true, current: id, stage: 'build', rows, blockedCount: 12, doneCount: 123456, total: 123456, reviewRound: 12, maxReviewRounds: 12 }
+  const said = [
+    voxSpeech(vv(base)),
+    voxSpeech(vv({ ...base, stage: 'review' })),
+    voxSpeech(vv({ ...base, running: false })),
+    voxSpeech(vv({ ...base, running: false, rows: [vrow(id, 'blocked')] })),
+    voxSpeech(vv({ ...base, running: false, pausedReason: 'budget reached', runUsd: 12345.67, budgetUsd: 12345.67, rows: [vrow(id, 'todo')] })),
+    voxSpeech(vv({ ...base, running: false, rows: [], blockedCount: 0 })),
+    voxSpeech(vv({ approved: false })),
+  ].flat()
+  const arrow = Math.max(hackerTheme(DEFAULT_THEME_CAPS).arrow.length, 1) + 1
+  const room = VOX_RASTER_COLUMNS - 2 - VOX_CELL_COLUMNS - 2
+  expect(room).toBe(36)
+  for (const line of said) expect([line, arrow + line.length <= room]).toEqual([line, true])
 })

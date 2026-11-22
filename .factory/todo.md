@@ -39,7 +39,7 @@
 - depends: T-004
 
 ## T-006 [feature] Bigger, more detailed Vox face
-- status: todo
+- status: done
 - version: 0.4.6
 - how: Rework faceCells in hooks/lib.ts for a larger half-block grid (VOX_CELL_COLUMNS and VOX_CELL_ROWS from 22 by 8 to about 30 by 12; keep VOX_RASTER_COLUMNS at 70 and check the pane layout still fits the face beside voxSpeech, adjust the threshold only if it does not). Draw with only space, upper-half and lower-half block glyphs: a shaded rounded head with a rim, antenna with a glow, eyes with a sclera, a pupil that takes the gaze offset in half-pixel steps, a highlight dot and eyelids that close from the top, brows (raised, angry, none) two pixels thick, mouth shapes (smile, flat, frown, grin), cheeks, and the existing per-state extras (glint scan, sparkles, z, coin, shake, lift). Keep palette-only colors (HACKER_PALETTE) and contrast. Keep poseAt's timing and the single-blit-per-frame rule in voxTick. The ASCII art and the desktop SVG are unchanged. Bump to 0.4.6 with a CHANGELOG section.
 - accept: faceCells returns the new dimensions for every state and pose, every glyph is a space, upper-half block or lower-half block, every color is a number derived from the palette (and DEFAULT_COLOR for transparent), and the seven states are visually distinct (no two states produce identical cells at the same tick). The pane still lays out at 70 columns. tsc and all suites pass.

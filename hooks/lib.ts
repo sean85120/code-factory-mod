@@ -1657,8 +1657,8 @@ export function voxSpeech(v: Pick<FactoryView, 'approved' | 'running' | 'stage' 
 }
 
 export const VOX_FRAME_MS = 83
-export const VOX_CELL_COLUMNS = 22
-export const VOX_CELL_ROWS = 8
+export const VOX_CELL_COLUMNS = 30
+export const VOX_CELL_ROWS = 12
 export const VOX_RASTER_COLUMNS = 70
 
 export type VoxPose = {
@@ -1676,6 +1676,7 @@ export type VoxPose = {
   glint: number | null
   sparkle: number | null
   gaze: VoxGaze | null
+  lid: number
 }
 
 export type VoxGaze = { x: number; y: number }
@@ -1697,7 +1698,7 @@ export function gazeFrom(pointer: { x: number; y: number; fine?: { x: number; y:
   return { x: axis(px, box.columns, 2), y: axis(py, box.rows, 1) }
 }
 
-const VOX_BASE: VoxPose = { eyes: 'open', coin: 0, look: 0, brow: 'none', mouth: 'smile', cheeks: false, lift: 0, shake: 0, glow: 0.8, spark: false, z: null, glint: null, sparkle: null, gaze: null }
+const VOX_BASE: VoxPose = { eyes: 'open', coin: 0, look: 0, brow: 'none', mouth: 'smile', cheeks: false, lift: 0, shake: 0, glow: 0.8, spark: false, z: null, glint: null, sparkle: null, gaze: null, lid: 0 }
 
 const blinking = (t: number, period: number): boolean => (t + 2000) % period < 160
 
@@ -1723,7 +1724,7 @@ export function poseAt(state: VoxState, tickMs: number, sinceMs: number, gaze?: 
     case 'budget':
       return { ...VOX_BASE, eyes: 'coin', coin: since < 2000 ? Math.floor(since / 100) % 4 : 0, mouth: 'flat' }
     case 'idle':
-      return { ...VOX_BASE, gaze: g, eyes: blinking(t, 4000) ? 'closed' : 'open', mouth: 'flat', glow: 0.6 }
+      return { ...VOX_BASE, gaze: g, eyes: blinking(t, 4000) ? 'closed' : 'open', mouth: 'flat', glow: 0.6, lid: 0.34 }
   }
 }
 
@@ -1744,78 +1745,130 @@ export function faceWords(pose: VoxPose, tone: string): Uint32Array {
   const black: [number, number, number] = [0, 0, 0]
   const white: [number, number, number] = [255, 255, 255]
   const glow = Math.min(1, Math.max(0, pose.glow))
-  const rim = pack(mix(black, base, 0.55 + 0.45 * glow))
-  const shade = pack(mix(black, base, 0.3 * glow + 0.1))
-  const fill = pack(mix(black, base, 0.1))
-  const ink = pack(mix(base, white, 0.85))
-  const pink = pack(mix([255, 111, 160], base, 0.15))
-  const gold = pack([255, 176, 0])
+  const rim = mix(black, base, 0.55 + 0.45 * glow)
+  const shade = mix(black, base, 0.3 * glow + 0.1)
+  const dark = mix(black, base, 0.1)
+  const ink = mix(base, white, 0.85)
+  const pink = mix([255, 111, 160], base, 0.15)
+  const gold: [number, number, number] = [255, 176, 0]
   const px = new Array<number | null>(W * H).fill(null)
-  const set = (x: number, y: number, c: number): void => {
-    if (x >= 0 && x < W && y >= 0 && y < H) px[y * W + x] = c
+  const set = (x: number, y: number, c: [number, number, number]): void => {
+    if (x >= 0 && x < W && y >= 0 && y < H) px[y * W + x] = pack(c)
   }
+  const HW = 24
+  const HH = 18
   const ox = 3 + pose.shake
-  const oy = 2 - pose.lift
-  const inside = (x: number, y: number): boolean => ((x - 7.5) / 7.6) ** 2 + ((y - 7.5) / 6.3) ** 2 <= 1
-  for (let y = 0; y < 16; y++) {
-    for (let x = 0; x < 16; x++) {
+  const oy = 6 - pose.lift
+  const at = (x: number, y: number, c: [number, number, number]): void => set(ox + x, oy + y, c)
+  const inside = (x: number, y: number): boolean => Math.abs((x - (HW - 1) / 2) / (HW / 2)) ** 3.2 + Math.abs((y - (HH - 1) / 2) / (HH / 2)) ** 3.2 <= 1
+  const lit = (x: number, y: number): [number, number, number] => mix(dark, shade, Math.max(0, 1 - y / HH) * 0.5 + (x < 4 && y < 9 ? 0.15 : 0))
+  for (let y = 0; y < HH; y++) {
+    for (let x = 0; x < HW; x++) {
       if (!inside(x, y)) continue
       const edge = !inside(x - 1, y) || !inside(x + 1, y) || !inside(x, y - 1) || !inside(x, y + 1)
       const next = !edge && (!inside(x - 2, y) || !inside(x + 2, y) || !inside(x, y - 2) || !inside(x, y + 2))
-      set(ox + x, oy + y, edge ? rim : next ? shade : fill)
+      at(x, y, edge ? rim : next ? shade : lit(x, y))
     }
   }
   if (pose.glint !== null) {
-    for (let y = 0; y < 16; y++) {
-      for (let x = 0; x < 16; x++) {
-        if (inside(x, y) && Math.abs(x + y - (pose.glint - 4)) <= 1) set(ox + x, oy + y, ink)
+    for (let y = 0; y < HH; y++) {
+      for (let x = 0; x < HW; x++) {
+        if (inside(x, y) && Math.abs(x + y - (pose.glint - 6)) <= 1) at(x, y, ink)
       }
     }
   }
-  const at = (x: number, y: number, c: number): void => set(ox + x, oy + y, c)
-  at(7, 1, rim)
-  at(8, 1, rim)
-  at(7, 0, pose.spark ? ink : shade)
-  at(8, 0, pose.spark ? ink : shade)
-  const gx = pose.gaze !== null ? Math.max(-2, Math.min(2, Math.round(pose.gaze.x))) : pose.look
-  const gy = pose.gaze !== null ? Math.max(-1, Math.min(1, Math.round(pose.gaze.y))) : 0
-  const eye = (x: number, y: number, c: number): void => at(x, y + gy, c)
-  for (const ex of [4 + gx, 10 + gx]) {
-    if (pose.eyes === 'open') for (let y = 6; y <= 8; y++) for (let x = ex; x < ex + 2; x++) eye(x, y, ink)
-    else if (pose.eyes === 'wide') for (let y = 5; y <= 8; y++) for (let x = ex; x < ex + 2; x++) eye(x, y, ink)
-    else if (pose.eyes === 'closed') {
-      eye(ex, 7, ink)
-      eye(ex + 1, 7, ink)
+  const halo = mix(black, base, 0.2 + 0.4 * glow)
+  for (const [x, y] of [[10, -3], [13, -3], [10, -2], [13, -2]] as const) if (pose.spark) at(x, y, halo)
+  for (const y of [-3, -2]) for (const x of [11, 12]) at(x, y, pose.spark ? ink : mix(shade, rim, glow))
+  for (const y of [-1, 0]) for (const x of [11, 12]) at(x, y, rim)
+  const eyeX = [3, 14] as const
+  const SW = 7
+  const SH = 6
+  const sy = 6
+  const half = (v: number): number => Math.round(v * 2) / 2
+  const gx = pose.gaze !== null ? Math.max(-2, Math.min(2, Math.round(pose.gaze.x))) * 0.5 : pose.look * 0.5
+  const gy = pose.gaze !== null ? Math.max(-1, Math.min(1, Math.round(pose.gaze.y))) * 0.5 : 0
+  const px0 = half(2 + gx)
+  const py0 = half(1 + gy)
+  const cover = (a0: number, a1: number, b0: number, b1: number): number => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0))
+  const lids = Math.round(Math.min(1, Math.max(0, pose.lid)) * SH)
+  for (const ex of eyeX) {
+    const round = (x: number, y: number): boolean => !((x === 0 || x === SW - 1) && (y === 0 || y === SH - 1))
+    const wide = pose.eyes === 'wide' ? 1 : 0
+    if (pose.eyes === 'open' || pose.eyes === 'wide') {
+      for (let y = 0; y < SH; y++) {
+        for (let x = 0; x < SW; x++) {
+          if (!round(x, y)) continue
+          if (y < lids) {
+            at(ex + x, sy + y, lit(ex + x, sy + y))
+            continue
+          }
+          const k = cover(px0, px0 + 3 + wide, x, x + 1) * cover(py0, py0 + 4, y, y + 1)
+          at(ex + x, sy + y, mix(ink, dark, k))
+        }
+      }
+      if (lids < 3) at(ex + Math.min(SW - 2, Math.max(1, Math.round(px0 + 0.5))), sy + Math.min(SH - 2, Math.max(1, Math.round(py0 + 0.5))), white)
+      if (lids > 0) for (let x = 1; x < SW - 1; x++) at(ex + x, sy + lids, rim)
+    } else if (pose.eyes === 'closed') {
+      for (let x = 1; x < SW - 1; x++) at(ex + x, sy + SH - 2, ink)
+      at(ex, sy + SH - 3, ink)
+      at(ex + SW - 1, sy + SH - 3, ink)
     } else if (pose.eyes === 'happy') {
-      eye(ex - 1, 7, ink)
-      eye(ex, 6, ink)
-      eye(ex + 1, 6, ink)
-      eye(ex + 2, 7, ink)
+      for (const [x, y] of [[0, 4], [1, 3], [2, 2], [3, 2], [4, 2], [5, 3], [6, 4]] as const) {
+        at(ex + x, sy + y, ink)
+        at(ex + x, sy + y + 1, ink)
+      }
     } else if (pose.eyes === 'x') {
-      const x0 = ex - 1
-      for (const [dx, dy] of [[0, 6], [2, 6], [1, 7], [0, 8], [2, 8]] as const) eye(x0 + dx, dy, ink)
+      for (let i = 0; i < 5; i++) {
+        at(ex + 1 + i, sy + i, ink)
+        at(ex + 5 - i, sy + i, ink)
+        at(ex + 2 + i, sy + i, ink)
+        at(ex + 4 - i, sy + i, ink)
+      }
     } else {
-      const w = ([3, 2, 1, 2] as const)[pose.coin % 4]!
-      const x0 = ex - 1 + Math.floor((3 - w) / 2)
-      for (let y = 6; y <= 8; y++) for (let x = x0; x < x0 + w; x++) eye(x, y, gold)
+      const w = ([6, 4, 2, 4] as const)[pose.coin % 4]!
+      const x0 = Math.floor((SW - w) / 2)
+      for (let y = 0; y < SH; y++) for (let x = x0; x < x0 + w; x++) if (round(x, y) && (w > 2 || y !== 0)) at(ex + x, sy + y, gold)
     }
   }
-  if (pose.brow === 'raised') for (const x of [10, 11, 12]) at(x, 4, ink)
-  if (pose.brow === 'angry') for (const [x, y] of [[3, 4], [4, 4], [5, 5], [12, 4], [11, 4], [10, 5]] as const) at(x, y, ink)
-  if (pose.cheeks) for (const [x, y] of [[2, 9], [3, 9], [12, 9], [13, 9]] as const) at(x, y, pink)
-  const mouth: Record<VoxPose['mouth'], ReadonlyArray<readonly [number, number]>> = {
-    smile: [[5, 10], [10, 10], [6, 11], [7, 11], [8, 11], [9, 11]],
-    flat: [[6, 11], [7, 11], [8, 11], [9, 11]],
-    frown: [[5, 11], [10, 11], [6, 10], [7, 10], [8, 10], [9, 10]],
-    grin: [[5, 10], [6, 10], [7, 10], [8, 10], [9, 10], [10, 10], [6, 11], [7, 11], [8, 11], [9, 11]],
+  if (pose.brow === 'raised') {
+    for (const [ex, dy] of [[eyeX[0], 1], [eyeX[1], 0]] as const) {
+      for (let x = 0; x < SW; x++) {
+        const arch = dy === 0 && (x === 0 || x === SW - 1) ? 1 : 0
+        at(ex + x, 2 + dy + arch, ink)
+        at(ex + x, 3 + dy + arch, ink)
+      }
+    }
   }
-  for (const [x, y] of mouth[pose.mouth]) at(x, y, ink)
+  if (pose.brow === 'angry') {
+    for (let i = 0; i < SW; i++) {
+      const down = Math.floor(i * 0.5)
+      at(eyeX[0] + i, 1 + down, ink)
+      at(eyeX[0] + i, 2 + down, ink)
+      at(eyeX[1] + SW - 1 - i, 1 + down, ink)
+      at(eyeX[1] + SW - 1 - i, 2 + down, ink)
+    }
+  }
+  if (pose.cheeks) for (const x of [1, 2, 3, 20, 21, 22]) for (const y of [13, 14]) at(x, y, pink)
+  const mouth: Record<VoxPose['mouth'], ReadonlyArray<readonly [number, number]>> = {
+    smile: [[8, 13], [9, 14], [10, 15], [11, 15], [12, 15], [13, 15], [14, 14], [15, 13], [9, 13], [14, 13]],
+    flat: [[9, 14], [10, 14], [11, 14], [12, 14], [13, 14], [14, 14], [9, 15], [10, 15], [11, 15], [12, 15], [13, 15], [14, 15]],
+    frown: [[8, 15], [9, 14], [10, 13], [11, 13], [12, 13], [13, 13], [14, 14], [15, 15], [9, 15], [14, 15]],
+    grin: [[7, 13], [8, 13], [9, 13], [10, 13], [11, 13], [12, 13], [13, 13], [14, 13], [15, 13], [16, 13], [8, 14], [9, 14], [10, 14], [11, 14], [12, 14], [13, 14], [14, 14], [15, 14], [9, 15], [10, 15], [11, 15], [12, 15], [13, 15], [14, 15]],
+  }
+  for (const [x, y] of mouth[pose.mouth]) at(x, y, pose.mouth === 'grin' && y >= 14 ? dark : ink)
   if (pose.z !== null) {
-    const zy = 12 - pose.z * 2
-    for (const [x, y] of [[0, 0], [1, 0], [2, 0], [1, 1], [0, 2], [1, 2], [2, 2]] as const) set(19 + x, zy + y, pack(mix(black, base, 0.7)))
+    const zy = 16 - pose.z * 2
+    for (const [x, y] of [[0, 0], [1, 0], [2, 0], [1, 1], [0, 2], [1, 2], [2, 2]] as const) set(27 + x, zy + y, mix(black, base, 0.7))
   }
   if (pose.sparkle !== null) {
-    for (const [x, y] of [[1, 2], [20, 3], [2, 12], [19, 10]].slice(0, pose.sparkle)) set(x!, y!, ink)
+    for (const [x, y] of [[1, 5], [28, 7], [1, 17], [27, 14]].slice(0, pose.sparkle)) {
+      set(x!, y!, ink)
+      set(x! - 1, y!, halo)
+      set(x! + 1, y!, halo)
+      set(x!, y! - 1, halo)
+      set(x!, y! + 1, halo)
+    }
   }
   const words = new Uint32Array(W * VOX_CELL_ROWS * 3)
   for (let r = 0; r < VOX_CELL_ROWS; r++) {
@@ -1825,7 +1878,7 @@ export function faceWords(pose: VoxPose, tone: string): Uint32Array {
       const i = (r * W + x) * 3
       const topOn = top !== null
       const botOn = bottom !== null
-      words[i] = topOn && botOn ? 0x2580 : topOn ? 0x2580 : botOn ? 0x2584 : 0x20
+      words[i] = topOn ? 0x2580 : botOn ? 0x2584 : 0x20
       words[i + 1] = topOn ? top : botOn ? bottom : DEFAULT_COLOR
       words[i + 2] = topOn && botOn ? bottom : DEFAULT_COLOR
     }
