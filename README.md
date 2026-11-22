@@ -34,7 +34,7 @@ for how each one works.
 ```
 
 <p align="center">
-  <img src="docs/img/pane-hacker.png" alt="The code-factory dashboard in the hacker look: Vox the mascot, the plan, a blocked item, the current item's pipeline and a running review agent" width="760">
+  <img src="docs/img/pane-hacker.png" alt="The code-factory dashboard in the hacker look: Vox the mascot, the now line, the plan, a blocked item, the current item's pipeline and a running review agent" width="760">
 </p>
 
 > **Status: early.** code-factory uses Claude Code's plugin hooks module, an API
@@ -262,15 +262,32 @@ This section is Claude Code only. In OpenCode and Codex, `/factory-status` and
 
 The hacker look, with its mascot Vox, is the default. `/factory-theme classic`
 switches to the plain look and `/factory-theme hacker` brings it back; the choice
-is yours alone. The band in both looks:
+is yours alone. The band in both looks. A running loop says what it is doing in one plain
+line (`Building T-002, attempt 1/4`, `Reviewing T-002, round 1/3`, `PR #12 open: waiting for CI`):
 
 ![The band above the prompt in the hacker look](docs/img/band-hacker.png)
 ![The band above the prompt in the classic look](docs/img/band-classic.png)
 
-The dashboard in the hacker look and in the classic look:
+A loop that is not running says why and what to do next, never just "stopped":
+
+![The band while the loop is held: why it is idle and the next command](docs/img/band-hold.png)
+
+After five minutes without a sign of life from the running turn, a warning appears
+under the now line (it names the minutes and offers `/factory-pause`):
+
+![The band with the stuck warning after five quiet minutes](docs/img/band-stuck.png)
+
+The dashboard in the hacker look and in the classic look. Under the now line it shows
+the main agent's last action and how long ago it happened:
 
 ![The dashboard in the hacker look](docs/img/pane-hacker.png)
 ![The dashboard in the classic look](docs/img/pane-classic.png)
+
+The same dashboard while the loop is held (the why-idle line and the next command) and
+with the stuck warning:
+
+![The dashboard while the loop is held](docs/img/pane-hold.png)
+![The dashboard with the stuck warning](docs/img/pane-stuck.png)
 
 Press an agent in the band or the dashboard to see what it is doing, task, words and tool calls with their results:
 
@@ -282,16 +299,23 @@ On the Claude desktop app the hacker look draws the pane as a dark console, with
 
 ### Vox
 
-The hacker look, the default since 0.4.0, has a mascot. Vox shows the loop's state at a glance and, on
-the terminal, animates it (a blink every few seconds, a two-hop celebration
+The hacker look, the default since 0.4.0, has a mascot. Vox shows the loop's state at a glance, next to
+the now line (what the loop is doing) or, when it is not running, the why-idle line (why it stopped and
+the next command). On the terminal it animates (a blink every few seconds, a two-hop celebration
 when the plan is done, a shake once when something blocks). `/factory-theme motion off` keeps it still.
 The face needs a dashboard pane at least 60 columns wide (the animated one, 70),
 a UTF-8 locale and color; with `NO_COLOR` set, or in the classic look, there is no mascot.
 
+Vox follows the mouse pointer: while the pointer is over the face in the dashboard pane, its eyes
+look at it (terminal, 70 columns or more, hacker look, and a terminal that reports the pointer, such as
+kitty, Ghostty, iTerm2, WezTerm or foot; tmux does not). Plugins cannot read the prompt cursor, so Vox cannot
+follow it. A pointer cannot be captured in a still image, so none of the pictures here show the gaze.
+
 ![Vox in its seven states: working, reviewing, done, paused, blocked, budget reached and idle](docs/img/vox-states.png)
 
 These images are renders of the plugin's own output: `scripts/demo-shots.sh`
-mounts the real band and dashboard against a made-up five-item plan, draws the
+mounts the real band and dashboard against a made-up five-item plan (running, held and
+silent for five minutes), draws the
 captured element trees as a terminal window in headless Chrome, and saves the
 PNGs to `docs/img/`. They are not captures of a live session, so spacing and
 fonts differ a little from your terminal.

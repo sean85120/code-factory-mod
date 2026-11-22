@@ -124,6 +124,10 @@ const TITLES: Record<string, string> = {
   'pane-hacker': 'claude · code-factory · hacker look · /factory-dashboard',
   'pane-classic': 'claude · code-factory · classic look · /factory-dashboard',
   'pane-agent': 'claude · code-factory · hacker look · pressing an agent shows what it is doing',
+  'band-hold': 'claude · code-factory · hacker look · the loop is held: why, and the next command',
+  'band-stuck': 'claude · code-factory · hacker look · five quiet minutes: the stuck warning',
+  'pane-hold': 'claude · code-factory · hacker look · /factory-dashboard while the loop is held',
+  'pane-stuck': 'claude · code-factory · hacker look · /factory-dashboard with the stuck warning',
   'pane-desktop': 'Claude desktop · code-factory · hacker look · factory pane',
 }
 

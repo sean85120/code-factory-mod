@@ -55,7 +55,7 @@
 - depends: T-006
 
 ## T-008 [docs] Regenerate the README screenshots
-- status: todo
+- status: done
 - version: 0.4.8
 - how: Update scripts/demo-capture.ts and scripts/demo-todo.md so the scenes show the new now line, the hold line with its next action, the stuck warning and the bigger face (no pointer scene: a pointer cannot be captured). Run scripts/demo-shots.sh (macOS, Chrome, bun, python3) to regenerate docs/img/*.png, update the README image captions and the "Vox" paragraph to describe the now line, the why-idle line and that Vox follows the mouse pointer over the pane (terminal, 70+ columns, hacker look; the prompt cursor is not available to plugins), and add the 0.4.8 CHANGELOG section. If bun or Chrome is missing, mark the item blocked with the missing tool in the note rather than committing partial images.
 - accept: docs/img/band-hacker.png, band-classic.png, pane-hacker.png, pane-classic.png, pane-agent.png, pane-desktop.png and vox-states.png are regenerated from the current code and committed, README text matches what the images show, and scripts/check-version.sh passes at 0.4.8. No capture file is placed under tests/.

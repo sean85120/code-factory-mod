@@ -16,7 +16,8 @@ d = re.sub(r"const TODO = `.*?`\n", lambda m: "const TODO = `" + todo + "`\n", d
 d += "\n" + open(f"{root}/scripts/demo-capture.ts").read()
 open(dest, "w").write(d)
 PY
-claude plugin test "$work/run" 2>&1 | sed -n 's/.*DEMO-SCENE //p' > "$work/scenes.jsonl" || true
+claude plugin test "$work/run" > "$work/test.out" 2>&1 || true
+LC_ALL=C sed -n 's/.*DEMO-SCENE //p' "$work/test.out" > "$work/scenes.jsonl"
 test -s "$work/scenes.jsonl" || { echo "no scenes captured"; exit 1; }
 bun "$root/scripts/demo-render.ts" "$work"
 for html in "$work"/*.html; do
