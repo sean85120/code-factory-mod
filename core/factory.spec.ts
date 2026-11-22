@@ -219,6 +219,9 @@ test('start hands out the first item, a turn that leaves it unfinished gets a nu
   assert.match(next?.text ?? '', /work item T-002/)
   assert.deepEqual(state(w).mergedIds, ['T-001'])
   assert.ok(w.ran.includes('npm test'), 'the base branch is checked after a merge')
+  const lookup = w.ran.find(c => c.startsWith('gh pr list --state merged'))
+  assert.match(lookup ?? '', /--head factory\/t-001-add-login /)
+  assert.doesNotMatch(lookup ?? '', /--search/, 'a renamed repo makes GitHub search return nothing')
 })
 
 test('the context is shrunk after a merge unless contextReset is none', async () => {

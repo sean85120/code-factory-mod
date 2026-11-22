@@ -7,6 +7,17 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-22
+
+### Fixed
+
+- The loop could not see a merged PR when the repository had been renamed on
+  GitHub and `origin` still pointed at the old name: the check used
+  `gh pr list --search head:<branch>`, and GitHub search does not follow renames, so
+  it returned nothing and the item was nudged until it blocked. The check now asks
+  for `--head <branch>`, which resolves through the redirect (Claude Code, OpenCode
+  and Codex).
+
 ## [0.4.1] - 2026-11-22
 
 ### Changed

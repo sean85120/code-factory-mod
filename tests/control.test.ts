@@ -1776,6 +1776,9 @@ test('an advance made stale while the loop stays live never frees the live run l
   })
   await clock.advance(400)
   expect(fx.live.ran.filter((c: string) => c.startsWith('gh pr list')).length).toBe(1)
+  const lookup = fx.live.ran.find((c: string) => c.startsWith('gh pr list'))!
+  expect(lookup).toContain('--head factory/t-001-')
+  expect(lookup).not.toContain('--search')
   expect(fx.state().autopilot).toBe(true)
   expect(lockOwner(fx)).not.toBeNull()
 })
