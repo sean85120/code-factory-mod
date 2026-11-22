@@ -142,6 +142,15 @@ test('the reviewer prompt carries the review-fix severity rubric, conditional se
   expect(p).toContain('Low security hardening is declined')
 })
 
+test('the design prompt hands the design to /factory-approve and holds no git publish instruction', () => {
+  expect(DESIGN_PROMPT).toContain('/factory-approve')
+  expect(DESIGN_PROMPT).toContain('/factory-start')
+  expect(DESIGN_PROMPT).toContain("do not edit the factory's state files")
+  expect(DESIGN_PROMPT).not.toMatch(/git (checkout|commit|push|switch|add)\b/)
+  expect(DESIGN_PROMPT.split('\n').filter(l => l.startsWith('git '))).toEqual([])
+  expect(DESIGN_PROMPT.indexOf('/factory-approve')).toBeLessThan(DESIGN_PROMPT.indexOf('/factory-start'))
+})
+
 test('the work prompt embeds the reviewer prompt verbatim, updates the branch without rewriting pushed commits and names a risk tier', () => {
   const item = parseTodo(TODO)[0]!
   const s = { ...DEFAULT_SETTINGS, maxReviewRounds: 3 }
