@@ -7,6 +7,20 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-11-22
+
+### Changed
+
+- OpenCode and Codex `approve` now publish the design files to `origin/<base>` themselves, as
+  the Claude plugin has since 0.4.1: a fast-forward push of a commit built in a private
+  index, no checkout, no change to your branch, working tree or staged files, and the
+  promoted `todo.md`. A refused push, a checkout behind the base, a subdirectory or any other
+  blocking problem refuses with the reason and the printed steps, and nothing is pushed.
+  Before, those two hosts only printed the steps.
+- The git plumbing moved from `hooks/register.tsx` into `hooks/lib.ts` as `publishDesignWith`
+  (every step and check unchanged), shared by all three hosts. `nodeIo.run` accepts `env` and
+  `stdin` for it (`CI=1` and `GH_PROMPT_DISABLED` are kept).
+
 ## [0.4.6] - 2026-11-22
 
 ### Changed

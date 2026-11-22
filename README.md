@@ -182,14 +182,13 @@ Open your agent in the repository you want built. The commands below are written
    end-to-end commands, CI, the review command and versions (and, in Claude
    Code, a spend budget). The answers land in three files:
    `.factory/design.md`, `.factory/todo.md` and `.factory/settings.json`.
-3. **`/factory-approve`** validates the plan and starts the loop. In Claude Code
-   it also publishes the three files to your base branch for you (the loop
+3. **`/factory-approve`** validates the plan and starts the loop. On all three
+   hosts it also publishes the three files to your base branch for you (the loop
    returns to the base branch between items, so they must be there): a plain
    fast-forward push that leaves your branch, working tree and staged files
-   alone. If the push is refused, for example on a protected branch, it says why
-   and prints the commands to run yourself. On OpenCode and Codex it prints those
-   commands and you push the files first. In Claude Code the dashboard opens
-   beside the chat.
+   alone. If the push is refused, for example on a protected branch, or your
+   checkout is behind the base, it says why and prints the commands to run
+   yourself. In Claude Code the dashboard opens beside the chat.
 
 From here you can walk away. Typing any prompt of your own, or interrupting a
 turn (Esc), hands the wheel back to you; in Claude Code the dashboard's
