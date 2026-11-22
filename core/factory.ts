@@ -527,7 +527,7 @@ export function createFactory(host: Host) {
         if (item.status !== 'done') why = `${item.id} is not marked done in todo.md.`
         else if (branch !== base) why = `The current branch is "${branch}", not ${base}.`
         else {
-          const merged = await host.run(['gh', 'pr', 'list', '--state', 'merged', '--search', `head:${branchFor(item)}`, '--json', 'number,headRefName', '--limit', '20'])
+          const merged = await host.run(['gh', 'pr', 'list', '--state', 'merged', '--head', branchFor(item), '--json', 'number,headRefName', '--limit', '20'])
           if (merged.exitCode !== 0) return halt(`gh failed: ${merged.stderr.trim().slice(0, 120)}`)
           let isMerged = false
           try {

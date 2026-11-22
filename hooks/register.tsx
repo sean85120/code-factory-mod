@@ -1053,7 +1053,7 @@ async function advance($: Dollar): Promise<void> {
         if (item.status !== 'done') why = `${item.id} is not marked done in todo.md.`
         else if (branch !== base) why = `The current branch is "${branch}", not ${base}.`
         else {
-          const merged = await run($, ['gh', 'pr', 'list', '--state', 'merged', '--search', `head:${branchFor(item)}`, '--json', 'number,headRefName', '--limit', '20'])
+          const merged = await run($, ['gh', 'pr', 'list', '--state', 'merged', '--head', branchFor(item), '--json', 'number,headRefName', '--limit', '20'])
           if (merged.exitCode !== 0) return await halt(`gh failed: ${merged.stderr.trim().slice(0, 120)}`)
           let isMerged = false
           try {
