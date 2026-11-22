@@ -1675,22 +1675,43 @@ export type VoxPose = {
   z: number | null
   glint: number | null
   sparkle: number | null
+  gaze: VoxGaze | null
 }
 
-const VOX_BASE: VoxPose = { eyes: 'open', coin: 0, look: 0, brow: 'none', mouth: 'smile', cheeks: false, lift: 0, shake: 0, glow: 0.8, spark: false, z: null, glint: null, sparkle: null }
+export type VoxGaze = { x: number; y: number }
+
+export const GAZE_DEAD_ZONE = 0.2
+export const GAZE_TIMEOUT_MS = 6000
+
+export function gazeFrom(pointer: { x: number; y: number; fine?: { x: number; y: number } }, box: { columns: number; rows: number }): VoxGaze | null {
+  const fine = pointer.fine !== undefined && Number.isFinite(pointer.fine.x) && Number.isFinite(pointer.fine.y) ? pointer.fine : null
+  const px = fine !== null ? fine.x : pointer.x + 0.5
+  const py = fine !== null ? fine.y : pointer.y + 0.5
+  if (!Number.isFinite(px) || !Number.isFinite(py) || !(box.columns > 0) || !(box.rows > 0) || !Number.isFinite(box.columns) || !Number.isFinite(box.rows)) return null
+  const axis = (p: number, size: number, max: number): number => {
+    const d = (p - size / 2) / (size / 2)
+    if (Math.abs(d) < GAZE_DEAD_ZONE) return 0
+    const steps = Math.min(max, Math.max(1, Math.round(Math.abs(d) * max)))
+    return d < 0 ? -steps : steps
+  }
+  return { x: axis(px, box.columns, 2), y: axis(py, box.rows, 1) }
+}
+
+const VOX_BASE: VoxPose = { eyes: 'open', coin: 0, look: 0, brow: 'none', mouth: 'smile', cheeks: false, lift: 0, shake: 0, glow: 0.8, spark: false, z: null, glint: null, sparkle: null, gaze: null }
 
 const blinking = (t: number, period: number): boolean => (t + 2000) % period < 160
 
-export function poseAt(state: VoxState, tickMs: number, sinceMs: number): VoxPose {
+export function poseAt(state: VoxState, tickMs: number, sinceMs: number, gaze?: VoxGaze | null): VoxPose {
   const t = Math.max(0, tickMs)
   const since = Number.isFinite(sinceMs) ? Math.max(0, sinceMs) : Number.POSITIVE_INFINITY
   const drift = ([0, 1, 0, -1] as const)[Math.floor(t / 1200) % 4]!
   const scan = ([-1, 0, 1, 0] as const)[Math.floor(t / 250) % 4]!
+  const g = gaze !== undefined && gaze !== null && Number.isFinite(gaze.x) && Number.isFinite(gaze.y) ? { x: Math.max(-2, Math.min(2, Math.round(gaze.x))) + 0, y: Math.max(-1, Math.min(1, Math.round(gaze.y))) + 0 } : null
   switch (state) {
     case 'run':
-      return { ...VOX_BASE, eyes: blinking(t, 3500) ? 'closed' : 'open', look: drift, cheeks: true, spark: t % 1000 < 250 }
+      return { ...VOX_BASE, gaze: g, eyes: blinking(t, 3500) ? 'closed' : 'open', look: drift, cheeks: true, spark: t % 1000 < 250 }
     case 'review':
-      return { ...VOX_BASE, eyes: blinking(t, 5000) ? 'closed' : 'wide', look: scan, brow: 'raised', mouth: 'flat', glow: 0.9, glint: Math.floor(t / 60) % (VOX_CELL_COLUMNS + VOX_CELL_ROWS * 2 + 24) }
+      return { ...VOX_BASE, gaze: g, eyes: blinking(t, 5000) ? 'closed' : 'wide', look: scan, brow: 'raised', mouth: 'flat', glow: 0.9, glint: Math.floor(t / 60) % (VOX_CELL_COLUMNS + VOX_CELL_ROWS * 2 + 24) }
     case 'done': {
       const h = since % 800
       return { ...VOX_BASE, eyes: 'happy', mouth: 'grin', cheeks: true, glow: since < 3000 ? 1 : 0.9, lift: since < 1600 ? (h < 200 ? 1 : h < 400 ? 2 : h < 600 ? 1 : 0) : 0, sparkle: since < 3000 ? Math.floor(since / 150) % 4 + 1 : null }
@@ -1702,7 +1723,7 @@ export function poseAt(state: VoxState, tickMs: number, sinceMs: number): VoxPos
     case 'budget':
       return { ...VOX_BASE, eyes: 'coin', coin: since < 2000 ? Math.floor(since / 100) % 4 : 0, mouth: 'flat' }
     case 'idle':
-      return { ...VOX_BASE, eyes: blinking(t, 4000) ? 'closed' : 'open', mouth: 'flat', glow: 0.6 }
+      return { ...VOX_BASE, gaze: g, eyes: blinking(t, 4000) ? 'closed' : 'open', mouth: 'flat', glow: 0.6 }
   }
 }
 
@@ -1714,9 +1735,9 @@ const rgb = (hex: string): [number, number, number] => [parseInt(hex.slice(1, 3)
 const pack = (c: [number, number, number]): number => (Math.round(c[0]) << 16) | (Math.round(c[1]) << 8) | Math.round(c[2])
 const mix = (a: [number, number, number], b: [number, number, number], k: number): [number, number, number] => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k]
 
-const DEFAULT_COLOR = 0x01000000
+export const DEFAULT_COLOR = 0x01000000
 
-export function faceCells(pose: VoxPose, tone: string): { columns: number; rows: number; cells: string } {
+export function faceWords(pose: VoxPose, tone: string): Uint32Array {
   const W = VOX_CELL_COLUMNS
   const H = VOX_CELL_ROWS * 2
   const base = rgb(tone)
@@ -1756,24 +1777,27 @@ export function faceCells(pose: VoxPose, tone: string): { columns: number; rows:
   at(8, 1, rim)
   at(7, 0, pose.spark ? ink : shade)
   at(8, 0, pose.spark ? ink : shade)
-  for (const ex of [4 + pose.look, 10 + pose.look]) {
-    if (pose.eyes === 'open') for (let y = 6; y <= 8; y++) for (let x = ex; x < ex + 2; x++) at(x, y, ink)
-    else if (pose.eyes === 'wide') for (let y = 5; y <= 8; y++) for (let x = ex; x < ex + 2; x++) at(x, y, ink)
+  const gx = pose.gaze !== null ? Math.max(-2, Math.min(2, Math.round(pose.gaze.x))) : pose.look
+  const gy = pose.gaze !== null ? Math.max(-1, Math.min(1, Math.round(pose.gaze.y))) : 0
+  const eye = (x: number, y: number, c: number): void => at(x, y + gy, c)
+  for (const ex of [4 + gx, 10 + gx]) {
+    if (pose.eyes === 'open') for (let y = 6; y <= 8; y++) for (let x = ex; x < ex + 2; x++) eye(x, y, ink)
+    else if (pose.eyes === 'wide') for (let y = 5; y <= 8; y++) for (let x = ex; x < ex + 2; x++) eye(x, y, ink)
     else if (pose.eyes === 'closed') {
-      at(ex, 7, ink)
-      at(ex + 1, 7, ink)
+      eye(ex, 7, ink)
+      eye(ex + 1, 7, ink)
     } else if (pose.eyes === 'happy') {
-      at(ex - 1, 7, ink)
-      at(ex, 6, ink)
-      at(ex + 1, 6, ink)
-      at(ex + 2, 7, ink)
+      eye(ex - 1, 7, ink)
+      eye(ex, 6, ink)
+      eye(ex + 1, 6, ink)
+      eye(ex + 2, 7, ink)
     } else if (pose.eyes === 'x') {
       const x0 = ex - 1
-      for (const [dx, dy] of [[0, 6], [2, 6], [1, 7], [0, 8], [2, 8]] as const) at(x0 + dx, dy, ink)
+      for (const [dx, dy] of [[0, 6], [2, 6], [1, 7], [0, 8], [2, 8]] as const) eye(x0 + dx, dy, ink)
     } else {
       const w = ([3, 2, 1, 2] as const)[pose.coin % 4]!
       const x0 = ex - 1 + Math.floor((3 - w) / 2)
-      for (let y = 6; y <= 8; y++) for (let x = x0; x < x0 + w; x++) at(x, y, gold)
+      for (let y = 6; y <= 8; y++) for (let x = x0; x < x0 + w; x++) eye(x, y, gold)
     }
   }
   if (pose.brow === 'raised') for (const x of [10, 11, 12]) at(x, 4, ink)
@@ -1806,10 +1830,14 @@ export function faceCells(pose: VoxPose, tone: string): { columns: number; rows:
       words[i + 2] = topOn && botOn ? bottom : DEFAULT_COLOR
     }
   }
-  const bytes = new Uint8Array(words.buffer)
+  return words
+}
+
+export function faceCells(pose: VoxPose, tone: string): { columns: number; rows: number; cells: string } {
+  const bytes = new Uint8Array(faceWords(pose, tone).buffer)
   let bin = ''
   for (const b of bytes) bin += String.fromCharCode(b)
-  return { columns: W, rows: VOX_CELL_ROWS, cells: btoa(bin) }
+  return { columns: VOX_CELL_COLUMNS, rows: VOX_CELL_ROWS, cells: btoa(bin) }
 }
 
 export function unpackCells(cells: string): number[] {

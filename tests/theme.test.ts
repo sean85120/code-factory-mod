@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { CLASSIC_THEME, DEFAULT_THEME_CAPS, VOX_CELL_COLUMNS, VOX_CELL_ROWS, faceCells, isHexColor, poseAt, unpackCells, VOX_STATES, VOX_WIDTH, hackerTheme, loopBadge, voxArt, voxFace, voxSpeech, voxState, HACKER_BACKGROUND, HACKER_PALETTE, budgetColor, checkColor, contrastRatio, decisionsHash, parseSettings, parseThemeArg, parseThemePrefs, parseTodo, progressBar, theme, themeCaps, themeReport } from '../hooks/lib'
+import { GAZE_TIMEOUT_MS, gazeFrom } from '../hooks/lib'
 import { HACKER_HOVER, STAGES, desktopLook, pipelineStates, pipelineSvg, voxSvg } from '../hooks/lib'
 
 test('the classic theme reproduces the marks, step glyphs, agent glyphs and colors the band always drew', () => {
@@ -333,4 +334,97 @@ test('desktopLook paints the dark console under the hacker look whatever the Cla
   expect(desktopLook(hacker, { ...DEFAULT_THEME_CAPS, noColor: true }).surface).toBeUndefined()
   expect(desktopLook(undefined, undefined).surface).toBeUndefined()
   expect(HACKER_HOVER).toMatch(/^#[0-9A-F]{6}$/)
+})
+
+const BOX = { columns: 22, rows: 8 }
+
+test('gazeFrom maps the pointer to a clamped gaze: a dead zone at the center, steps toward the edges, outside the box clamps', () => {
+  expect(gazeFrom({ x: 11, y: 4 }, BOX)).toEqual({ x: 0, y: 0 })
+  expect(gazeFrom({ x: 10, y: 3 }, BOX)).toEqual({ x: 0, y: 0 })
+  expect(gazeFrom({ x: 0, y: 0 }, BOX)).toEqual({ x: -2, y: -1 })
+  expect(gazeFrom({ x: 21, y: 7 }, BOX)).toEqual({ x: 2, y: 1 })
+  expect(gazeFrom({ x: 21, y: 0 }, BOX)).toEqual({ x: 2, y: -1 })
+  expect(gazeFrom({ x: 15, y: 4 }, BOX)).toEqual({ x: 1, y: 0 })
+  expect(gazeFrom({ x: 6, y: 4 }, BOX)).toEqual({ x: -1, y: 0 })
+  expect(gazeFrom({ x: -50, y: 900 }, BOX)).toEqual({ x: -2, y: 1 })
+  expect(gazeFrom({ x: 1e9, y: -1e9 }, BOX)).toEqual({ x: 2, y: -1 })
+})
+
+test('gazeFrom uses the fine coordinates when they are finite and falls back to the cell center otherwise, and ignores NaN and bad boxes', () => {
+  expect(gazeFrom({ x: 0, y: 4, fine: { x: 11.3, y: 4.2 } }, BOX)).toEqual({ x: 0, y: 0 })
+  expect(gazeFrom({ x: 11, y: 4, fine: { x: 21.9, y: 0.1 } }, BOX)).toEqual({ x: 2, y: -1 })
+  expect(gazeFrom({ x: 21, y: 7, fine: { x: Number.NaN, y: 1 } }, BOX)).toEqual({ x: 2, y: 1 })
+  expect(gazeFrom({ x: Number.NaN, y: 4 }, BOX)).toBeNull()
+  expect(gazeFrom({ x: 4, y: Number.NaN }, BOX)).toBeNull()
+  expect(gazeFrom({ x: Number.POSITIVE_INFINITY, y: 4 }, BOX)).toBeNull()
+  expect(gazeFrom({ x: 4, y: 4 }, { columns: 0, rows: 8 })).toBeNull()
+  expect(gazeFrom({ x: 4, y: 4 }, { columns: 22, rows: Number.NaN })).toBeNull()
+  expect(gazeFrom({ x: 4, y: 4 }, { columns: -3, rows: 8 })).toBeNull()
+  for (const x of [-3, 0, 5.5, 11, 40]) for (const y of [-2, 0, 3.5, 8, 90]) {
+    const g = gazeFrom({ x, y }, BOX)!
+    expect(Math.abs(g.x)).toBeLessThanOrEqual(2)
+    expect(Math.abs(g.y)).toBeLessThanOrEqual(1)
+  }
+  expect(GAZE_TIMEOUT_MS).toBe(6000)
+})
+
+test('a gaze reaches the pose only for the states whose eyes are open and is clamped and cleaned there', () => {
+  const g = { x: 2, y: -1 }
+  for (const s of ['run', 'review', 'idle'] as const) expect(poseAt(s, 0, Number.POSITIVE_INFINITY, g).gaze).toEqual(g)
+  for (const s of ['done', 'hold', 'blocked', 'budget'] as const) {
+    expect(poseAt(s, 700, 100, g)).toEqual(poseAt(s, 700, 100))
+    expect(poseAt(s, 700, 100, g).gaze).toBeNull()
+  }
+  for (const s of VOX_STATES) expect(poseAt(s, 0, 0).gaze).toBeNull()
+  expect(poseAt('run', 0, 0, null).gaze).toBeNull()
+  expect(poseAt('run', 0, 0, { x: 9, y: -9 }).gaze).toEqual({ x: 2, y: -1 })
+  expect(poseAt('run', 0, 0, { x: -0.2, y: 0.2 }).gaze).toEqual({ x: 0, y: 0 })
+  expect(poseAt('run', 0, 0, { x: Number.NaN, y: 0 }).gaze).toBeNull()
+  expect(poseAt('review', 600, 0, g).glint).toBe(poseAt('review', 600, 0).glint)
+})
+
+function pixels(state: Parameters<typeof poseAt>[0], tick: number, since: number, gaze?: { x: number; y: number }): Map<string, number> {
+  const words = unpackCells(faceCells(poseAt(state, tick, since, gaze), '#3DF58A').cells)
+  const out = new Map<string, number>()
+  for (let r = 0; r < VOX_CELL_ROWS; r++) for (let x = 0; x < VOX_CELL_COLUMNS; x++) {
+    const i = (r * VOX_CELL_COLUMNS + x) * 3
+    const [g, fg, bg] = [words[i]!, words[i + 1]!, words[i + 2]!]
+    if (g === 0x2580) {
+      out.set(`${x},${2 * r}`, fg)
+      if (bg !== 0x01000000) out.set(`${x},${2 * r + 1}`, bg)
+    } else if (g === 0x2584) out.set(`${x},${2 * r + 1}`, fg)
+  }
+  return out
+}
+
+function shift(a: Map<string, number>, b: Map<string, number>, eyePixels: number): { dx: number; dy: number } {
+  const ink = Math.max(...a.values())
+  const sum = (m: Map<string, number>, at: 0 | 1) => [...m].filter(([, c]) => c === ink).reduce((n, [k]) => n + Number(k.split(',')[at]), 0)
+  return { dx: (sum(b, 0) - sum(a, 0)) / eyePixels, dy: (sum(b, 1) - sum(a, 1)) / eyePixels }
+}
+
+test('the pupils in the face cells move toward the gaze for run, review and idle, in half-pixel steps, and stay put for the other four states', () => {
+  for (const s of ['run', 'review', 'idle'] as const) {
+    const n = s === 'review' ? 16 : 12
+    const base = pixels(s, 500, Number.POSITIVE_INFINITY, { x: 0, y: 0 })
+    expect(shift(base, pixels(s, 500, Number.POSITIVE_INFINITY, { x: 2, y: 0 }), n)).toEqual({ dx: 2, dy: 0 })
+    expect(shift(base, pixels(s, 500, Number.POSITIVE_INFINITY, { x: -1, y: 0 }), n)).toEqual({ dx: -1, dy: 0 })
+    expect(shift(base, pixels(s, 500, Number.POSITIVE_INFINITY, { x: 0, y: 1 }), n)).toEqual({ dx: 0, dy: 1 })
+    if (s !== 'review') expect(shift(base, pixels(s, 500, Number.POSITIVE_INFINITY, { x: 0, y: -1 }), n)).toEqual({ dx: 0, dy: -1 })
+    const cells = (g?: { x: number; y: number }) => faceCells(poseAt(s, 500, Number.POSITIVE_INFINITY, g), '#3DF58A').cells
+    expect(new Set([cells({ x: 0, y: 0 }), cells({ x: 2, y: 0 }), cells({ x: -2, y: 0 }), cells({ x: 0, y: 1 }), cells({ x: 0, y: -1 })]).size).toBe(5)
+  }
+  for (const s of ['done', 'hold', 'blocked', 'budget'] as const) {
+    for (const g of [{ x: 2, y: 0 }, { x: -2, y: 1 }, { x: 0, y: -1 }]) {
+      expect(faceCells(poseAt(s, 1000, 300, g), '#3DF58A').cells).toBe(faceCells(poseAt(s, 1000, 300), '#3DF58A').cells)
+    }
+  }
+})
+
+test('a gaze replaces the drift while it is held and the face goes back to the drift when it is cleared', () => {
+  const drift = poseAt('run', 1300, Number.POSITIVE_INFINITY)
+  expect(drift.look).toBe(1)
+  const held = faceCells(poseAt('run', 1300, Number.POSITIVE_INFINITY, { x: 0, y: 0 }), '#3DF58A').cells
+  expect(held).not.toBe(faceCells(drift, '#3DF58A').cells)
+  expect(faceCells(poseAt('run', 1300, Number.POSITIVE_INFINITY, null), '#3DF58A').cells).toBe(faceCells(drift, '#3DF58A').cells)
 })

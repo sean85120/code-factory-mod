@@ -7,6 +7,35 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-11-22
+
+### Added
+
+- Vox looks at the mouse pointer. Under the hacker look on the terminal surface at 70
+  columns or more with motion on, the dashboard pane draws a `Client` (module
+  `hooks/vox-client.tsx`, key `vox-gaze`) over the `Raster` face. The plugin API reports a
+  pointer only over a `Client` region, so the face reacts while the pointer is over it:
+  the pupils move up to two half-pixel columns sideways and one half-pixel row up or down
+  toward it (`gazeFrom`, a dead zone near the center, clamped, sub-cell coordinates when
+  the terminal reports them). A leave, or no pointer event for 6 seconds
+  (`GAZE_TIMEOUT_MS`), clears the gaze and the face goes back to its drift and scan.
+  Only the states with open eyes (running, reviewing, idle) look; done, hold, blocked and
+  budget ignore the pointer.
+- `poseAt` takes an optional gaze and `VoxPose` carries it; `faceCells` moves the eyes by
+  it. `faceWords` returns the cell words without the base64 step, for the surface module.
+- The module draws only text (space, upper-half and lower-half block glyphs) with colors
+  derived from the palette tone, keeps its own pointer state and timer, and carries no
+  repo or model text: its props are the state word and the tone.
+
+### Notes
+
+- The `Raster` face stays in the pane under the `Client`, so a `Client` that cannot mount
+  (the engine leaves it out after a fault) leaves today's blitted face untouched. With
+  motion off, the ASCII tier, the classic look, a narrow pane or the desktop surface
+  nothing changes.
+- The `Client` mount, the overlay and the pointer behaviour are unverified live; the
+  tests drive the module through the test harness.
+
 ## [0.4.4] - 2026-11-22
 
 ### Added
