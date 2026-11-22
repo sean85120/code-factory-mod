@@ -182,11 +182,9 @@ test('the roadmap prompt summarizes what shipped and its cost, interviews, and n
   expect(p).toContain('- status: proposed')
   expect(p).toContain('ask the person to confirm')
   expect(p).toContain('Do not commit, push, stage, branch or open a PR')
-  expect(p).toContain('telling the person to commit and push the three design files to the base branch themselves')
-  expect(p).toContain(designPushSteps('main'))
-  expect(p).toContain(`\n  git checkout 'main' && git add -- ${PATHS} && git commit -m "Code factory design" -- ${PATHS} && git push origin 'main'\n`)
-  expect(p).toContain('/factory-start after /factory-approve passes')
-  expect(p).toContain('do not run any of them yourself')
+  expect(p).toContain('telling the person to run /factory-approve: it publishes the three design files to the base branch itself')
+  expect(p).toContain('Do not give them git commands')
+  expect(p).not.toMatch(/^\s*git /m)
   expect(p).not.toContain('itself commits and pushes')
   expect(p).toContain('do not start implementing')
   expect(p).toContain('End the FINAL message of this interview with a last line containing only ROADMAP-DONE')
@@ -218,7 +216,6 @@ test('push steps and the roadmap prompt print no runnable line for an unsafe bas
     expect(steps).not.toMatch(/^\s*git /m)
     const p = roadmapPrompt(parseTodo(TODO), [], '', { ...settings, baseBranch: bad })
     expect(p).not.toMatch(/^\s*git /m)
-    expect(p).toContain('no git commands are shown')
   }
 })
 
@@ -388,7 +385,7 @@ test('names with shell metacharacters are accepted but never printed unquoted, a
     expect(asCurrent).toContain(`git checkout '${name}' -- `)
     expectPasteSafe(asCurrent, name)
     const p = roadmapPrompt(parseTodo(TODO), [], '', { ...settings, baseBranch: name })
-    expect(p).toContain(`git push origin '${name}'`)
+    expect(p).not.toMatch(/^\s*git /m)
     expectPasteSafe(p, name)
   }
 })

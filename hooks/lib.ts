@@ -2776,9 +2776,7 @@ Do this:
    - Update .factory/design.md: the new goals, the version plan, and one "## Decisions" entry per new decision.
    - Update .factory/settings.json only where the person decided so (for example stopAfterVersion).
 4. Read the new items back as a short summary and ask the person to confirm; change the files until they do.
-5. Do not commit, push, stage, branch or open a PR: leave the edits in the working tree (the factory refuses commits and pushes to the base branch during this turn). Finish by telling the person to commit and push the three design files to the base branch themselves, giving them exactly these lines (they are for the person):
-${designPushSteps(s.baseBranch)}
-   and then to run /factory-start after /factory-approve passes. These commands are for the person: do not run any of them yourself, do not start building, and do not edit the factory's state files.
+5. Do not commit, push, stage, branch or open a PR: leave the edits in the working tree (the factory refuses commits and pushes to the base branch during this turn). Finish by telling the person to run /factory-approve: it publishes the three design files to the base branch itself, promotes the new items and starts the build loop. Do not give them git commands, do not run /factory-approve yourself, do not start building, and do not edit the factory's state files.
 6. End the FINAL message of this interview with a last line containing only ${ROADMAP_DONE}: after the person confirmed the recorded items, or after they chose "nothing more, stop here". Never put that line in an earlier message.`
 }
 
@@ -2815,9 +2813,7 @@ Do this:
 4. Ask the person with the AskUserQuestion tool, in short rounds (1-4 questions each, 2-4 concrete options, your recommendation first): which issues to take now, their priority order and version, and for each taken issue the HOW decision (the specific fix, library or workaround, the rejected alternative and why), the acceptance criteria and the tests (a bug needs a regression test that fails before the fix). The build loop cannot ask later, so settle every decision now. Always offer "take none, stop here"; if the person chooses it, change no files.
 5. Record what was agreed: append one item per taken issue to .factory/todo.md in the existing format, with "- status: proposed", "- issue: #<number>", ids continuing the numbering (the next id is ${nextItemId(items)}), type bug, feature, chore or docs, and every field filled (version, how, accept, tests, depends). Do not change existing items. Add one "## Decisions" entry per new decision to .factory/design.md. Leave .factory/settings.json alone.
 6. Only if the person asked for it in step 4, tell the reporters: \`gh issue comment <n> --body "..."\` with the question for a needs-info issue or the pointer for a duplicate. Do not close, label, edit or assign issues, and never comment without that explicit choice.
-7. Read the new items back as a short summary and ask the person to confirm; change the files until they do. Do not commit, push, stage, branch or open a PR: leave the edits in the working tree (the factory refuses commits and pushes to the base branch during this turn). Finish by telling the person to commit and push the design files to the base branch themselves, giving them exactly these lines (they are for the person):
-${designPushSteps(s.baseBranch)}
-   and then to run /factory-approve, which promotes the new items and starts the build loop. These commands are for the person: do not run any of them yourself, do not start building, and do not edit the factory's state files.
+7. Read the new items back as a short summary and ask the person to confirm; change the files until they do. Do not commit, push, stage, branch or open a PR: leave the edits in the working tree (the factory refuses commits and pushes to the base branch during this turn). Finish by telling the person to run /factory-approve: it publishes the design files to the base branch itself, promotes the new items and starts the build loop. Do not give them git commands, do not run /factory-approve yourself, do not start building, and do not edit the factory's state files.
 8. End the FINAL message of this triage with a last line containing only ${ROADMAP_DONE}: after the person confirmed the recorded items, or after "take none, stop here", or when there was nothing to triage. Never put that line in an earlier message.`
 }
 
@@ -2866,7 +2862,7 @@ export function nextHint(v: FactoryView | null): string {
     if (!runnable && blocked > 0) return `Only blocked items are left (${blocked}): read the note, then /factory-retry <ID>, or /factory-design to change the plan.${pending}`
     return `Paused${v.pausedReason ? ` (${oneLine(v.pausedReason, 80)})` : ''}. /factory-start carries on${blocked > 0 ? `; ${blocked} blocked item${blocked === 1 ? '' : 's'} can be retried with /factory-retry <ID>` : ''}.${pending}`
   }
-  if (proposed > 0) return `${proposed} proposed item${proposed === 1 ? '' : 's'} wait: push the design files, then /factory-approve starts on them.`
+  if (proposed > 0) return `${proposed} proposed item${proposed === 1 ? '' : 's'} wait: /factory-approve publishes the design files and starts on them.`
   return DONE_HINT
 }
 
