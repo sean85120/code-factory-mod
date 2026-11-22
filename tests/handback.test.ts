@@ -519,7 +519,7 @@ const PARENT = 'a'.repeat(40)
 const BLOB = 'b'.repeat(40)
 const INDEX_DIR = '/repo/.git/factory-design-'
 type Init = { init?: { env?: Record<string, string>; stdin?: string } }
-type Knobs = { refuse?: boolean; baseBlob?: Record<string, string>; headBlob?: Record<string, string>; branch?: string; head?: string; treeBlob?: string }
+type Knobs = { refuse?: boolean; baseBlob?: Record<string, string>; headBlob?: Record<string, string>; branch?: string; head?: string; treeBlob?: string; ahead?: boolean }
 const stdins: string[] = []
 const publishGit = (k: Knobs = {}) => (cmd: string, e: Init) => {
   const index = e.init?.env?.GIT_INDEX_FILE ?? ''
@@ -537,6 +537,7 @@ const publishGit = (k: Knobs = {}) => (cmd: string, e: Init) => {
   }
   if (cmd === 'git write-tree') return mine ? { exitCode: 0, stdout: `${'d'.repeat(40)}\n`, stderr: '' } : { exitCode: 1, stdout: '', stderr: 'no private index' }
   if (cmd.startsWith(`git rev-parse ${'d'.repeat(40)}:`)) return { exitCode: 0, stdout: `${k.treeBlob ?? BLOB}\n`, stderr: '' }
+  if (cmd === 'git merge-base --is-ancestor origin/main HEAD') return { exitCode: k.ahead ? 0 : 1, stdout: '', stderr: '' }
   if (cmd.startsWith('git commit-tree')) return { exitCode: 0, stdout: `${SHA40}\n`, stderr: '' }
   if (cmd.startsWith('git push origin')) return k.refuse ? { exitCode: 1, stdout: '', stderr: 'remote: protected branch' } : { exitCode: 0, stdout: '', stderr: '' }
   if (/^git (read-tree|update-index)/.test(cmd)) return mine ? { exitCode: 0, stdout: '', stderr: '' } : { exitCode: 1, stdout: '', stderr: 'no private index' }
@@ -599,7 +600,7 @@ test('approve leaves a local base branch that is not at the old tip alone', asyn
   expect(gitCalls.some(c => c.startsWith('git update-ref'))).toBe(false)
 })
 
-test('approve refuses to overwrite design files that origin has and the checkout lacks', async ($, on) => {
+test('approve refuses to overwrite design files when the base is not behind the checkout and the blobs differ', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   const files = setup($, on, { approved: false, autopilot: false, current: null }, '', DESIGN)
   diffExit = 1
@@ -610,6 +611,16 @@ test('approve refuses to overwrite design files that origin has and the checkout
   expect(pushed()).toBe(false)
   expect(gitCalls.some(c => c.startsWith('git commit-tree'))).toBe(false)
   expect(JSON.parse(files[STATE_FILE]!).approved).not.toBe(true)
+})
+
+test('approve publishes design files the checkout committed ahead of the base', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  setup($, on, { approved: false, autopilot: false, current: null }, '', DESIGN)
+  diffExit = 1
+  gitHook = publishGit({ ahead: true, baseBlob: { '.factory/todo.md': 'e'.repeat(40) }, headBlob: { '.factory/todo.md': 'f'.repeat(40) } })
+  const r = await approve($)
+  expect(r.text).toContain('Published the design files')
+  expect(r.text).not.toContain('git pull')
 })
 
 test('approve pushes nothing when the tree does not hold what was stored', async ($, on) => {

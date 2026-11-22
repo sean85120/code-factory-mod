@@ -1287,10 +1287,11 @@ async function publishDesign($: Dollar, base: string, allFiles: ReadonlyArray<{ 
     const parent = await run($, ['git', 'rev-parse', '--verify', `origin/${base}^{commit}`], 15000)
     if (parent.exitCode !== 0) return fail(`origin/${shown} is not readable`, parent)
     const files: Array<{ path: string; text: string }> = []
+    const ahead = (await run($, ['git', 'merge-base', '--is-ancestor', `origin/${base}`, 'HEAD'], 15000)).exitCode === 0
     for (const f of allFiles) {
       const onBase = await run($, ['git', 'rev-parse', '--verify', '-q', `origin/${base}:${f.path}`], 15000)
       if (onBase.exitCode === 0 && f.path === `${FACTORY_DIR}/.gitignore`) continue
-      if (onBase.exitCode === 0 && changed.includes(f.path)) {
+      if (onBase.exitCode === 0 && !ahead && changed.includes(f.path)) {
         const mine = await run($, ['git', 'rev-parse', '--verify', '-q', `HEAD:${f.path}`], 15000)
         if (mine.exitCode !== 0 || mine.stdout.trim() !== onBase.stdout.trim()) return { error: `origin/${shown} has a version of ${f.path} that your checkout does not have, so publishing would overwrite it; update your checkout (git pull) first` }
       }
