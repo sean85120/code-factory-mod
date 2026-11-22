@@ -152,7 +152,7 @@ test('statusLine shortens a long pause reason to one line and drops the stage of
 const ok = (stdout: string) => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 const SETTINGS = JSON.stringify({ testCmd: ['unit'], baseBranch: 'main', requireReview: false, requireTestChanges: false, allowTestRemoval: true })
 
-function fixture($: any, on: any, o: { done?: boolean; runs?: string[][]; autopilot?: boolean; blocked?: string[]; writes?: { path: string; text: string }[]; agents?: any[]; store?: Record<string, unknown>; env?: Record<string, string>; claudeTheme?: string; messages?: Record<string, any[]>; statuses?: (string | undefined)[]; rosterFails?: boolean; reads?: { n: number }; approved?: boolean } = {}) {
+function fixture($: any, on: any, o: { done?: boolean; runs?: string[][]; autopilot?: boolean; blocked?: string[]; writes?: { path: string; text: string }[]; agents?: any[]; store?: Record<string, unknown>; env?: Record<string, string>; claudeTheme?: string; messages?: Record<string, any[]>; statuses?: (string | undefined)[]; rosterFails?: boolean; reads?: { n: number }; approved?: boolean; state?: Record<string, unknown>; todo?: string } = {}) {
   const clock = mock.clock(on, { now: 1_000_000 })
   if (o.store) mock.store(on, o.store)
   if (o.env) mock.env(on, o.env)
@@ -160,8 +160,8 @@ function fixture($: any, on: any, o: { done?: boolean; runs?: string[][]; autopi
   const hash = decisionsHash(parseSettings(SETTINGS).settings, parseTodo(TODO))
   const files: Record<string, string> = {
     '.factory/settings.json': SETTINGS,
-    '.factory/todo.md': o.done ? DONE_TODO : TODO,
-    '.factory/state.json': JSON.stringify({ approved: o.approved ?? true, approvedHash: hash, autopilot: o.autopilot ?? true, current: o.autopilot === false ? null : 'T-002', approvedDone: o.done ? ['T-001', 'T-002', 'T-003'] : ['T-001'], events: [{ ts: 999_000, itemId: 'T-002', kind: 'started', detail: '' }] }),
+    '.factory/todo.md': o.todo ?? (o.done ? DONE_TODO : TODO),
+    '.factory/state.json': JSON.stringify({ approved: o.approved ?? true, approvedHash: hash, autopilot: o.autopilot ?? true, current: o.autopilot === false ? null : 'T-002', approvedDone: o.done ? ['T-001', 'T-002', 'T-003'] : ['T-001'], events: [{ ts: 999_000, itemId: 'T-002', kind: 'started', detail: '' }], ...o.state }),
   }
   for (const id of o.blocked ?? []) files[`.factory/blocked/${id}.md`] = 'Skipped by you: needs a product decision. /factory-retry makes it eligible again.\n'
   const key = (path: string) => Object.keys(files).find(k => path.endsWith(`/${k}`))
@@ -911,4 +911,62 @@ test('a plan with open items shows no all-done prompt', async ($, on) => {
   const ui = await band($)
   expect(await ui.find({ text: /Continue the design, or stop here\?/ })).toBeUndefined()
   await ui.unmount()
+})
+
+const LOOKS: [string, Record<string, unknown>][] = [
+  ['classic', { 'ui/theme': { name: 'classic' } }],
+  ['hacker', { 'ui/theme': { name: 'hacker' } }],
+  ['ascii', { 'ui/theme': { name: 'hacker', glyphs: 'ascii' } }],
+]
+
+for (const [look, store] of LOOKS) {
+  test(`the band, the compact band, the pane and the status line say what the loop is doing (${look})`, async ($, on) => {
+    const statuses: (string | undefined)[] = []
+    fixture($, on, { store, statuses })
+    await $.command.run({ command: 'factory-status' } as never)
+    await $.command.run({ command: 'factory-theme' } as never)
+    for (const [name, mount] of [['band', () => mountBand($.ui, 140)], ['compact band', () => mountBand($.ui, 60)], ['pane', () => mountPane($.ui, 100)]] as const) {
+      const ui = await mount()
+      expect([name, (await ui.find({ text: /Building T-002, attempt 1\/4/ })) !== undefined]).toEqual([name, true])
+      await ui.unmount()
+    }
+    expect(statuses.some(s => s?.includes('Building T-002, attempt 1/4'))).toBe(true)
+  })
+
+  test(`a held loop with a blocked item and proposed items names the cause and the command, never nothing left to do (${look})`, async ($, on) => {
+    const todo = `${TODO}
+## T-004 [feature] Fourth
+- status: proposed
+- how: Use the standard library only, because zero dependencies.
+- accept: The fourth thing works for documented inputs.
+- tests: Unit tests for each input.
+`
+    const statuses: (string | undefined)[] = []
+    fixture($, on, { store, autopilot: false, blocked: ['T-002'], todo, state: { pausedReason: 'nothing left to do' }, statuses })
+    await $.command.run({ command: 'factory-status' } as never)
+    await $.command.run({ command: 'factory-theme' } as never)
+    for (const [name, mount] of [['band', () => mountBand($.ui, 140)], ['compact band', () => mountBand($.ui, 60)], ['pane', () => mountPane($.ui, 100)]] as const) {
+      const ui = await mount()
+      expect([name, (await ui.find({ text: /1 item blocked: T-002/ })) !== undefined]).toEqual([name, true])
+      expect([name, (await ui.find({ text: /\/factory-retry T-002/ })) !== undefined]).toEqual([name, true])
+      expect([name, (await ui.find({ text: /nothing left to do/ })) === undefined]).toEqual([name, true])
+      await ui.unmount()
+    }
+    expect(statuses.filter(s => s !== undefined).every(s => !s!.includes('nothing left to do'))).toBe(true)
+    expect(statuses.some(s => s?.includes('1 item blocked: T-002 · next /factory-retry T-002'))).toBe(true)
+  })
+}
+
+test('held with proposed items only, the band and pane point at /factory-approve', async ($, on) => {
+  const todo = TODO.replace(/status: todo/g, 'status: proposed').replace('## T-002 [feature] Second\n- status: proposed', '## T-002 [feature] Second\n- status: proposed')
+  fixture($, on, { autopilot: false, todo: `${DONE_TODO.split('## T-002')[0]}${todo.slice(todo.indexOf('## T-002'))}`, state: { pausedReason: 'nothing left to do', approvedDone: ['T-001'] }, store: { 'ui/theme': { name: 'hacker' } } })
+  await $.command.run({ command: 'factory-status' } as never)
+  await $.command.run({ command: 'factory-theme' } as never)
+  for (const mount of [() => mountBand($.ui, 140), () => mountBand($.ui, 60), () => mountPane($.ui, 100)]) {
+    const ui = await mount()
+    expect(await ui.find({ text: /2 items proposed/ })).toBeDefined()
+    expect(await ui.find({ text: /\/factory-approve/ })).toBeDefined()
+    expect(await ui.find({ text: /nothing left to do/ })).toBeUndefined()
+    await ui.unmount()
+  }
 })
