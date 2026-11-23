@@ -162,3 +162,26 @@ Version plan: 0.4.13 (T-014 feature, the toast), 0.4.14 (T-015 bug, the lid high
 
 #### Phase 5 versions and flow
 - Choice: stopAfterVersion 0.4.14, no release, all other settings unchanged.
+
+## Phase 6: harden the loop's pick after a merge
+
+Goal: close one deferred Low from the 0.4.x reviews: after a merged item returns the tree to the base branch, the loop picks the next item from the base's todo.md, not from the factory branch's copy parsed earlier. No new features, no UI change.
+
+Out of scope for phase 6: trust-model changes, new settings, a UI on OpenCode or Codex, changes to the issue watcher or spend ledger, new product features, the Raster blit throttle (offered and not chosen). No open GitHub issues exist (checked with `gh issue list`).
+
+Version plan: one patch, 0.4.15 (T-016 bug). The loop stops after 0.4.15 (`stopAfterVersion`). No release is cut by the loop (`tagRelease` stays off); the person tags by hand.
+
+### Phase 6 decisions
+
+#### Phase 6 scope
+- Question: what the next phase builds.
+- Options: hardening sweep, new product feature, release prep only, nothing more.
+- Choice: hardening sweep, narrowed to the todo.md re-read after `returnToBase`.
+- Why: it is a real gap (a stale item list can drive `pickNext` after `/factory-approve` or a roadmap published new items while the tree sat on a factory branch). The Raster blit item has no safe fix without a mount signal, and the blit is the fallback when the gaze Client faults.
+
+#### Re-read after the switch
+- Choice: read todo.md once more only after `returnToBase` succeeds and replace the `items` list in place through `effectiveItems`, keeping the trust rules; a null read keeps the old list. Same change in `core/factory.ts` for port parity.
+- Rejected: re-reading on every pick (extra I/O, bigger change), re-reading settings and blocked notes too (not part of the bug; a settings change is caught by the approval hash), throttling or stopping the Raster blit (no mount signal; it is the fallback).
+
+#### Phase 6 versions and flow
+- Choice: stopAfterVersion 0.4.15, no release, all other settings unchanged.
