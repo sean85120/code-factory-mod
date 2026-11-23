@@ -1,6 +1,6 @@
 {
   "name": "code-factory",
-  "version": "0.4.13",
+  "version": "0.4.14",
   "description": "Design-first autonomous code factory for any repo: interviews you for decisions, implements the todo list branch by branch and PR by PR until CI-green merges, triages open GitHub issues into new work, and keeps iterating.",
   "author": { "name": "sean85120" },
   "license": "MIT",

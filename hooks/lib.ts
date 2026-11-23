@@ -1813,7 +1813,8 @@ export function faceWords(pose: VoxPose, tone: string): Uint32Array {
           at(ex + x, sy + y, mix(ink, dark, k))
         }
       }
-      if (lids < 3) at(ex + Math.min(SW - 2, Math.max(1, Math.round(px0 + 0.5))), sy + Math.min(SH - 2, Math.max(1, Math.round(py0 + 0.5))), white)
+      const hy = Math.min(SH - 2, Math.max(1, Math.round(py0 + 0.5)))
+      if (lids < 3) at(ex + Math.min(SW - 2, Math.max(1, Math.round(px0 + 0.5))), sy + (lids > 0 ? Math.min(SH - 2, Math.max(hy, lids + 1)) : hy), white)
       if (lids > 0) for (let x = 1; x < SW - 1; x++) at(ex + x, sy + lids, rim)
     } else if (pose.eyes === 'closed') {
       for (let x = 1; x < SW - 1; x++) at(ex + x, sy + SH - 2, ink)

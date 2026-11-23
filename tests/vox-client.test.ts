@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { GAZE_TIMEOUT_MS, VOX_CELL_COLUMNS, VOX_CELL_ROWS, VOX_FRAME_MS, VOX_STATES } from '../hooks/lib'
-import { VOX_CLIENT_START, reduceVox, voxRows } from '../hooks/vox-client'
+import VoxClient, { VOX_CLIENT_START, reduceVox, voxRows } from '../hooks/vox-client'
 import type { VoxClientState } from '../hooks/vox-client'
 
 const BOX = { columns: VOX_CELL_COLUMNS, rows: VOX_CELL_ROWS }
@@ -64,4 +64,59 @@ test('the module draws rows of width-1 spans made of space, upper-half and lower
       }
     }
   }
+})
+
+type FakeSurface = {
+  elements: { Box: string; Text: string }
+  state: VoxClientState | undefined
+  columns: number
+  rows: number
+  everyCalls: number
+  pointerCalls: number
+  tick: () => void
+  setState: (s: VoxClientState) => void
+  every: (ms: number, fn: () => void) => void
+  onPointer: (fn: (e: unknown) => void) => void
+}
+
+function fakeSurface(): FakeSurface {
+  let ticker: (() => void) | undefined
+  const s: FakeSurface = {
+    elements: { Box: 'Box', Text: 'Text' },
+    state: undefined,
+    columns: VOX_CELL_COLUMNS,
+    rows: VOX_CELL_ROWS,
+    everyCalls: 0,
+    pointerCalls: 0,
+    tick: () => ticker?.(),
+    setState: next => {
+      s.state = next
+    },
+    every: (_ms, fn) => {
+      s.everyCalls++
+      ticker = fn
+    },
+    onPointer: () => {
+      s.pointerCalls++
+    },
+  }
+  return s
+}
+
+test('rendering the Client twice with the same surface starts one timer and one pointer listener, and new props reach the running timer', () => {
+  const surface = fakeSurface()
+  const render = (state: (typeof VOX_STATES)[number]) => VoxClient({ state, hex: '#3DF58A' }, surface as never)
+  render('run')
+  render('run')
+  expect([surface.everyCalls, surface.pointerCalls]).toEqual([1, 1])
+  surface.tick()
+  expect(surface.state?.vox).toBe('run')
+  render('done')
+  expect([surface.everyCalls, surface.pointerCalls]).toEqual([1, 1])
+  surface.tick()
+  expect(surface.state?.vox).toBe('done')
+  expect(surface.state?.entered).toBeGreaterThan(0)
+  const other = fakeSurface()
+  VoxClient({ state: 'run', hex: '#3DF58A' }, other as never)
+  expect([other.everyCalls, other.pointerCalls]).toEqual([1, 1])
 })

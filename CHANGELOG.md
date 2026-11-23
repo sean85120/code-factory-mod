@@ -7,6 +7,14 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.4.14] - 2026-11-23
+
+### Fixed
+
+- The idle face shows its eye highlight: with the idle lid the white highlight pixel sat on the row
+  the lid rim then overwrote, so it never appeared. It now sits on the row below the rim, inside the
+  pupil. Every other state and every open-eyed pose draws the same cells as before.
+
 ## [0.4.13] - 2026-11-23
 
 ### Added
