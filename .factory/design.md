@@ -89,3 +89,26 @@ Version plan: one patch, 0.4.9. T-009 (docs, no bump, like T-001) then T-010 (ch
 ### Git and flow
 - Choice: base `main`, squash merge, context `clear` between items, blocked items are skipped and the loop continues, no budget, `askNextPhase` on, `tagRelease` off, `watchIssues` off, branch protection not required.
 - The design files reach `main` through `/factory-approve` (0.4.1 publishes them itself), not through a commit made in the interview.
+
+## Phase 3: make the full suite reliably green
+
+Goal: stop the one load-dependent test failure so a full `claude plugin test .` is green on a busy machine. No product behavior changes, no hooks/ changes.
+
+Out of scope for phase 3: the low review findings sweep, the gaze fallback toast, new features, trust-model changes, new settings, ports.
+
+Version plan: one patch, 0.4.10 (T-011, chore). The loop stops after 0.4.10 (`stopAfterVersion`). No release is cut by the loop; the person tags by hand.
+
+### Phase 3 decisions
+
+#### Phase 3 scope
+- Question: what the next phase builds.
+- Options: flaky-test fix only, flaky test plus the low-findings sweep, new features, nothing more.
+- Choice: the flaky-test fix only.
+- Why: the full run of 0.4.9 showed 658 pass and 1 fail, a 5 s timeout in the 30 by 12 face test that passes alone (1.5 to 2 s) and serially; the PR #49 body had reported 659 passing.
+
+#### Flaky face test fix
+- Choice: give that one test a 20000 ms limit through `test(name, { timeoutMs: 20000 }, body)` (`TestOptions.timeoutMs`, default 5000), body and assertions unchanged.
+- Rejected: cutting `TONES` from 7 to 3 or sampling fewer poses (lose coverage, may read as test weakening).
+
+#### Phase 3 versions and flow
+- Choice: stopAfterVersion 0.4.10, no release, all other settings unchanged.
