@@ -1657,6 +1657,12 @@ export function voxSpeech(v: Pick<FactoryView, 'approved' | 'running' | 'stage' 
 }
 
 export const VOX_FRAME_MS = 83
+export const VOX_GAZE_KEY = 'vox-gaze'
+export const VOX_GAZE_FAULT_TEXT = 'Vox gaze overlay failed: the plain face stays.'
+
+export function shouldToastGazeFault(element: string, alreadyToasted: boolean, factoryOff: boolean): boolean {
+  return element === VOX_GAZE_KEY && !alreadyToasted && !factoryOff
+}
 export const VOX_CELL_COLUMNS = 30
 export const VOX_CELL_ROWS = 12
 export const VOX_RASTER_COLUMNS = 70
