@@ -7,6 +7,14 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.4.10] - 2026-11-23
+
+### Changed
+
+- The 30 by 12 face test in `tests/theme.test.ts` has a 20 s limit instead of the default 5 s. It
+  takes 1.5 to 2 s on its own, so a loaded machine running the whole suite in parallel no longer
+  fails it. The test body and every assertion are unchanged.
+
 ## [0.4.9] - 2026-11-23
 
 ### Changed

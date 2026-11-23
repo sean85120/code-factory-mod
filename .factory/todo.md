@@ -78,7 +78,7 @@
 - depends: T-009
 
 ## T-011 [chore] Stop the 30 by 12 face test timing out under load
-- status: todo
+- status: done
 - version: 0.4.10
 - how: In tests/theme.test.ts change only the test named "the face is 30 by 12 cells for every state, pose, tick and tone, with only space, upper-half and lower-half glyphs and numeric colors" to `test(name, { timeoutMs: 20000 }, () => { ... })`. The `claude-code/testing` API takes `TestOptions` with `timeoutMs` (default 5000) as the second argument; the test body, `TONES`, the pose list and every assertion stay exactly as they are. Run alone the test takes 1.5 to 2 s, so under the parallel `claude plugin test .` run it passes the 5 s limit only on a quiet machine; 20 s gives about 10 times its solo time. Rejected: cutting `TONES` from 7 to 3 or sampling fewer poses (loses color and pose coverage and may look like test weakening to the gate). Bump to 0.4.10 (.claude-plugin/plugin.json, .codex-plugin/plugin.json, opencode/package.json and the two lines of opencode/package-lock.json, not the json-schema package) and add a CHANGELOG 0.4.10 section (Changed: the face-shape test has a 20 s limit so a loaded machine no longer fails the full suite). On macOS use node or python for the edit, not `sed -i`. Do not touch any other test or any file under hooks/.
 - accept: `claude plugin test .` passes with 0 failures; the face test still runs the same loops and assertions (the diff of tests/theme.test.ts is the one changed `test(` line plus its closing line, if any); `tsc -p .` accepts the `timeoutMs` option; scripts/check-version.sh passes at 0.4.10.

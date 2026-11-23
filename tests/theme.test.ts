@@ -436,7 +436,7 @@ test('a gaze replaces the drift while it is held and the face goes back to the d
 
 const TONES = ['#3DF58A', '#0B7A3B', '#4CC9F0', '#C77DFF', '#FFB000', '#FF4D6D', '#6B8F7B']
 
-test('the face is 30 by 12 cells for every state, pose, tick and tone, with only space, upper-half and lower-half glyphs and numeric colors', () => {
+test('the face is 30 by 12 cells for every state, pose, tick and tone, with only space, upper-half and lower-half glyphs and numeric colors', { timeoutMs: 20000 }, () => {
   expect([VOX_CELL_COLUMNS, VOX_CELL_ROWS]).toEqual([30, 12])
   const poses = [
     ...VOX_STATES.flatMap(s => [0, 333, 1111, 2777, 4999].flatMap(t => [0, 250, 5000, Number.POSITIVE_INFINITY].map(since => poseAt(s, t, since)))),
