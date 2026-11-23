@@ -227,6 +227,54 @@ test('start hands out the first item, a turn that leaves it unfinished gets a nu
   assert.doesNotMatch(lookup ?? '', /--search/, 'a renamed repo makes GitHub search return nothing')
 })
 
+const DONE1 = TODO.replace('- status: todo', '- status: done')
+const MERGED_ROWS = JSON.stringify([{ number: 4, headRefName: 'factory/t-001-add-login' }])
+
+function mergedOnFactoryBranch(over: { settings?: Record<string, unknown>; merged?: boolean; hook?: World['hook'] } = {}) {
+  const w = world({ settings: over.settings, todo: DONE1, state: { autopilot: true, current: 'T-001' } })
+  w.branch = 'factory/t-001-add-login'
+  w.replies.set('gh pr list --state merged', { stdout: over.merged === false ? '[]' : MERGED_ROWS })
+  w.replies.set('git rev-parse origin/main', { stdout: `${w.head}\n` })
+  if (over.hook) w.hook = over.hook
+  return w
+}
+const backCalls = (w: World) => w.ran.filter(c => /^git (status|checkout|merge)\b/.test(c))
+
+test('a merged PR is verified on a factory branch, then the tree returns to the base with no nudge', async () => {
+  const w = mergedOnFactoryBranch()
+  const next = await createFactory(hostFor(w)).advance()
+  assert.match(next?.text ?? '', /work item T-002/)
+  assert.deepEqual(state(w).mergedIds, ['T-001'])
+  assert.deepEqual(backCalls(w), ['git status --porcelain --untracked-files=no', 'git checkout main', 'git merge --ff-only origin/main'])
+  const order = ['git status --porcelain --untracked-files=no', 'git checkout main', 'git fetch -- origin main', 'git merge --ff-only origin/main'].map(c => w.ran.indexOf(c))
+  assert.deepEqual(order, [...order].sort((a, b) => a - b))
+  assert.ok(order.every(i => i >= 0))
+})
+
+for (const [label, hook, reason] of [
+  ['a dirty tracked file', (c: string) => (c.startsWith('git status') ? { stdout: ' M a.ts\n' } : undefined), /uncommitted changes/],
+  ['a failing checkout', (c: string) => (c === 'git checkout main' ? { exitCode: 1, stderr: 'boom' } : undefined), /git checkout main failed/],
+  ['a non-fast-forward', (c: string) => (c.startsWith('git merge') ? { exitCode: 1 } : undefined), /not a fast-forward/],
+] as const) {
+  test(`${label} after a merge keeps the item done and pauses with the fix command`, async () => {
+    const w = mergedOnFactoryBranch({ hook })
+    assert.equal(await createFactory(hostFor(w)).advance(), null)
+    assert.deepEqual(state(w).mergedIds, ['T-001'])
+    assert.equal(state(w).autopilot, false)
+    assert.match(state(w).pausedReason ?? '', /^T-001 merged, but the tree could not return to main: /)
+    assert.match(state(w).pausedReason ?? '', reason)
+    assert.match(state(w).pausedReason ?? '', /run git checkout main and git pull, then \/factory-start$/)
+  })
+}
+
+test('no merged PR on a factory branch keeps the old nudge', async () => {
+  const w = mergedOnFactoryBranch({ merged: false })
+  const next = await createFactory(hostFor(w)).advance()
+  assert.match(next?.text ?? '', /The current branch is "factory\/t-001-add-login", not main\./)
+  assert.deepEqual(state(w).mergedIds ?? [], [])
+  assert.deepEqual(backCalls(w), [])
+})
+
 test('the context is shrunk after a merge unless contextReset is none', async () => {
   for (const mode of ['compact', 'none'] as const) {
     const w = world({ settings: { contextReset: mode }, todo: TODO.replace('- status: todo', '- status: done'), state: { autopilot: true, current: 'T-001' } })
