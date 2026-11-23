@@ -50,6 +50,9 @@ import {
   voxSvg,
   VOX_CELL_COLUMNS,
   VOX_CELL_ROWS,
+  VOX_GAZE_FAULT_TEXT,
+  VOX_GAZE_KEY,
+  shouldToastGazeFault,
   VOX_FRAME_MS,
   faceCells,
   isHexColor,
@@ -187,6 +190,7 @@ let reviewInFlight = false
 const FACTORY_TURN_TTL_MS = 3 * 3600000
 let isArmed = false
 let factoryOff = false
+let gazeFaultToasted = false
 let costFailed = false
 let isAdvancing = false
 let handsOff = false
@@ -2085,6 +2089,7 @@ export const register: Register = (on, _options) => {
 
     lastStatusText = null
     factoryOff = false
+    gazeFaultToasted = false
     stopVox()
     voxLast = null
     await loadTheme($)
@@ -2636,6 +2641,14 @@ export const register: Register = (on, _options) => {
     return next(e)
   })
 
+  on('ui.fault', async ($, e, next) => {
+    if (shouldToastGazeFault(e.element, gazeFaultToasted, factoryOff)) {
+      gazeFaultToasted = true
+      toast($, VOX_GAZE_FAULT_TEXT)
+    }
+    return next(e)
+  })
+
   const agentLine = (t: Theme, a: AgentRow): string => oneLine(`${t.agentGlyph(a.status)} ${a.label} · ${a.status} · ${a.summary}`, 110)
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -2862,7 +2875,7 @@ export const register: Register = (on, _options) => {
                 <Box key="vox-stack" width={VOX_CELL_COLUMNS} height={VOX_CELL_ROWS}>
                   <Raster key="vox" columns={VOX_CELL_COLUMNS} rows={VOX_CELL_ROWS} cells={voxCellsNow(vs, raster)} />
                   <Box position="absolute" top={0} left={0}>
-                    <Client key="vox-gaze" module="./vox-client.tsx" props={{ state: vs, hex: raster }} width={VOX_CELL_COLUMNS} height={VOX_CELL_ROWS} />
+                    <Client key={VOX_GAZE_KEY} module="./vox-client.tsx" props={{ state: vs, hex: raster }} width={VOX_CELL_COLUMNS} height={VOX_CELL_ROWS} />
                   </Box>
                 </Box>
               ) : (

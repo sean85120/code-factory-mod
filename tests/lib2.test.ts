@@ -2,6 +2,9 @@ import { expect, test } from 'claude-code/testing'
 
 import {
   DEFAULT_SETTINGS,
+  VOX_GAZE_FAULT_TEXT,
+  VOX_GAZE_KEY,
+  shouldToastGazeFault,
   compareVersions,
   nudgeDue,
   nudgeGapMs,
@@ -180,4 +183,19 @@ test('nudgeDue waits one gate length after the last nudge or sign of progress on
   expect(nudgeDue([ev(0, 'nudge')], 'T-001', s, 1200000)).toBe(true)
   expect(nudgeDue([ev(0, 'started'), ev(1000000, 'commit')], 'T-001', s, 1500000)).toBe(false)
   expect(nudgeDue([ev(0, 'nudge', 'T-002')], 'T-001', s, 10)).toBe(true)
+})
+
+test('the gaze fault toast text is printable text without control characters', () => {
+  expect(VOX_GAZE_FAULT_TEXT).toMatch(/^[\x20-\x7e]+$/)
+  expect(VOX_GAZE_FAULT_TEXT.length).toBeLessThan(80)
+})
+
+test('a gaze Client fault toasts only for the gaze element, once, and never in factory-exit', () => {
+  expect(VOX_GAZE_KEY).toBe('vox-gaze')
+  expect(shouldToastGazeFault('vox-gaze', false, false)).toBe(true)
+  expect(shouldToastGazeFault('vox-gaze', true, false)).toBe(false)
+  expect(shouldToastGazeFault('vox-gaze', false, true)).toBe(false)
+  expect(shouldToastGazeFault('vox', false, false)).toBe(false)
+  expect(shouldToastGazeFault('plan-bar', false, false)).toBe(false)
+  expect(shouldToastGazeFault('', false, false)).toBe(false)
 })

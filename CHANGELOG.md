@@ -7,6 +7,14 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.4.13] - 2026-11-23
+
+### Added
+
+- A `ui.fault` hook toasts once per session, with fixed text (`Vox gaze overlay failed: the plain
+  face stays.`), when the Vox gaze `Client` fails; the engine's reason, module and phase are never
+  shown. The blitted face stays as before. Reset on a new session, silent after `/factory-exit`.
+
 ## [0.4.12] - 2026-11-23
 
 ### Changed
