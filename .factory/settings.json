@@ -13,7 +13,7 @@
   "reviewCommand": "/review-fix",
   "maxReviewRounds": 3,
   "contextReset": "clear",
-  "stopAfterVersion": "0.4.8",
+  "stopAfterVersion": "0.4.9",
   "tagRelease": false,
   "requireBranchProtection": false,
   "allowTestRemoval": false,

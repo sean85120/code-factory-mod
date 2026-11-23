@@ -29,7 +29,32 @@ Each feature or chore item is its own PR and its own patch version: 0.4.2 (docs 
 
 The loop edits the plugin that runs it. The plugin hot-reloads, so a merged item can reload the loop's own code mid-run. Mitigation: items are small and sequential, the loop returns to `main` between items, and `/factory-start` resumes after a reload. A reload that breaks the plugin is caught by the test gate before merge.
 
+## Phase 2: verify and harden 0.4.x
+
+Goal: close the gap between "tested" and "verified live" for the 0.4.x dashboard work, and make the screenshot script fail loudly on bad output. No new product behavior.
+
+Out of scope for phase 2: trust-model changes (guards, approval hash, who may commit or push), token and weekly usage display, new settings, a UI on OpenCode or Codex, changes to the issue watcher, spend ledger or loop semantics, the low review findings sweep and the gaze fallback toast (both offered and not chosen).
+
+Version plan: one patch, 0.4.9. T-009 (docs, no bump, like T-001) then T-010 (chore, bumps to 0.4.9 with a CHANGELOG section). The loop stops after 0.4.9 (`stopAfterVersion`). No release is cut by the loop (`tagRelease` stays off); the person tags by hand.
+
 ## Decisions
+
+### Phase 2 scope
+- Question: what the next phase builds.
+- Options: verify and harden 0.4.x, new product features, low review findings sweep, nothing more.
+- Choice: verify and harden 0.4.x, as a live-check checklist doc and a screenshot-script self-check. The gaze fallback toast and the low findings sweep were offered and not chosen.
+- Why: the 0.4.5 and 0.4.6 pointer and Client work is unverified live and tests cannot cover it; a written checklist makes the person's live pass cheap. A first look at docs/img showed all eleven files are real PNGs, so no repair is needed, only a guard.
+
+### Live-check doc
+- Choice: one page, docs/live-checks.md, facts taken only from CLAUDE.md and the CHANGELOG, linked from README and CLAUDE.md. Docs item: no version bump, no tests.
+- Rejected: a runtime self-test inside the plugin (the test harness cannot paint or send pointers, so it would prove nothing) and rewriting the "Unverified live" notes in CLAUDE.md (they are the reviewer's reference, one pointer sentence is enough).
+
+### Screenshot self-check
+- Choice: scripts/check-shots.sh, called by demo-shots.sh, checks name list, size over 1000 bytes and the PNG magic bytes with `head` and `od`; exit 1 on any bad file.
+- Rejected: pixel-dimension checks (change with every layout change) and the `file` command (not guaranteed everywhere). Stays a local guard because the script needs macOS, Chrome and bun and does not run in CI.
+
+### Phase 2 versions and flow
+- Choice: stopAfterVersion 0.4.9, no release, other settings unchanged from the first run (base main, squash, context clear, no budget, askNextPhase on, tagRelease off, watchIssues off).
 
 ### Scope of the first run
 - Question: which improvements to build.
