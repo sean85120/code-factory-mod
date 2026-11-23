@@ -310,6 +310,7 @@ Vox follows the mouse pointer: while the pointer is over the face in the dashboa
 look at it (terminal, 70 columns or more, hacker look, and a terminal that reports the pointer, such as
 kitty, Ghostty, iTerm2, WezTerm or foot; tmux does not). Plugins cannot read the prompt cursor, so Vox cannot
 follow it. A pointer cannot be captured in a still image, so none of the pictures here show the gaze.
+To check the gaze and the other things the tests cannot cover in a real session, see [docs/live-checks.md](docs/live-checks.md).
 
 ![Vox in its seven states: working, reviewing, done, paused, blocked, budget reached and idle](docs/img/vox-states.png)
 
