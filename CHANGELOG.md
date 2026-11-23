@@ -7,6 +7,15 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.4.15] - 2026-11-23
+
+### Fixed
+
+- After a merged item returns the tree to the base branch, the loop reads `.factory/todo.md` again
+  before it picks the next item, in the Claude plugin and in the OpenCode and Codex port. The list it
+  held was parsed from the factory branch, so an item the base gained (or dropped) while the tree sat
+  on that branch could be missed or picked wrongly. A file that cannot be read keeps the old list.
+
 ## [0.4.14] - 2026-11-23
 
 ### Fixed

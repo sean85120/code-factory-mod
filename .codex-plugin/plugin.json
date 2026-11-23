@@ -1,6 +1,6 @@
 {
   "name": "code-factory",
-  "version": "0.4.14",
+  "version": "0.4.15",
   "description": "Design-first autonomous code factory: interviews you for decisions, then implements the todo list branch by branch and PR by PR until CI-green merges, with git/gh gates the model cannot skip.",
   "author": { "name": "sean85120" },
   "license": "MIT",

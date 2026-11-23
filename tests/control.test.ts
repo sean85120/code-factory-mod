@@ -3127,6 +3127,54 @@ test('with no merged PR on a factory branch the old nudge text is sent and no gi
   expect(backCalls(fx).filter(c => c !== 'git fetch -- origin main')).toEqual([])
 })
 
+const BASE_MERGE = 'git merge --ff-only origin/main'
+const T3 = TODO.split('## T-002')[0]!.replace('T-001 [chore] First', 'T-003 [chore] Third')
+
+async function mergedWithBaseTodo($: any, on: any, baseTodo: string, readFails = false) {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const t: { files?: Record<string, string> } = {}
+  let switched = false
+  const fx = setup($, on, {
+    todo: MERGED_TODO,
+    merged: ['T-001'],
+    branch: 'factory/t-001-first',
+    state: { autopilot: true, current: 'T-001' },
+    hook: (w: string) => {
+      if (w === BASE_MERGE) {
+        switched = true
+        t.files!['.factory/todo.md'] = baseTodo
+      }
+      if (readFails && switched && w.startsWith('read:') && w.endsWith('todo.md')) throw new Error('unreadable')
+    },
+  })
+  t.files = fx.files
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1500)
+  return fx
+}
+
+test('after the tree returns to the base the next pick reads the base todo.md, so an item it gained is handed out', async ($, on) => {
+  const fx = await mergedWithBaseTodo($, on, MERGED_TODO.replace('## T-002', `${T3}## T-002`))
+  expect(fx.state().mergedIds).toEqual(['T-001'])
+  expect(fx.state().current).toBe('T-003')
+  expect(prompts(fx).filter(x => x.startsWith('CODE FACTORY: work item T-003')).length).toBe(1)
+  expect(prompts(fx).some(x => x.startsWith('CODE FACTORY: work item T-002'))).toBe(false)
+})
+
+test('after the tree returns to the base an item the base todo.md dropped is not handed out', async ($, on) => {
+  const fx = await mergedWithBaseTodo($, on, MERGED_TODO.split('## T-002')[0]!)
+  expect(fx.state().mergedIds).toEqual(['T-001'])
+  expect(fx.state().current).toBeNull()
+  expect(prompts(fx).some(x => x.startsWith('CODE FACTORY: work item'))).toBe(false)
+})
+
+test('when the base todo.md cannot be read after the switch the loop keeps the old list', async ($, on) => {
+  const fx = await mergedWithBaseTodo($, on, MERGED_TODO.replace('## T-002', `${T3}## T-002`), true)
+  expect(fx.state().mergedIds).toEqual(['T-001'])
+  expect(fx.state().current).toBe('T-002')
+  expect(prompts(fx).filter(x => x.startsWith('CODE FACTORY: work item T-002')).length).toBe(1)
+})
+
 test('an unsafe baseBranch never reaches a git checkout, but the merge is still recorded', async ($, on) => {
   const fx = await mergedOnFactoryBranch($, on, { settings: { baseBranch: '+refs/heads/*:refs/heads/*' } })
   expect(fx.live.ran.some(c => c.startsWith('git checkout'))).toBe(false)

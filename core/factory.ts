@@ -561,6 +561,13 @@ export function createFactory(host: Host) {
             if (branch !== base && (await live())) {
               const back = await returnToBase(settings)
               if (back) return halt(isSafeBranchName(base) ? `${item.id} merged, but the tree could not return to ${base}: ${cleanText(back)}; run git checkout ${base} and git pull, then /factory-start` : `${item.id} merged, but ${unsafeBaseNote()}`)
+              const text = await host.read(TODO_PATH)
+              if (text !== null) {
+                items.splice(0, items.length, ...effectiveItems({ ...snap, state, items: parseTodo(text) }))
+                items.forEach(i => {
+                  if (i.id === item.id) i.status = 'done'
+                })
+              }
             }
             const red = (await live()) ? await verifyBase(settings, live) : null
             if (red) return halt(`${base} is red after ${item.id} merged: ${red}; fix ${base}, then /factory-start`)

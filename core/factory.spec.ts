@@ -251,6 +251,18 @@ test('a merged PR is verified on a factory branch, then the tree returns to the 
   assert.ok(order.every(i => i >= 0))
 })
 
+test('after the tree returns to the base the next pick reads the base todo.md', async () => {
+  const w = mergedOnFactoryBranch({
+    hook: (c: string) => {
+      if (c === 'git merge --ff-only origin/main') w.files.set('.factory/todo.md', DONE1.replace('## T-002', '## T-003 [chore] Third\n- status: todo\n- how: a note\n- accept: a result\n- tests: none\n\n## T-002'))
+      return undefined
+    },
+  })
+  const next = await createFactory(hostFor(w)).advance()
+  assert.match(next?.text ?? '', /work item T-003/)
+  assert.deepEqual(state(w).mergedIds, ['T-001'])
+})
+
 for (const [label, hook, reason] of [
   ['a dirty tracked file', (c: string) => (c.startsWith('git status') ? { stdout: ' M a.ts\n' } : undefined), /uncommitted changes/],
   ['a failing checkout', (c: string) => (c === 'git checkout main' ? { exitCode: 1, stderr: 'boom' } : undefined), /git checkout main failed/],
