@@ -63,7 +63,7 @@
 - depends: T-003, T-004, T-006
 
 ## T-009 [docs] Live-check checklist for what tests cannot cover
-- status: todo
+- status: done
 - version: 0.4.9
 - how: Create docs/live-checks.md, one page of manual steps a person runs in a real session, one section per item that CLAUDE.md marks "unverified live": (1) the Vox `Client` mounts in the pane (hacker look, terminal, 70+ columns; what to see, what a fault looks like: the Raster face stays and no error toast), (2) the absolute `Client` overlay lines up with the `Raster` face, (3) the pointer moves Vox's eyes over the face area only and Vox returns to idle after 6 s of no pointer events or on leave, (4) sub-cell `fine` coordinates and which terminals report pointer events (kitty, Ghostty, iTerm2, WezTerm and foot do; tmux does not), (5) `surface.every` runs at frame rate in the surface module, (6) the desktop surface: dark fill, hover color on plan rows, SVG face and pipeline sizing, (7) `/compact` during a review wait and the spend mark. Each section has: preconditions, exact steps, expected result, and what to report if it differs. Take the facts only from CLAUDE.md and the CHANGELOG; invent no behavior. Link the page from the README (one line under the Vox section) and from the "Unverified live" notes in CLAUDE.md (one pointer sentence, no rewrite of those notes). Docs only: no version bump and no CHANGELOG entry.
 - accept: docs/live-checks.md exists with the seven sections, each with preconditions, steps, expected result and a report line; every claim in it matches CLAUDE.md or the CHANGELOG; the README and CLAUDE.md link to it; scripts/check-version.sh still passes at 0.4.8.
