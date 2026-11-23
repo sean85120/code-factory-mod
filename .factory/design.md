@@ -135,3 +135,30 @@ Version plan: 0.4.11 (T-012 bug, advance verifies then switches), 0.4.12 (T-013 
 
 #### Phase 4 versions and flow
 - Choice: stopAfterVersion 0.4.12, no release, all other settings unchanged.
+
+## Phase 5: finish the deferred Vox polish
+
+Goal: clear the two deferred 0.4.x review leftovers that the person chose: a toast when the Vox gaze overlay faults, and the idle-eye highlight Low plus a test pin for the Client timer guard. No loop, trust-model or ledger changes.
+
+Out of scope for phase 5: trust-model changes, new settings, a UI on OpenCode or Codex, changes to the issue watcher, spend ledger or loop semantics. No open GitHub issues exist (checked with `gh issue list`). Two Lows from earlier reviews were offered and not chosen: stop the Raster blit under the overlay (no mount signal in the API) and re-read todo.md after `returnToBase` in `pickNext`.
+
+Version plan: 0.4.13 (T-014 feature, the toast), 0.4.14 (T-015 bug, the lid highlight and timer tests). The loop stops after 0.4.14 (`stopAfterVersion`). No release is cut by the loop; the person tags by hand.
+
+### Phase 5 decisions
+
+#### Phase 5 scope
+- Question: what the next phase builds.
+- Options: low-findings sweep plus gaze fallback toast, a new product feature, a release only, nothing more.
+- Choice: the gaze fallback toast and a small low-findings sweep (idle eye highlight, timer guard pinned by tests). Out of scope as listed above.
+- Why: both were offered and deferred in phases 1 to 4; the 0.4.5 to 0.4.6 Client work is the least verified live part, so a visible signal when it faults is worth having.
+
+#### Gaze fault toast
+- Choice: a `ui.fault` hook (observe only) toasts once per session with a fixed text when the faulting element is `vox-gaze`; the untrusted fault reason, module and phase are never shown; reset on `session.start`; silent after `/factory-exit`.
+- Rejected: toasting every fault (render faults are retried at every resize and prop change, so it would spam), showing the reason (untrusted text), a timeline event (nothing depends on it).
+
+#### Low sweep contents
+- Choice: fix the idle highlight (row below the lid rim, other cells unchanged) and pin the `vox-client.tsx` timer guard with tests, no code change there: the ClientSurface contract says the same `surface` is passed on every call.
+- Rejected: rewriting the WeakMap guard (defends against behaviour the docs exclude), stopping the Raster blit under the overlay (no mount signal; the blit is the fallback), re-reading todo.md after `returnToBase` (touches the loop; not chosen).
+
+#### Phase 5 versions and flow
+- Choice: stopAfterVersion 0.4.14, no release, all other settings unchanged.
