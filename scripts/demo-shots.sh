@@ -5,6 +5,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 chrome="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 out="$root/docs/img"
+. "$root/scripts/check-shots.sh"
 mkdir -p "$out" "$work/run/tests"
 for x in .claude-plugin hooks types tsconfig.json; do cp -R "$root/$x" "$work/run/$x"; done
 python3 - "$root" "$work/run/tests/democap.test.ts" <<'PY'
@@ -28,3 +29,4 @@ for html in "$work"/*.html; do
   "$chrome" --headless=new --disable-gpu --hide-scrollbars --force-device-scale-factor=2 --window-size="$w,$h" --screenshot="$out/$name.png" "file://$html" >/dev/null 2>&1
   echo "$name.png ${w}x${h}"
 done
+check_shots "$out"

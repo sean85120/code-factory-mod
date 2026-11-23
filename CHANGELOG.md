@@ -7,6 +7,15 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-11-23
+
+### Changed
+
+- `scripts/demo-shots.sh` checks its own output: `scripts/check-shots.sh` (`check_shots <dir>`)
+  verifies that each of the eleven README pictures exists, is larger than 1000 bytes and starts with
+  the PNG signature, prints `ok name.png` or `BAD name.png: reason` per file and fails the script when
+  any is bad. It does not depend on `file` and does not compare pixel sizes. No image is regenerated.
+
 ## [0.4.8] - 2026-11-23
 
 ### Changed
