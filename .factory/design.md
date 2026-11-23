@@ -112,3 +112,26 @@ Version plan: one patch, 0.4.10 (T-011, chore). The loop stops after 0.4.10 (`st
 
 #### Phase 3 versions and flow
 - Choice: stopAfterVersion 0.4.10, no release, all other settings unchanged.
+
+## Phase 4: a merged item must not strand the loop
+
+Goal: after a work turn merges its PR, the loop confirms the merge, marks the item done, returns the tree to the base branch and updates the dashboard without a model turn or any typed command. Found in the 0.4.10 run: T-011 merged but the tree stayed on its factory branch, `advance()` only verifies a merge on the base branch, the pane kept "merge merging" at 10/11, and the person's next message paused the loop before the nudge came.
+
+Out of scope for phase 4: no open GitHub issues exist (checked with `gh issue list`), so none are taken; trust-model changes, new settings, the low review findings sweep, the gaze fallback toast, features.
+
+Version plan: 0.4.11 (T-012 bug, advance verifies then switches), 0.4.12 (T-013 pane shows merged at once). The loop stops after 0.4.12 (`stopAfterVersion`). No release is cut by the loop; the person tags by hand. T-011 itself is already merged; the loop verifies it first when the tree is on main and `/factory-start` runs.
+
+### Phase 4 decisions
+
+#### Verify first, then switch
+- Question: how the loop handles a merged PR while the tree is still on the factory branch.
+- Options: verify then switch in advance(), a faster nudge, dashboard text only.
+- Choice: verify first, then switch (`returnToBase`: clean-tree check, `git checkout <base>`, fetch, `merge --ff-only`), no model turn.
+- Why: a nudge needs a model turn and a typed prompt pauses the loop first; the model also forgot to switch back once. A dirty tree or failed switch pauses with the fix command and never undoes the done write.
+- Rejected: faster nudge, text-only change.
+
+#### Pane between merge and confirmation
+- Choice: the merge step reads done and the now line reads `T-xxx merged: confirming` as soon as a `merged` event exists for the item since its last `started`; fixed words and ids only, no new state field.
+
+#### Phase 4 versions and flow
+- Choice: stopAfterVersion 0.4.12, no release, all other settings unchanged.
