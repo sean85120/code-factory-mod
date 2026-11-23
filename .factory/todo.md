@@ -70,7 +70,7 @@
 - tests: none (docs item).
 
 ## T-010 [chore] Screenshot script checks its own output
-- status: todo
+- status: done
 - version: 0.4.9
 - how: In scripts/demo-shots.sh, after the render loop, verify every file in a fixed list of expected names (band-classic, band-hacker, band-hold, band-stuck, pane-agent, pane-classic, pane-desktop, pane-hacker, pane-hold, pane-stuck, vox-states, all .png under docs/img) exists, is larger than 1000 bytes, and starts with the 8 PNG magic bytes (check with `head -c 8 | od -An -tx1` compared to `89 50 4e 47 0d 0a 1a 0a`; do not depend on `file`). Print one line per file as `ok name.png` or `BAD name.png: reason` and exit 1 if any is bad or missing. Rejected: comparing pixel dimensions (the sizes change with every layout change, so the check would need updating each time) and using `file` (not guaranteed in CI). The script does not run in CI today (needs macOS, Chrome, bun), so this stays a local guard. Do not regenerate images in this item. Add a short note in the CLAUDE.md Commands entry for the script. Bump to 0.4.9 (.claude-plugin/plugin.json, .codex-plugin/plugin.json, opencode/package.json and the two lines of opencode/package-lock.json, not the json-schema package) and add a CHANGELOG 0.4.9 section (Changed). On macOS use node or python for the edit, not `sed -i`.
 - accept: Running the check section of the script against the current docs/img prints `ok` for all eleven files and exits 0; with one file replaced by a JPEG or an empty file or removed it prints BAD for that file and exits 1. scripts/check-version.sh and all suites pass at 0.4.9. No file under tests/ is added for the script and no image is regenerated.
