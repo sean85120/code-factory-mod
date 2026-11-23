@@ -75,6 +75,38 @@ test('itemSteps ignores events of other items and of an earlier run of the same 
   expect(steps[2]!.detail).toBe('not opened')
 })
 
+test('itemSteps marks every step done with detail merged once the run has a merged event, and ignores an earlier run', () => {
+  const ctx = { attempt: 1, maxAttempts: 3, reviewRound: 0, maxReviewRounds: 3 }
+  const open = itemSteps('CI', [ev('started'), ev('pr-opened', { pr: 7 }), ev('merged')], 'T-002', ctx)
+  expect(open.map(s => `${s.label}:${s.state}`)).toEqual(['build:done', 'review:done', 'PR:done', 'CI:done', 'merge:done'])
+  expect(open[4]!.detail).toBe('merged')
+  const none = itemSteps('CI', [ev('started'), ev('pr-opened', { pr: 7 })], 'T-002', ctx)
+  expect(none.map(s => s.state)).toEqual(['done', 'done', 'done', 'doing', 'todo'])
+  expect(none[4]!.detail).toBe('waiting')
+  const earlier = itemSteps('build', [ev('started'), ev('merged'), ev('started'), ev('commit')], 'T-002', ctx)
+  expect(earlier.map(s => s.state)).toEqual(['doing', 'todo', 'todo', 'todo', 'todo'])
+  expect(earlier[4]!.detail).toBe('waiting')
+  const other = itemSteps('build', [ev('started'), ev('merged', { itemId: 'T-003' })], 'T-002', ctx)
+  expect(other[4]!.detail).toBe('waiting')
+})
+
+for (const look of ['classic', 'hacker'] as const) {
+  test(`the ${look} pane shows the merge step done and the confirming sentence after a merged event`, async ($, on) => {
+    fixture($, on, {
+      store: look === 'hacker' ? { 'ui/theme': { name: 'hacker' } } : undefined,
+      state: { events: [{ ts: 999_000, itemId: 'T-002', kind: 'started', detail: '' }, { ts: 999_500, itemId: 'T-002', kind: 'merged', detail: 'gh pr merge 7' }] },
+    })
+    await $.command.run({ command: 'factory-status' } as never)
+    if (look === 'hacker') await $.command.run({ command: 'factory-theme' } as never)
+    const pane = await $.ui.mount({ plugin: 'code-factory', surface: 'terminal', component: 'Pane', requestId: 'factory', props: {} } as never)
+    expect(await pane.find({ text: /T-002 merged: confirming/ })).toBeDefined()
+    expect(await pane.find({ text: /^merged$/ })).toBeDefined()
+    expect(await pane.find({ text: /Merging/ })).toBeUndefined()
+    expect(await pane.find({ text: /merge/ })).toBeDefined()
+    await pane.unmount()
+  })
+}
+
 test('buildView adds totals, blocked count, attempts, PR, elapsed time, steps and capped agents', () => {
   const items = parseTodo(TODO)
   const agents = Array.from({ length: 9 }, (_, i) => ({ id: `a${i}`, label: `agent ${i}`, kind: 'general-purpose', status: 'running', summary: 'x', recent: [], parent: null }))

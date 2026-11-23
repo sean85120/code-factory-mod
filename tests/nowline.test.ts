@@ -48,6 +48,12 @@ test('nowLine says what the running loop is doing at every stage, with attempt, 
   expect(nowLine(run({ stage: 'CI', prNumber: 12, steps: [{ label: 'CI', state: 'doing', detail: 'failed' }] }))).toBe('PR #12 open: CI failed, fixing')
   expect(nowLine(run({ stage: 'merge', prNumber: 12 }))).toBe('Merging PR #12')
   expect(nowLine(run({ stage: 'merge' }))).toBe('Merging T-009')
+  const merged = [{ label: 'merge', state: 'done' as const, detail: 'merged' }]
+  expect(nowLine(run({ stage: 'merge', prNumber: 12, steps: merged }))).toBe('T-009 merged: confirming')
+  expect(nowLine(run({ stage: 'merge', steps: merged }))).toBe('T-009 merged: confirming')
+  expect(nowLine(run({ stage: 'merge', prNumber: 12, steps: [{ label: 'merge', state: 'doing', detail: 'merging' }] }))).toBe('Merging PR #12')
+  expect(nowLine(run({ stage: 'merge', current: 'x"y', steps: merged }))).toBe('the item merged: confirming')
+  expect(nowLine(view({ steps: merged }))).toBe('')
   expect(nowLine(run({ current: null, stage: null }))).toBe('Picking the next item')
   expect(nowLine(view())).toBe('')
 })

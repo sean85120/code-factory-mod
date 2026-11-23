@@ -7,6 +7,17 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.4.12] - 2026-11-23
+
+### Changed
+
+- The dashboard shows a merged item as merged at once. When the current item's events since its
+  last `started` hold a `merged` event, the pane, band and status line draw every step done with
+  the merge step detail `merged`, and the now line reads `T-xxx merged: confirming` instead of
+  `Merging PR #n` while the loop confirms the merge. A `merged` event from an earlier run of the
+  item is ignored, and before any `merged` event the stage sentences and steps are unchanged. The
+  view refreshes right after `gh pr merge` is logged, so it does not wait for the 2 s timer.
+
 ## [0.4.11] - 2026-11-23
 
 ### Fixed

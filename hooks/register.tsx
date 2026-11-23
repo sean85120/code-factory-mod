@@ -2489,6 +2489,7 @@ export const register: Register = (on, _options) => {
       if (stageEvent && r.deny === undefined && !r.isError) {
         await markStage($, stageEvent)
         if (liveItem) await logBashEvent($, liveItem, stageEvent, e.command, typeof r.text === 'string' ? r.text : JSON.stringify(r.result ?? ''))
+        if (liveItem && stageEvent === 'merge') await refreshView($)
       }
       return r
     }, nextRaw)
