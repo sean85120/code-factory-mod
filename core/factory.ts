@@ -460,6 +460,21 @@ export function createFactory(host: Host) {
     return tests.exitCode === 0 ? null : `the test suite fails (${settings.testCmd.join(' ')}, exit ${tests.exitCode})`
   }
 
+  async function returnToBase(settings: Settings): Promise<string | null> {
+    const base = settings.baseBranch
+    if (!isSafeBranchName(base)) return unsafeBaseNote()
+    const status = await host.run(['git', 'status', '--porcelain', '--untracked-files=no'], 30000)
+    if (status.exitCode !== 0) return `git status failed: ${status.stderr.trim().slice(0, 120)}`
+    if (status.stdout.trim() !== '') return 'the tree has uncommitted changes in tracked files'
+    const out = await host.run(['git', 'checkout', base], 30000)
+    if (out.exitCode !== 0) return `git checkout ${base} failed: ${out.stderr.trim().slice(0, 120)}`
+    const fetched = await host.run(['git', 'fetch', '--', 'origin', base])
+    if (fetched.exitCode !== 0) return `git fetch origin ${base} failed: ${fetched.stderr.trim().slice(0, 120)}`
+    const merged = await host.run(['git', 'merge', '--ff-only', `origin/${base}`], 30000)
+    if (merged.exitCode !== 0) return `${base} is not a fast-forward of origin/${base}: ${merged.stderr.trim().slice(0, 120)}`
+    return null
+  }
+
   // ---- the loop -----------------------------------------------------------
 
   // One step: verify the current item, then hand out the next prompt. Returns
@@ -526,7 +541,6 @@ export function createFactory(host: Host) {
         const branch = await branchNow()
         let why = ''
         if (item.status !== 'done') why = `${item.id} is not marked done in todo.md.`
-        else if (branch !== base) why = `The current branch is "${branch}", not ${base}.`
         else {
           const merged = await host.run(['gh', 'pr', 'list', '--state', 'merged', '--head', branchFor(item), '--json', 'number,headRefName', '--limit', '20'])
           if (merged.exitCode !== 0) return halt(`gh failed: ${merged.stderr.trim().slice(0, 120)}`)
@@ -544,9 +558,14 @@ export function createFactory(host: Host) {
             })
             hasMerged = true
             notify(`factory: ${item.id} merged`)
+            if (branch !== base && (await live())) {
+              const back = await returnToBase(settings)
+              if (back) return halt(isSafeBranchName(base) ? `${item.id} merged, but the tree could not return to ${base}: ${cleanText(back)}; run git checkout ${base} and git pull, then /factory-start` : `${item.id} merged, but ${unsafeBaseNote()}`)
+            }
             const red = (await live()) ? await verifyBase(settings, live) : null
             if (red) return halt(`${base} is red after ${item.id} merged: ${red}; fix ${base}, then /factory-start`)
-          } else why = `${item.id} is marked done but no merged PR from a factory/${item.id.toLowerCase()}-* branch exists.`
+          } else if (branch !== base) why = `The current branch is "${branch}", not ${base}.`
+          else why = `${item.id} is marked done but no merged PR from a factory/${item.id.toLowerCase()}-* branch exists.`
         }
         if (why) {
           if (branch.startsWith('factory/')) {

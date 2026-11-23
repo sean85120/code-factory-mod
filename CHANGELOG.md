@@ -7,6 +7,22 @@ minor version may change behavior).
 
 ## [Unreleased]
 
+## [0.4.11] - 2026-11-23
+
+### Fixed
+
+- The loop no longer nudges a finished item just because the tree is still on its `factory/*`
+  branch. `advance()` checks that the item is done in todo.md and that a merged PR exists for its
+  branch, whatever branch is checked out, writes the item as done as before, and only then returns
+  the tree to the base: `git status --porcelain --untracked-files=no` (a dirty tree stops it),
+  `git checkout <base>`, `git fetch -- origin <base>` and `git merge --ff-only origin/<base>`, all
+  through plugin git and never the model's Bash. A dirty tree, a failing checkout or a
+  non-fast-forward keeps the item done and pauses the loop with `T-xxx merged, but the tree could not
+  return to <base>: <reason>; run git checkout <base> and git pull, then /factory-start`. An unsafe
+  `baseBranch` never reaches a git command. With no merged PR the old nudge (`The current branch is
+  ...`, then blocked after `maxAttempts`) is unchanged. The OpenCode and Codex port
+  (`core/factory.ts`) had the same rule and gets the same order.
+
 ## [0.4.10] - 2026-11-23
 
 ### Changed

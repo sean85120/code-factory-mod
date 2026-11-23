@@ -3073,3 +3073,62 @@ test('outside a factory turn nothing about activity or a stuck loop is shown', a
   expect(texts.some(t => /Last action|no progress/.test(t))).toBe(false)
   await ui.unmount()
 })
+
+const BACK_GIT = ['git status --porcelain --untracked-files=no', 'git checkout main', 'git fetch -- origin main', 'git merge --ff-only origin/main']
+const backCalls = (fx: { live: { ran: string[] } }) => fx.live.ran.filter(c => /^git (status|checkout|merge)\b/.test(c) || c === 'git fetch -- origin main')
+
+async function mergedOnFactoryBranch($: any, on: any, o: Opts = {}) {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const fx = setup($, on, { todo: MERGED_TODO, merged: ['T-001'], branch: 'factory/t-001-first', state: { autopilot: true, current: 'T-001' }, ...o })
+  await $.command.run({ command: 'factory-start' } as never)
+  await clock.advance(1500)
+  return fx
+}
+
+test('a merged PR is verified on a factory branch, then the tree returns to the base and the loop moves on without a nudge', async ($, on) => {
+  const fx = await mergedOnFactoryBranch($, on)
+  expect(fx.state().mergedIds).toEqual(['T-001'])
+  expect(fx.state().current).toBe('T-002')
+  const calls = fx.live.ran
+  const at = BACK_GIT.map(c => calls.indexOf(c))
+  expect(at.every(i => i >= 0)).toBe(true)
+  expect([...at].sort((a, b) => a - b)).toEqual(at)
+  expect(backCalls(fx).filter(c => c !== 'git fetch -- origin main')).toEqual([BACK_GIT[0], BACK_GIT[1], BACK_GIT[3]])
+  expect(prompts(fx).some(x => x.includes('retry'))).toBe(false)
+  expect(prompts(fx).filter(x => x.startsWith('CODE FACTORY: work item T-002')).length).toBe(1)
+})
+
+for (const [label, fail, reason] of [
+  ['a dirty tracked file', (w: string) => (w.startsWith('git status') ? ' M src/a.ts\n' : undefined), 'uncommitted changes'],
+  ['a failing checkout', (w: string) => (w === 'git checkout main' ? { exitCode: 1 } : undefined), 'git checkout main failed'],
+  ['a non-fast-forward', (w: string) => (w.startsWith('git merge') ? { exitCode: 1 } : undefined), 'not a fast-forward'],
+] as const) {
+  test(`${label} after a merge keeps the item done and pauses with the fix command, sending nothing`, async ($, on) => {
+    const dirty = label === 'a dirty tracked file'
+    const fx = await mergedOnFactoryBranch($, on, {
+      run: dirty ? (w: string) => fail(w) as string | undefined : undefined,
+      hook: dirty ? undefined : (w: string) => fail(w),
+    })
+    expect(fx.state().mergedIds).toEqual(['T-001'])
+    expect(fx.state().autopilot).toBe(false)
+    const paused = fx.state().pausedReason as string
+    expect(paused).toContain('T-001 merged, but the tree could not return to main')
+    expect(paused).toContain(reason)
+    expect(paused).toContain('run git checkout main and git pull, then /factory-start')
+    expect(prompts(fx)).toEqual([])
+    if (dirty) expect(backCalls(fx)).toEqual([BACK_GIT[0]])
+  })
+}
+
+test('with no merged PR on a factory branch the old nudge text is sent and no git switch runs', async ($, on) => {
+  const fx = await mergedOnFactoryBranch($, on, { merged: [] })
+  expect(fx.state().mergedIds).toEqual([])
+  expect(prompts(fx).some(x => x.includes('The current branch is "factory/t-001-first", not main.'))).toBe(true)
+  expect(backCalls(fx).filter(c => c !== 'git fetch -- origin main')).toEqual([])
+})
+
+test('an unsafe baseBranch never reaches a git checkout, but the merge is still recorded', async ($, on) => {
+  const fx = await mergedOnFactoryBranch($, on, { settings: { baseBranch: '+refs/heads/*:refs/heads/*' } })
+  expect(fx.live.ran.some(c => c.startsWith('git checkout'))).toBe(false)
+  expect(fx.live.ran.some(c => c.startsWith('git merge'))).toBe(false)
+})
