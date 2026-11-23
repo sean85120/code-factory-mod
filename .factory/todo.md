@@ -94,7 +94,7 @@
 - depends: none
 
 ## T-013 [feature] The dashboard shows a merged item as merged at once
-- status: todo
+- status: done
 - version: 0.4.12
 - how: In `itemSteps` (hooks/lib.ts) add one rule: when the item's events since its last `started` contain a `merged` event, the `merge` step is `done` with detail `merged` (every earlier step is `done` too, whatever `stage` says); otherwise the existing logic. In `nowLine` the `merge` stage reads `${id} merged: confirming` instead of `Merging PR #n` when the `merge` step's detail is `merged`, and the compact band, pane and status line pick it up because they already use `nowLine`/`steps`. `holdLine` is not changed. The wording is fixed words and the item id only (no title, no event detail). Nothing in register.tsx changes: `buildView` already passes the events to `itemSteps`. Update the CLAUDE.md loop-view paragraph (one sentence) and add a 0.4.12 CHANGELOG section (Changed). Bump to 0.4.12 in the same five places as T-012. Rejected: a new FactoryView field or a new stage (the timeline event is enough and no new state is stored); reading the merge from `gh` in the view (the view must stay a pure function of state).
 - accept: After a `merged` event for the current item the pane, band and status line show the merge step done, never "merging", and the now line reads `T-xxx merged: confirming` while the loop runs. Before any `merged` event nothing changes: the stage sentences and step states are exactly as in 0.4.11, in classic, hacker and the ASCII tier. A `merged` event of an earlier run of the same item (before its last `started`) is ignored. `tsc -p .`, the plugin suite, the port specs and `scripts/check-version.sh` pass at 0.4.12.

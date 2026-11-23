@@ -2057,7 +2057,8 @@ export function itemSteps(
   const verdict = [...run].reverse().find(e => e.kind === 'review-verdict')
   const pr = [...run].reverse().find(e => e.kind === 'pr-opened')
   const ci = [...run].reverse().find(e => e.kind === 'ci-passed' || e.kind === 'ci-failed')
-  const at = stage === null ? 0 : STAGES.indexOf(stage)
+  const merged = run.some(e => e.kind === 'merged')
+  const at = merged ? STAGES.length : stage === null ? 0 : STAGES.indexOf(stage)
   const state = (i: number): Step['state'] => (i < at ? 'done' : i === at ? 'doing' : 'todo')
   const reviewDetail = verdict ? oneLine(verdict.detail, 40) : ctx.reviewRound > 0 ? `round ${ctx.reviewRound}/${ctx.maxReviewRounds}` : 'not started'
   return [
@@ -2065,7 +2066,7 @@ export function itemSteps(
     { label: 'review', state: state(1), detail: reviewDetail },
     { label: 'PR', state: state(2), detail: pr?.pr !== undefined ? `#${pr.pr}` : pr ? 'opened' : 'not opened' },
     { label: 'CI', state: state(3), detail: ci ? (ci.kind === 'ci-passed' ? 'passed' : 'failed') : 'pending' },
-    { label: 'merge', state: state(4), detail: at >= 4 ? 'merging' : 'waiting' },
+    { label: 'merge', state: state(4), detail: merged ? 'merged' : at >= 4 ? 'merging' : 'waiting' },
   ]
 }
 
@@ -2114,6 +2115,7 @@ export function nowLine(v: Pick<FactoryView, 'running' | 'current' | 'stage' | '
   if (!v.running) return ''
   if (v.current === null) return 'Picking the next item'
   const id = safeId(v.current)
+  if (v.steps?.find(s => s.label === 'merge')?.detail === 'merged') return `${id} merged: confirming`
   const pr = typeof v.prNumber === 'number' && Number.isFinite(v.prNumber) ? `PR #${Math.trunc(v.prNumber)}` : null
   switch (v.stage) {
     case 'review':
