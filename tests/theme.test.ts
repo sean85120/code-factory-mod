@@ -413,7 +413,7 @@ test('the pupils in the face cells move toward the gaze for run, review and idle
   for (const s of ['run', 'review', 'idle'] as const) {
     const at = (x: number, y: number) => pixels(s, 500, Number.POSITIVE_INFINITY, { x, y })
     expect([-2, -1, 0, 1, 2].map(x => darkness(at(x, 0), 1, 3))).toEqual([1, 0.5, 0, 0, 0])
-    expect([-2, -1, 0, 1, 2].map(x => darkness(at(x, 0), 2, 3))).toEqual([1, 1, 1, 0.5, 0])
+    expect([-2, -1, 0, 1, 2].map(x => darkness(at(x, 0), 2, 3))).toEqual(s === 'idle' ? [0, 0, 1, 0.5, 0] : [1, 1, 1, 0.5, 0])
     expect([-1, 0, 1].map(y => darkness(at(0, y), 3, 5))).toEqual([0, 0, 0.5])
     expect([-1, 0, 1].map(y => darkness(at(0, y), 3, 4))).toEqual([0.5, 1, 1])
     const cells = (g?: { x: number; y: number }) => faceCells(poseAt(s, 500, Number.POSITIVE_INFINITY, g), '#3DF58A').cells
@@ -543,4 +543,63 @@ test('the mascot speech fits beside the 30-column face on a 70-column pane, arro
   const room = VOX_RASTER_COLUMNS - 2 - VOX_CELL_COLUMNS - 2
   expect(room).toBe(36)
   for (const line of said) expect([line, arrow + line.length <= room]).toEqual([line, true])
+})
+
+const WHITE = 0xffffff
+
+function highlights(m: Map<string, number>): string[] {
+  return [...m.entries()].filter(([, c]) => c === WHITE).map(([k]) => k)
+}
+
+function oldHighlightRow(py0: number): number {
+  return Math.min(4, Math.max(1, Math.round(py0 + 0.5)))
+}
+
+test('the idle face shows the white highlight pixel in both eyes under the lid rim', () => {
+  for (const t of [500, 1300, 2500]) {
+    const pose = poseAt('idle', t, Number.POSITIVE_INFINITY)
+    expect(pose.eyes).toBe('open')
+    expect(pose.lid).toBeGreaterThan(0)
+    const found = highlights(pixelsOf(pose))
+    const px0 = 2 + pose.look * 0.5
+    const hx = Math.min(5, Math.max(1, Math.round(px0 + 0.5)))
+    for (const ex of [6, 17]) {
+      const inEye = found.filter(k => {
+        const [x, y] = k.split(',').map(Number) as [number, number]
+        return x >= ex && x < ex + 7 && y >= EYE_Y && y < EYE_Y + 6
+      })
+      expect(inEye).toHaveLength(1)
+      const [x, y] = inEye[0]!.split(',').map(Number) as [number, number]
+      expect(x).toBe(ex + hx)
+      expect(y).toBeGreaterThan(EYE_Y + Math.round(pose.lid * 6))
+      expect(y).toBeLessThanOrEqual(EYE_Y + 4)
+    }
+  }
+  for (const g of [{ x: 0, y: 0 }, { x: 2, y: -1 }, { x: -2, y: 1 }]) {
+    expect(highlights(pixels('idle', 500, Number.POSITIVE_INFINITY, g)).length).toBeGreaterThanOrEqual(2)
+  }
+})
+
+test('only the idle highlight row moved: other states and open-eyed variants draw exactly the 0.4.13 cells and the old row rule', () => {
+  const fnv = (h: number, n: number): number => Math.imul((h ^ n) >>> 0, 16777619) >>> 0
+  const idle = VOX_STATES.filter(s => s === 'idle')
+  const others = VOX_STATES.filter(s => s !== 'idle')
+  expect(idle).toHaveLength(1)
+  const poses = [
+    ...others.flatMap(s => [0, 333, 1111, 2777, 4999].flatMap(t => [0, 250, 5000, Number.POSITIVE_INFINITY].map(since => poseAt(s, t, since)))),
+    ...others.flatMap(s => [-2, 0, 2].flatMap(x => [-1, 0, 1].map(y => poseAt(s, 700, 40, { x, y })))),
+    ...[0, 333, 1111, 2777, 4999].flatMap(t => [null, { x: 0, y: 0 }, { x: 2, y: -1 }, { x: -2, y: 1 }].map(g => ({ ...poseAt('idle', t, Number.POSITIVE_INFINITY, g), lid: 0 }))),
+  ]
+  let h = 2166136261
+  for (const tone of ['#3DF58A', '#0B7A3B', '#FFB000']) for (const p of poses) for (const w of faceWords(p, tone)) h = fnv(h, w)
+  expect([poses.length, h]).toEqual([194, 2159626014])
+  for (const p of poses) {
+    if (p.eyes !== 'open' && p.eyes !== 'wide') continue
+    const gx = p.gaze !== null ? Math.max(-2, Math.min(2, Math.round(p.gaze.x))) * 0.5 : p.look * 0.5
+    const gy = p.gaze !== null ? Math.max(-1, Math.min(1, Math.round(p.gaze.y))) * 0.5 : 0
+    const py0 = Math.round((1 + gy) * 2) / 2
+    const px0 = Math.round((2 + gx) * 2) / 2
+    const m = pixelsOf(p)
+    for (const ex of [6, 17]) expect(m.get(`${ex + Math.min(5, Math.max(1, Math.round(px0 + 0.5)))},${EYE_Y + oldHighlightRow(py0)}`)).toBe(WHITE)
+  }
 })
